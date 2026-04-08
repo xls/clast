@@ -1,0 +1,22 @@
+{
+  "name": "clast",
+  "version": "0.1.0",
+  "description": "AST-based code intelligence for Claude Code: search symbols, trace call graphs, generate documentation, and provide structured context for any repository. Supports TypeScript, JavaScript, Python, Java, C#, Go, Rust, C/C++, Ruby, and PHP.",
+  "author": {
+    "name": "Thomas"
+  },
+  "keywords": [
+    "ast",
+    "code-intelligence",
+    "call-graph",
+    "tree-sitter",
+    "mcp",
+    "documentation",
+    "code-navigation"
+  ],
+  "repository": "https://github.com/thomas/clast",
+  "license": "MIT",
+  "engines": {
+    "node": ">=18.0.0"
+  }
+}

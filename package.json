@@ -1,0 +1,65 @@
+{
+  "name": "clast-ai",
+  "version": "0.1.2",
+  "description": "AST-based code intelligence plugin for Claude Code: search symbols, trace call graphs, generate comments, and provide structured context for any repository",
+  "main": "dist/server/index.js",
+  "bin": {
+    "clast-ai": "dist/server/index.js"
+  },
+  "type": "module",
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "start": "node dist/server/index.js",
+    "dev": "tsx src/server/index.ts",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "clean": "rm -rf dist",
+    "prepare": "npm run build",
+    "prepublishOnly": "npm run build"
+  },
+  "keywords": [
+    "ast",
+    "code-intelligence",
+    "call-graph",
+    "tree-sitter",
+    "mcp",
+    "claude-code",
+    "plugin"
+  ],
+  "author": "trizos",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/xls/clast.git"
+  },
+  "files": [
+    "dist",
+    "src",
+    "skills",
+    "commands",
+    ".claude-plugin",
+    ".mcp.json",
+    "tsconfig.json",
+    "README.md",
+    "LICENSE"
+  ],
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "dependencies": {
+    "@anthropic-ai/sdk": "^0.39.0",
+    "@modelcontextprotocol/sdk": "^1.12.0",
+    "chokidar": "^4.0.0",
+    "sql.js": "^1.12.0",
+    "tree-sitter-wasms": "^0.1.13",
+    "web-tree-sitter": "^0.24.7",
+    "zod": "^3.24.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "@types/sql.js": "^1.4.11",
+    "tsx": "^4.19.0",
+    "typescript": "^5.7.0",
+    "vitest": "^3.0.0"
+  }
+}

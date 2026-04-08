@@ -1,0 +1,12 @@
+node_modules/
+dist/
+.clast/
+*.tsbuildinfo
+.env
+.env.*
+*.db
+*.db-wal
+*.db-shm
+grammars/
+scripts/
+.claude/settings.local.json

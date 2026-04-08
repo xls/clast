@@ -1,0 +1,82 @@
+{
+  "name": "clast-vscode",
+  "displayName": "Clast - AST Code Intelligence",
+  "description": "Auto-configures Clast AST indexing for your workspace. Integrates with Claude Code for intelligent code navigation.",
+  "version": "0.1.0",
+  "publisher": "thomas",
+  "license": "MIT",
+  "engines": {
+    "vscode": "^1.85.0"
+  },
+  "categories": [
+    "Programming Languages",
+    "Other"
+  ],
+  "keywords": [
+    "ast",
+    "code-intelligence",
+    "claude-code",
+    "tree-sitter",
+    "call-graph"
+  ],
+  "activationEvents": [
+    "workspaceContains:**/*"
+  ],
+  "main": "./out/extension.js",
+  "contributes": {
+    "commands": [
+      {
+        "command": "clast.reindex",
+        "title": "Clast: Reindex Current Workspace"
+      },
+      {
+        "command": "clast.status",
+        "title": "Clast: Show Index Status"
+      },
+      {
+        "command": "clast.configure",
+        "title": "Clast: Open Configuration"
+      }
+    ],
+    "configuration": {
+      "title": "Clast",
+      "properties": {
+        "clast.enabled": {
+          "type": "boolean",
+          "default": true,
+          "description": "Enable Clast AST indexing for the current workspace"
+        },
+        "clast.llm.endpoint": {
+          "type": "string",
+          "default": "http://localhost:11434/v1",
+          "description": "OpenAI-compatible LLM endpoint for comment generation"
+        },
+        "clast.llm.model": {
+          "type": "string",
+          "default": "",
+          "description": "LLM model name (leave empty to disable comment generation)"
+        },
+        "clast.llm.apiKey": {
+          "type": "string",
+          "default": "",
+          "description": "API key for the LLM endpoint (if required)"
+        },
+        "clast.autoSetupClaudeCode": {
+          "type": "boolean",
+          "default": true,
+          "description": "Automatically configure CLAST_PROJECT_DIR for Claude Code MCP integration"
+        }
+      }
+    }
+  },
+  "scripts": {
+    "build": "tsc -p .",
+    "watch": "tsc -watch -p .",
+    "vscode:prepublish": "npm run build"
+  },
+  "devDependencies": {
+    "@types/vscode": "^1.85.0",
+    "@types/node": "^22.0.0",
+    "typescript": "^5.7.0"
+  }
+}
