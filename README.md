@@ -1,4 +1,4 @@
-# Clast v0.1a
+# Clast v0.1b
 
 AST-based code intelligence plugin for Claude Code. Indexes your repository using [tree-sitter](https://tree-sitter.github.io/), maintains a live AST database, and exposes MCP tools for fast symbol search, call graph traversal, and context retrieval.
 
