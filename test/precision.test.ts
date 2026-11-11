@@ -974,3 +974,42 @@ describe('nested helper classes and type construction', () => {
     assert.ok(callees.some(c => c.target!.name === 'Session' && c.certain), JSON.stringify(callees.map(c => [c.target!.qname, c.certain])));
   });
 });
+
+describe('C++ namespace functions', () => {
+  let q: Project;
+  before(async () => {
+    q = await createProject({
+      'cpp/coding.h': `namespace db {
+void PutVarint32(int* dst, int value);
+}
+`,
+      'cpp/coding.cc': `#include "coding.h"
+namespace db {
+void PutVarint32(int* dst, int value) {}
+}
+`,
+      'cpp/edit.h': `namespace db {
+class VersionEdit {
+ public:
+  void EncodeTo(int* dst) const;
+};
+}
+`,
+      'cpp/edit.cc': `#include "edit.h"
+#include "coding.h"
+namespace db {
+void VersionEdit::EncodeTo(int* dst) const {
+  PutVarint32(dst, 1);
+}
+}
+`,
+    });
+  });
+  after(() => q.dispose());
+
+  it('a free function in a namespace is callable from an out-of-line method of a class', () => {
+    const def = findSymbols(q.clast.db, 'cpp/coding.cc:PutVarint32')[0]!;
+    const edges = callersOf(q.clast.db, q.ctx.resolver, def);
+    assert.deepEqual(edges.map(e => [e.caller?.qname, e.certain]), [['db.VersionEdit.EncodeTo', true]]);
+  });
+});

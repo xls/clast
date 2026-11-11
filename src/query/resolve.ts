@@ -1164,9 +1164,13 @@ export class Resolver {
 
     const container = this.containerName(cand);
     const inContainer = parent !== null && CONTAINER_KINDS.has(parent.kind);
+    // A function directly inside a C++ namespace is a free function: callable by its bare name from any
+    // code that includes it, whatever class the caller belongs to.
+    const nsFunction = fam === 'c' && parent !== null && parent.kind === 'namespace' && cand.kind !== 'method';
     const isMember =
-      cand.kind === 'method' ||
-      (inContainer && (cand.kind === 'function' || cand.kind === 'declaration' || VALUE_KINDS.has(cand.kind)));
+      !nsFunction &&
+      (cand.kind === 'method' ||
+        (inContainer && (cand.kind === 'function' || cand.kind === 'declaration' || VALUE_KINDS.has(cand.kind))));
     // The number of arguments rules the definition out (another overload, or an unrelated method of that name).
     if (site.argc !== undefined && site.argc !== null && site.argc >= 0 && !this.arityFits(cand, site)) return null;
     // C: a static function is callable only inside its own file (or a file that includes it).
@@ -1513,7 +1517,8 @@ export class Resolver {
       else idx.byFile.set(c.file_id, [c]);
       const parent = this.parentOf(c);
       const inContainer = parent !== null && CONTAINER_KINDS.has(parent.kind);
-      const isMember = c.kind === 'method' || (inContainer && c.kind !== 'class' && c.kind !== 'struct' && c.kind !== 'interface');
+      const nsFunction = langFamily(c.lang) === 'c' && parent !== null && parent.kind === 'namespace' && c.kind !== 'method';
+      const isMember = !nsFunction && (c.kind === 'method' || (inContainer && c.kind !== 'class' && c.kind !== 'struct' && c.kind !== 'interface'));
       const container = isMember ? this.containerName(c) : null;
       if (container) {
         const list = idx.byContainer.get(container);
