@@ -1,303 +1,308 @@
-import type TreeSitter from 'web-tree-sitter';
-import type { AstNode, AstNodeType } from '../types.js';
+import type { Language, Node, Tree } from 'web-tree-sitter';
+import type { ExCall, ExHeritage, ExImport, ExSymbol, Extraction, SymbolKind } from '../types.js';
+import type { Ctx, DefOpts, LangSpec, Visitor } from './spec.js';
 
-// Node types that represent extractable symbols per language
-const FUNCTION_TYPES = new Set([
-  'function_declaration',
-  'function_definition',
-  'method_definition',
-  'method_declaration',
-  'arrow_function',
-  'function_item',           // Rust
-  'func_declaration',        // Go
-  'function_expression',
-]);
+const MAX_SIGNATURE = 240;
+const MAX_DOC = 600;
+const MAX_OCC_LINES = 40;
+const MAX_NAME = 120;
 
-const CLASS_TYPES = new Set([
-  'class_declaration',
-  'class_definition',
-  'struct_item',             // Rust
-  'struct_specifier',        // C/C++
-  'impl_item',              // Rust
-  'type_declaration',        // Go
-]);
-
-const INTERFACE_TYPES = new Set([
-  'interface_declaration',
-  'trait_item',              // Rust
-]);
-
-const IMPORT_TYPES = new Set([
-  'import_statement',
-  'import_declaration',
-  'use_declaration',         // Rust
-  'preproc_include',         // C/C++ (#include)
-]);
-
-const EXPORT_TYPES = new Set([
-  'export_statement',
-  'export_declaration',
-]);
-
-const ENUM_TYPES = new Set([
-  'enum_declaration',
-  'enum_item',               // Rust
-  'enum_specifier',          // C/C++
-]);
-
-const CALL_TYPES = new Set([
-  'call_expression',
-  'new_expression',
-  'method_invocation',       // Java
-  'invocation_expression',   // C#
-]);
-
-function classifyNodeType(treeSitterType: string): AstNodeType | null {
-  if (FUNCTION_TYPES.has(treeSitterType)) return 'function';
-  if (CLASS_TYPES.has(treeSitterType)) return 'class';
-  if (INTERFACE_TYPES.has(treeSitterType)) return 'interface';
-  if (IMPORT_TYPES.has(treeSitterType)) return 'import';
-  if (EXPORT_TYPES.has(treeSitterType)) return 'export';
-  if (ENUM_TYPES.has(treeSitterType)) return 'enum';
-  return null;
+/** A language spec bound to a loaded grammar (node types resolved to ids). */
+export interface CompiledSpec {
+  spec: LangSpec;
+  language: Language;
+  visitors: Array<Visitor | undefined>;
+  isIdent: Uint8Array;
+  isComment: Uint8Array;
+  /** Visitor / identifier node types that do not exist in the grammar. */
+  unknownTypes: string[];
 }
 
-function extractName(node: TreeSitter.SyntaxNode): string {
-  const nameNode =
-    node.childForFieldName('name') ??
-    node.childForFieldName('declarator')?.childForFieldName('name') ??
-    node.childForFieldName('declarator');
+export function compileSpec(spec: LangSpec, language: Language): CompiledSpec {
+  const count = language.nodeTypeCount;
+  const visitors: Array<Visitor | undefined> = new Array(count);
+  const isIdent = new Uint8Array(count);
+  const isComment = new Uint8Array(count);
 
-  if (nameNode) {
-    return nameNode.text;
+  const idsByName = new Map<string, number[]>();
+  for (let id = 0; id < count; id++) {
+    if (!language.nodeTypeIsNamed(id)) continue;
+    const name = language.nodeTypeForId(id);
+    if (!name) continue;
+    let list = idsByName.get(name);
+    if (!list) idsByName.set(name, (list = []));
+    list.push(id);
   }
 
-  // Arrow functions assigned to variables
-  if (node.type === 'arrow_function' && node.parent) {
-    const parentName = node.parent.childForFieldName('name');
-    if (parentName) return parentName.text;
+  const unknownTypes: string[] = [];
+  for (const [type, visitor] of Object.entries(spec.visit)) {
+    const ids = idsByName.get(type);
+    if (!ids) { unknownTypes.push(type); continue; }
+    for (const id of ids) visitors[id] = visitor;
+  }
+  for (const type of spec.identifiers) {
+    const ids = idsByName.get(type);
+    if (!ids) { unknownTypes.push(type); continue; }
+    for (const id of ids) isIdent[id] = 1;
+  }
+  const commentTypes = spec.comments ?? [...idsByName.keys()].filter(n => n.includes('comment'));
+  for (const type of commentTypes) {
+    for (const id of idsByName.get(type) ?? []) isComment[id] = 1;
   }
 
-  // Exports
-  if (node.type === 'export_statement') {
-    const decl = node.childForFieldName('declaration');
-    if (decl) return extractName(decl);
-    return '<export>';
-  }
-
-  // Imports
-  if (IMPORT_TYPES.has(node.type)) {
-    const source = node.childForFieldName('source') ?? node.childForFieldName('path');
-    if (source) return source.text.replace(/['"]/g, '');
-    return node.text.slice(0, 80);
-  }
-
-  return '<anonymous>';
+  return { spec, language, visitors, isIdent, isComment, unknownTypes };
 }
 
-function extractSignature(node: TreeSitter.SyntaxNode, maxLength: number = 200): string {
-  const text = node.text;
-  const braceIdx = text.indexOf('{');
-  const parenCloseIdx = text.indexOf(')');
-
-  let end = text.length;
-  if (braceIdx > 0) {
-    end = braceIdx;
-  } else if (parenCloseIdx > 0) {
-    end = parenCloseIdx + 1;
-  }
-
-  const sig = text.slice(0, end).trim();
-  return sig.length > maxLength ? sig.slice(0, maxLength) + '...' : sig;
+interface Scope {
+  /** Symbol index, or -1 for naming-only scopes. */
+  sym: number;
+  name: string;
+  kind: SymbolKind | null;
+  /** Whether calls inside are attributed to this symbol. */
+  callScope: boolean;
 }
 
-function extractPrecedingComment(
-  node: TreeSitter.SyntaxNode,
-  source: string
-): string | null {
-  const lines = source.split('\n');
-  const nodeLine = node.startPosition.row;
+export function cleanComment(raw: string): string {
+  let s = raw.trim();
+  // Block comments: /** ... */, /* ... */, """ ... """, =begin ... =end
+  s = s.replace(/^\/\*+!?/, '').replace(/\*+\/$/, '');
+  const lines = s.split(/\r?\n/).map(l =>
+    l
+      .replace(/^\s*(\/\/[\/!]?|#+!?|--+|\*+(?!\/)|;+)\s?/, '')
+      .replace(/\s+$/, '')
+  );
+  while (lines.length && !lines[0]!.trim()) lines.shift();
+  while (lines.length && !lines[lines.length - 1]!.trim()) lines.pop();
+  return lines.join('\n');
+}
 
-  const commentLines: string[] = [];
-  let checkLine = nodeLine - 1;
+function squash(s: string, max: number): string {
+  const t = s.replace(/\s+/g, ' ').trim();
+  return t.length > max ? t.slice(0, max - 3) + '...' : t;
+}
 
-  while (checkLine >= 0) {
-    const line = lines[checkLine]?.trim() ?? '';
+/**
+ * Walk a parsed tree and extract symbols, calls, imports, heritage and
+ * identifier occurrences according to the language spec.
+ */
+export function extract(tree: Tree, source: string, compiled: CompiledSpec): Extraction {
+  const { visitors, isIdent, isComment } = compiled;
 
-    if (
-      line.startsWith('//') ||
-      line.startsWith('#') ||
-      line.startsWith('*') ||
-      line.startsWith('/*') ||
-      line.startsWith('///') ||
-      line.startsWith('/**')
-    ) {
-      commentLines.unshift(line);
-      checkLine--;
-    } else if (line === '' && commentLines.length === 0) {
-      checkLine--;
-    } else {
-      break;
+  const symbols: ExSymbol[] = [];
+  const imports: ExImport[] = [];
+  const heritage: ExHeritage[] = [];
+  const callMap = new Map<string, ExCall>();
+  const occ = new Map<string, number[]>();
+  const scopes: Scope[] = [];
+
+  function currentCaller(): number {
+    for (let i = scopes.length - 1; i >= 0; i--) {
+      const s = scopes[i]!;
+      if (s.sym >= 0 && s.callScope) return s.sym;
     }
+    return -1;
   }
 
-  if (commentLines.length === 0) return null;
-
-  const cleaned = commentLines
-    .map(l => l.replace(/^\/\/\/?\s?|^\/\*\*?\s?|^\*\/?\s?|^#\s?/g, '').trim())
-    .filter(l => l.length > 0)
-    .join('\n');
-
-  return cleaned || null;
-}
-
-function extractPythonDocstring(node: TreeSitter.SyntaxNode): string | null {
-  const body = node.childForFieldName('body');
-  if (!body) return null;
-
-  const firstChild = body.firstChild;
-  if (!firstChild) return null;
-
-  if (
-    firstChild.type === 'expression_statement' &&
-    firstChild.firstChild?.type === 'string'
-  ) {
-    const text = firstChild.firstChild.text;
-    return text.replace(/^["']{3}|["']{3}$/g, '').trim();
+  function leadingDoc(range: Node): { doc: string; line: number } {
+    const parts: string[] = [];
+    let line = 0;
+    let nextRow = range.startPosition.row;
+    let prev = range.previousSibling;
+    while (prev && isComment[prev.typeId]) {
+      if (prev.endPosition.row < nextRow - 1) break;
+      // A comment trailing a statement on the same line documents that statement.
+      const before = prev.previousSibling;
+      if (before && before.endPosition.row === prev.startPosition.row && !isComment[before.typeId]) break;
+      parts.unshift(prev.text);
+      nextRow = prev.startPosition.row;
+      line = nextRow + 1;
+      if (parts.length >= 60) break;
+      prev = prev.previousSibling;
+    }
+    if (parts.length === 0) return { doc: '', line: 0 };
+    let doc = parts.map(cleanComment).join('\n').trim();
+    if (doc.length > MAX_DOC) doc = doc.slice(0, MAX_DOC - 3) + '...';
+    return { doc, line };
   }
 
-  return null;
-}
+  const ctx: Ctx = {
+    src: source,
 
-function extractCallName(node: TreeSitter.SyntaxNode): string | null {
-  const fn = node.childForFieldName('function') ?? node.childForFieldName('method');
-  if (!fn) {
-    const firstChild = node.firstChild;
-    if (firstChild) {
-      if (firstChild.type === 'member_expression' || firstChild.type === 'field_expression') {
-        const prop = firstChild.childForFieldName('property') ?? firstChild.childForFieldName('field');
-        return prop?.text ?? firstChild.text;
+    def(node: Node, o: DefOpts): number {
+      let name = o.name;
+      if (!name) name = '<anonymous>';
+      if (name.length > MAX_NAME) name = name.slice(0, MAX_NAME);
+      const range = o.range ?? node;
+
+      const prefix: string[] = [];
+      let parent = -1;
+      for (const s of scopes) {
+        prefix.push(s.name);
       }
-      return firstChild.text;
-    }
-    return null;
-  }
-
-  if (fn.type === 'member_expression' || fn.type === 'field_expression') {
-    const prop = fn.childForFieldName('property') ?? fn.childForFieldName('field');
-    return prop?.text ?? fn.text;
-  }
-
-  return fn.text;
-}
-
-export interface ExtractionResult {
-  nodes: AstNode[];
-  edges: Array<{ callerNodeIndex: number; calleeName: string; line: number }>;
-  comments: Array<{ nodeIndex: number; text: string; source: 'original' }>;
-}
-
-export function extractFromTree(
-  tree: TreeSitter.Tree,
-  filePath: string,
-  language: string,
-  source: string,
-  maxBodySize: number = 2000
-): ExtractionResult {
-  const nodes: AstNode[] = [];
-  const edges: Array<{ callerNodeIndex: number; calleeName: string; line: number }> = [];
-  const comments: Array<{ nodeIndex: number; text: string; source: 'original' }> = [];
-
-  const nodeIdToIndex = new Map<number, number>();
-
-  function findEnclosingFunctionIndex(node: TreeSitter.SyntaxNode): number | null {
-    let current = node.parent;
-    while (current) {
-      const type = classifyNodeType(current.type);
-      if (type === 'function') {
-        return nodeIdToIndex.get(current.id) ?? null;
+      for (let i = scopes.length - 1; i >= 0; i--) {
+        if (scopes[i]!.sym >= 0) { parent = scopes[i]!.sym; break; }
       }
-      current = current.parent;
-    }
-    return null;
-  }
+      if (o.qualifier) prefix.push(...o.qualifier.split(/::|\./).filter(Boolean));
+      const qname = prefix.length ? prefix.join('.') + '.' + name : name;
 
-  function walk(node: TreeSitter.SyntaxNode, parentIndex: number | null): void {
-    const nodeType = classifyNodeType(node.type);
-    let currentIndex = parentIndex;
+      let signature: string;
+      if (o.sig !== undefined) {
+        signature = squash(o.sig, MAX_SIGNATURE);
+      } else {
+        const body = o.body === undefined ? node.childForFieldName('body') : o.body;
+        const start = range.startIndex;
+        let end: number;
+        if (body && body.startIndex > start) {
+          end = body.startIndex;
+        } else {
+          end = range.endIndex;
+          const nl = source.indexOf('\n', start);
+          // Without a body, keep at most a few lines.
+          if (nl !== -1 && end - start > 400) end = Math.min(end, start + 400);
+        }
+        signature = squash(source.slice(start, end), MAX_SIGNATURE).replace(/\s*[{=]$/, '');
+      }
 
-    if (nodeType && nodeType !== 'import' && nodeType !== 'export') {
-      const name = extractName(node);
-      const signature = extractSignature(node);
-      const bodyText = node.text.length > maxBodySize
-        ? node.text.slice(0, maxBodySize) + '...'
-        : node.text;
+      let doc = '';
+      let docLine = 0;
+      if (o.doc !== undefined && o.doc !== null) {
+        doc = o.doc.length > MAX_DOC ? o.doc.slice(0, MAX_DOC - 3) + '...' : o.doc;
+      }
+      const lead = leadingDoc(range);
+      if (lead.line) {
+        docLine = lead.line;
+        if (!doc) doc = lead.doc;
+      }
 
-      const astNode: AstNode = {
-        filePath,
+      const index = symbols.length;
+      symbols.push({
         name,
-        type: nodeType === 'function' && parentIndex !== null ? 'method' : nodeType,
+        qname,
+        kind: o.kind,
         signature,
-        startLine: node.startPosition.row + 1,
-        endLine: node.endPosition.row + 1,
-        startCol: node.startPosition.column,
-        endCol: node.endPosition.column,
-        parentId: null,
-        language,
-        bodyText,
-      };
-
-      currentIndex = nodes.length;
-      nodes.push(astNode);
-      nodeIdToIndex.set(node.id, currentIndex);
-
-      const comment = language === 'python'
-        ? (extractPythonDocstring(node) ?? extractPrecedingComment(node, source))
-        : extractPrecedingComment(node, source);
-
-      if (comment) {
-        comments.push({ nodeIndex: currentIndex, text: comment, source: 'original' });
-      }
-    } else if (nodeType === 'import' || nodeType === 'export') {
-      const name = extractName(node);
-      nodes.push({
-        filePath,
-        name,
-        type: nodeType,
-        signature: node.text.slice(0, 200),
-        startLine: node.startPosition.row + 1,
-        endLine: node.endPosition.row + 1,
-        startCol: node.startPosition.column,
-        endCol: node.endPosition.column,
-        parentId: null,
-        language,
-        bodyText: '',
+        doc,
+        startLine: range.startPosition.row + 1,
+        endLine: range.endPosition.row + 1,
+        startCol: range.startPosition.column,
+        docLine,
+        parent,
+        exported: o.exported ?? false,
       });
+      if (o.scope !== false) scopes.push({ sym: index, name, kind: o.kind, callScope: true });
+      return index;
+    },
+
+    scope(name: string): void {
+      if (!name) return;
+      scopes.push({ sym: -1, name, kind: null, callScope: false });
+    },
+
+    call(name, node, receiver = null): void {
+      if (!name || name.length > MAX_NAME) return;
+      if (!/^[\p{L}_$~][\p{L}\p{N}_$!?]*$/u.test(name)) return;
+      const caller = currentCaller();
+      const key = caller + '\0' + name;
+      const existing = callMap.get(key);
+      if (existing) {
+        existing.count++;
+        if (!existing.receiver && receiver) existing.receiver = receiver;
+        return;
+      }
+      callMap.set(key, { caller, name, line: node.startPosition.row + 1, receiver, count: 1 });
+    },
+
+    imp(src, node, names = []): void {
+      if (!src) return;
+      imports.push({ source: src.slice(0, 300), names: names.slice(0, 50), line: node.startPosition.row + 1 });
+    },
+
+    inherit(sym, name, kind = 'extends'): void {
+      if (!name || sym < 0) return;
+      const clean = name.trim();
+      if (!clean || clean.length > MAX_NAME) return;
+      heritage.push({ symbol: sym, name: clean, kind });
+    },
+
+    parentKind(): SymbolKind | null {
+      for (let i = scopes.length - 1; i >= 0; i--) {
+        if (scopes[i]!.sym >= 0) return scopes[i]!.kind;
+      }
+      return null;
+    },
+
+    inCallable(): boolean {
+      for (const s of scopes) {
+        if (s.kind === 'function' || s.kind === 'method') return true;
+      }
+      return false;
+    },
+
+    depth(): number {
+      let d = 0;
+      for (const s of scopes) if (s.sym >= 0) d++;
+      return d;
+    },
+  };
+
+  const cursor = tree.walk();
+  let hadError = tree.rootNode.hasError;
+
+  function visit(): void {
+    const typeId = cursor.nodeTypeId;
+    if (isIdent[typeId]) {
+      const name = source.slice(cursor.startIndex, cursor.endIndex);
+      if (name.length >= 2 && name.length <= MAX_NAME) {
+        const line = cursor.startPosition.row + 1;
+        const lines = occ.get(name);
+        if (!lines) occ.set(name, [line]);
+        else if (lines.length < MAX_OCC_LINES && lines[lines.length - 1] !== line) lines.push(line);
+      }
+      // Identifiers are leaves in every supported grammar, but a few grammars
+      // wrap them (e.g. PHP `name`); fall through to children only if any.
     }
 
-    // Extract call expressions
-    if (CALL_TYPES.has(node.type)) {
-      const calleeName = extractCallName(node);
-      const enclosingFunc = findEnclosingFunctionIndex(node);
-      if (calleeName && enclosingFunc !== null) {
-        edges.push({
-          callerNodeIndex: enclosingFunc,
-          calleeName,
-          line: node.startPosition.row + 1,
-        });
+    const before = scopes.length;
+    const visitor = visitors[typeId];
+    let skip = false;
+    if (visitor) {
+      try {
+        if (visitor(cursor.currentNode, ctx) === 'skip') skip = true;
+      } catch {
+        // A visitor bug must never take down indexing of the whole file.
+        hadError = true;
       }
     }
 
-    // Recurse into children
-    for (let i = 0; i < node.childCount; i++) {
-      const child = node.child(i);
-      if (child) {
-        walk(child, currentIndex);
-      }
+    if (!skip && cursor.gotoFirstChild()) {
+      do {
+        visit();
+      } while (cursor.gotoNextSibling());
+      cursor.gotoParent();
     }
+    scopes.length = before;
   }
 
-  walk(tree.rootNode, null);
+  try {
+    visit();
+  } catch (err) {
+    // Typically a stack overflow on pathological (generated) files: keep what we have.
+    if (!(err instanceof RangeError)) throw err;
+    hadError = true;
+  } finally {
+    cursor.delete();
+  }
 
-  return { nodes, edges, comments };
+  let lineCount = 1;
+  for (let i = source.indexOf('\n'); i !== -1; i = source.indexOf('\n', i + 1)) lineCount++;
+
+  return {
+    lang: compiled.spec.id,
+    lineCount,
+    symbols,
+    calls: [...callMap.values()],
+    imports,
+    heritage,
+    occ: [...occ.entries()].map(([name, lines]) => [name, lines.join(',')] as [string, string]),
+    hadError,
+  };
 }
