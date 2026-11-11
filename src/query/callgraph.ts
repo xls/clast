@@ -55,13 +55,15 @@ const MAX_WEAK = 1500;
  * out-of-line C++ method rather than the in-class declaration.
  */
 export function representative(db: ClastDb, resolver: Resolver, sym: SymbolRow): SymbolRow {
-  if (sym.kind !== 'declaration' && sym.end_line - sym.start_line >= 2) return sym;
+  // Only C-family code separates declarations from definitions across files.
+  if (langFamily(sym.lang) !== 'c' && sym.kind !== 'declaration') return sym;
   let best = sym;
   let bestScore = (sym.kind === 'declaration' ? 0 : 1000) + (sym.end_line - sym.start_line);
   for (const id of resolver.familyOf(sym)) {
     if (id === sym.id) continue;
     const other = db.symbolById(id);
-    if (!other || other.qname !== sym.qname) continue;
+    // The same member in another file (header vs source); overloads in the same file are different functions.
+    if (!other || other.qname !== sym.qname || (other.file_id === sym.file_id && sym.kind !== 'declaration')) continue;
     const score = (other.kind === 'declaration' ? 0 : 1000) + (other.end_line - other.start_line);
     if (score > bestScore) {
       best = other;

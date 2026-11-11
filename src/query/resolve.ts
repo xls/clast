@@ -745,12 +745,37 @@ export class Resolver {
       // .get(), .add(), .count(): only the receiver's name can tell a project method from a builtin.
       return receiverMatches ? e : 0;
     }
+    // `connection_handler.establish_connection`: the receiver names ConnectionHandler, so a same-named
+    // method on some other class (even the caller's own) is not the target.
+    if (!receiverMatches && recv && !GENERIC_RECEIVERS.has(recv.toLowerCase()) && this.receiverNamesOther(name, recv, container)) {
+      return 0;
+    }
     if (this.familyCount(name) === 1) {
       // Defined once in the whole project. A multi-word name (`complete_inflight`, `pollElapsed`)
       // is then almost certainly this method; a single word (`changed`, `close`) may be a library's.
       e += splitIdentifier(name).length >= 2 && name.length >= 8 ? 46 : 20;
     }
     return e;
+  }
+
+  private receiverOtherCache = new Map<string, Set<string>>();
+
+  /** Does the receiver's name match the class of a different definition of `name`? */
+  private receiverNamesOther(name: string, recv: string, container: string | null): boolean {
+    const key = name + '\0' + recv;
+    let matches = this.receiverOtherCache.get(key);
+    if (!matches) {
+      matches = new Set<string>();
+      const cands = this.candidates(name);
+      if (cands.length <= 400) {
+        for (const c of cands) {
+          const cn = this.containerName(c);
+          if (cn && looselyNamed(recv, cn)) matches.add(cn);
+        }
+      }
+      this.receiverOtherCache.set(key, matches);
+    }
+    return matches.size > 0 && (container === null || !matches.has(container));
   }
 
   /** Score how plausible it is that a call at `site` targets `cand`; null = impossible. */
@@ -859,7 +884,9 @@ export class Resolver {
         return null;
       }
       if (site.lang === 'go') return dirOf(cand.path) === dirOf(site.path) ? 78 + tie : null;
-      if (this.importsOf(site.fileId).has(cand.file_id)) return 64 + tie;
+      // Same enclosing namespace / module as the caller (Ruby modules, C++ / C# namespaces, Rust mods).
+      const ns = site.caller ? namespaceAffinity(site.caller.qname, cand.qname) : 0;
+      if (this.importsOf(site.fileId).has(cand.file_id)) return 64 + ns + tie;
       if (fam === 'c') {
         // Headers include headers: one transitive hop still counts as "included".
         for (const f of this.importsOf(site.fileId)) {
@@ -872,9 +899,9 @@ export class Resolver {
       while (common < a.length - 1 && common < b.length - 1 && a[common] === b[common]) common++;
       if (common === a.length - 1 && common === b.length - 1) {
         // Same directory. In package-per-directory languages that is the same package: no import needed.
-        return (SAME_DIR_PACKAGE.has(site.lang) ? 66 : 46) + tie;
+        return (SAME_DIR_PACKAGE.has(site.lang) ? 66 : 46) + ns + tie;
       }
-      return 18 + Math.min(12, common * 3) + tie;
+      return 18 + Math.min(12, common * 3) + ns * 2 + tie;
     }
 
     // --- this.foo() / self.foo() ---------------------------------------------
@@ -1148,8 +1175,9 @@ export class Resolver {
     const first = recv.replace(/^[$@&*]+/, '').split(/\.|::|->|\\/)[0] ?? recv;
     if (BUILTIN_RECEIVERS[fam]?.has(first) && !this.isProjectType(first)) return false;
     if (EXTERNAL_IF_UNRESOLVED.has(fam) && this.importedNames(site.fileId).names.get(first) === null) return false;
-    // A capitalised receiver that is a known type is a static call: not opaque.
-    if (/^[A-Z]/.test(first) && this.isProjectType(first)) return false;
+    // A capitalised receiver is a type (static call): a project type is handled by the
+    // resolver, anything else is an external class. Neither is "unknown".
+    if (/^[A-Z]/.test(first) && !first.includes('_')) return false;
     return true;
   }
 
@@ -1312,6 +1340,15 @@ function looselyNamedUncached(receiver: string, container: string): boolean {
   // Initialism: `sp` -> SourceParser.
   if (r.length >= 2 && r === cw.map(w => w[0]).join('')) return true;
   return false;
+}
+
+/** Points for sharing leading namespace segments: `A.B.x` and `A.B.y` -> 12, `A.x` and `A.y` -> 6. */
+function namespaceAffinity(callerQname: string, candQname: string): number {
+  const a = callerQname.split('.');
+  const b = candQname.split('.');
+  let common = 0;
+  while (common < a.length - 1 && common < b.length - 1 && a[common] === b[common]) common++;
+  return Math.min(3, common) * 6;
 }
 
 /** Receiver names the module/package a function lives in. */

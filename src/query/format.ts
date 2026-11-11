@@ -41,6 +41,15 @@ export function isTestPath(path: string): boolean {
   return hit;
 }
 
+/**
+ * Test code by path, or by enclosing symbol for languages that keep unit tests
+ * next to the code (Rust `mod tests`).
+ */
+export function isTestSite(path: string, callerQname: string | null | undefined): boolean {
+  if (isTestPath(path)) return true;
+  return !!callerQname && path.endsWith('.rs') && /(^|\.)tests?(\.|$)/.test(callerQname);
+}
+
 const GENERATED_RE = /(^|\/)(generated|gen|third_party|thirdparty|external|deps|vendor)(\/|$)|\.(pb|gen|generated)\.[a-z]+$|\.d\.ts$/i;
 
 const vendoredPathCache = new Map<string, boolean>();

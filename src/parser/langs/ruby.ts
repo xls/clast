@@ -107,7 +107,8 @@ function firstLine(ctx: Ctx, node: Node, end = node.endIndex): string {
  * `module ClassMethods; include Foo::ClassMethods`).
  */
 function inherit(ctx: Ctx, sym: number, own: string, name: string | null, kind: 'extends' | 'implements'): void {
-  if (!name || sym < 0 || name === own || name.endsWith('::' + own)) return;
+  // `module Callbacks; include ActiveSupport::Callbacks` is a real mixin: only the bare own name is skipped.
+  if (!name || sym < 0 || name === own) return;
   const key = sym + ':' + name;
   if (heritageSeen.has(key)) return;
   heritageSeen.add(key);

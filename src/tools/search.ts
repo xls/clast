@@ -2,7 +2,7 @@ import { CALLABLE_KINDS, CONTAINER_KINDS, SYMBOL_KINDS, type SymbolRow } from '.
 import {
   buildGraph, calleesOf, callersOf, externalCallSites, groupCallers, type CallerEdge, type GraphNode,
 } from '../query/callgraph.js';
-import { firstLine, isTestPath, loc, plural, symLine } from '../query/format.js';
+import { firstLine, isTestPath, isTestSite, loc, plural, symLine } from '../query/format.js';
 import {
   directSubtypes, directSupertypes, structuralImplementers, structuralInterfaces,
 } from '../query/hierarchy.js';
@@ -109,8 +109,8 @@ function docLines(doc: string, max: number): string[] {
 function callerLines(ctx: ToolContext, sym: SymbolRow, edges: CallerEdge[], out: string[]): void {
   const groups = groupCallers(edges);
   if (groups.length === 0) return;
-  const prod = groups.filter(g => !isTestPath(g.path));
-  const tests = groups.filter(g => isTestPath(g.path));
+  const prod = groups.filter(g => !isTestSite(g.path, g.caller?.qname));
+  const tests = groups.filter(g => isTestSite(g.path, g.caller?.qname));
   const certain = prod.filter(g => g.certain);
   const possible = prod.filter(g => !g.certain && !g.weak);
   const unknown = prod.filter(g => g.weak);
@@ -509,7 +509,11 @@ export async function callGraph(ctx: ToolContext, args: CallGraphArgs): Promise<
     const sites = groupCallers(externalCallSites(ctx.db, bare)).filter(
       g => (!dropTests || !isTestPath(g.path)) && (!pathFilter || pathFilter(g.path))
     );
-    if (sites.length === 0 || direction === 'callees') return note + notFound(ctx, args.name, args.path).join('\n');
+    // "Foo.bar" where bar exists but not on Foo (an extension method, a typo in the qualifier): not external.
+    const definedElsewhere = ctx.db.symbolsByName(bare).length > 0;
+    if (sites.length === 0 || direction === 'callees' || definedElsewhere) {
+      return note + notFound(ctx, args.name, args.path).join('\n');
+    }
     const out = [
       `"${bare}" is not defined in this project (external or dynamic). Call sites by name (${plural(sites.length, 'caller')}):`,
     ];
@@ -535,8 +539,8 @@ export async function callGraph(ctx: ToolContext, args: CallGraphArgs): Promise<
   if (direction !== 'callees') {
     const graph = buildGraph(ctx.db, ctx.resolver, sym, 'callers', opts);
     const all = graph.children;
-    const tests = all.filter(c => isTestPath(c.path));
-    const prod = all.filter(c => !isTestPath(c.path));
+    const tests = all.filter(c => isTestSite(c.path, c.sym?.qname));
+    const prod = all.filter(c => !isTestSite(c.path, c.sym?.qname));
     const certain = prod.filter(c => c.certain);
     const possible = prod.filter(c => !c.certain && !c.weak);
     const unknown = prod.filter(c => c.weak);
