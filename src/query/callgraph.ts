@@ -191,6 +191,10 @@ export function callersOf(
     if (family.has(top.sym.id)) {
       // Resolved to the target or to its interface/override/overload twin.
       certain = res.confident;
+      // Bound to an override in a subclass: that call does not run the target.
+      if (top.sym.id !== target.id && resolver.overriddenBelow(target, top.sym)) {
+        if (certain) continue;
+      }
     } else {
       const mine = res.candidates.find(c => family.has(c.sym.id));
       // Keep near-ties as uncertain edges; drop sites that clearly mean another definition.

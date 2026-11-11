@@ -9,7 +9,7 @@ import { ftsWords, initials, splitIdentifier } from '../query/words.js';
  * Bump whenever the schema or the extraction output changes shape. The index
  * is a cache: a version mismatch simply drops and rebuilds it.
  */
-export const SCHEMA_VERSION = 12;
+export const SCHEMA_VERSION = 13;
 
 /** Kinds that get a full-text row (concept search). Others are found by name. */
 const FTS_KINDS = new Set(['function', 'method', 'class', 'interface', 'struct', 'trait', 'enum', 'type', 'namespace', 'macro']);
@@ -121,7 +121,8 @@ const SCHEMA = `
     file_id INTEGER NOT NULL,
     name TEXT NOT NULL,
     kind TEXT NOT NULL,
-    qualifier TEXT
+    qualifier TEXT,
+    arity INTEGER NOT NULL DEFAULT 0
   );
 
   CREATE TABLE field_types (
@@ -497,10 +498,10 @@ export class ClastDb {
       insertImport.run(fileId, im.source, im.names.join(','), im.line);
     }
 
-    const insertHeritage = this.stmt(`INSERT INTO heritage (symbol_id, file_id, name, kind, qualifier) VALUES (?, ?, ?, ?, ?)`);
+    const insertHeritage = this.stmt(`INSERT INTO heritage (symbol_id, file_id, name, kind, qualifier, arity) VALUES (?, ?, ?, ?, ?, ?)`);
     for (const h of ex.heritage) {
       const sid = ids[h.symbol];
-      if (sid !== undefined) insertHeritage.run(sid, fileId, h.name, h.kind, h.qualifier);
+      if (sid !== undefined) insertHeritage.run(sid, fileId, h.name, h.kind, h.qualifier, h.arity ?? 0);
     }
 
     const insertFieldType = this.stmt(`INSERT INTO field_types (container, field, type, file_id) VALUES (?, ?, ?, ?)`);

@@ -157,6 +157,7 @@ function valueReferences(
     `SELECT o.file_id, f.path, o.lines FROM occ o JOIN files f ON f.id = o.file_id WHERE o.name_id = ? LIMIT 400`,
     nameId
   );
+  let nearest = false;
   if (accept) rows = rows.filter(r => accept(r.path));
   if (rows.length > 40) {
     // A widely used name: only the defining file and the files importing it can mean this symbol.
@@ -170,9 +171,23 @@ function valueReferences(
       `SELECT o.file_id, f.path, o.lines FROM occ o JOIN files f ON f.id = o.file_id WHERE o.name_id = ?`, nameId
     ).filter(r => visible.has(r.file_id));
     const kept = accept ? narrowed.filter(r => accept(r.path)) : narrowed;
-    if (kept.length === 0 || kept.length > 40) return [];
-    rows.length = 0;
-    rows.push(...kept);
+    if (kept.length > 40) return [];
+    if (!kept.some(r => r.file_id !== sym.file_id)) {
+      // No file-level imports to narrow by (C# / Java namespaces, Ruby autoload): show the nearest uses.
+      const home = sym.path.split('/');
+      const near = (p: string): number => {
+        const segs = p.split('/');
+        let n = 0;
+        while (n < segs.length - 1 && n < home.length - 1 && segs[n] === home[n]) n++;
+        return n;
+      };
+      rows.sort((a, b) => Number(isTestPath(a.path)) - Number(isTestPath(b.path)) || near(b.path) - near(a.path) || a.path.localeCompare(b.path));
+      rows.length = Math.min(rows.length, 40);
+      nearest = true;
+    } else {
+      rows.length = 0;
+      rows.push(...kept);
+    }
   }
   // Every line that calls *something* with this name is a call, whichever definition it resolves to.
   const callSites = new Set(callers.map(c => c.path + ':' + c.line));
@@ -186,7 +201,7 @@ function valueReferences(
   const out: string[] = [];
   const seen = new Set<string>();
   const callPattern = new RegExp('\\b' + sym.name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '\\s*(<[^>]*>)?[!?]?\\(');
-  rows.sort((a, b) => Number(isTestPath(a.path)) - Number(isTestPath(b.path)) || a.path.localeCompare(b.path));
+  if (!nearest) rows.sort((a, b) => Number(isTestPath(a.path)) - Number(isTestPath(b.path)) || a.path.localeCompare(b.path));
   for (const r of rows) {
     for (const n of r.lines.split(',').map(Number)) {
       const key = r.path + ':' + n;
@@ -205,7 +220,9 @@ function valueReferences(
       if (out.length < max) out.push(`  ${who}  ${key}  ${text}`);
     }
   }
-  if (seen.size > out.length) out.push(`  ... ${seen.size - out.length} more (clast_references ${sym.name})`);
+  if (seen.size > out.length || nearest) {
+    out.push(`  ... ${nearest ? 'more' : seen.size - out.length + ' more'} (clast_references ${sym.name}${nearest ? ' lists every use; nearest shown' : ''})`);
+  }
   return out;
 }
 
@@ -292,7 +309,7 @@ async function describe(ctx: ToolContext, sym: SymbolRow, args: ContextArgs, ove
       .map(id => ctx.db.symbolById(id))
       .filter((s): s is SymbolRow => !!s && !(s.file_id === sym.file_id && s.qname === sym.qname));
     if (family.length) {
-      out.push(`same method on related types (${family.length}; callers are shared):`);
+      out.push(`same method on related types (${family.length}; calls through a supertype or interface count as callers):`);
       for (const f of family.slice(0, 6)) out.push(`  ${f.qname}  ${loc(f)}`);
       if (family.length > 6) out.push(`  ... ${family.length - 6} more (clast_hierarchy ${sym.qname})`);
     }
@@ -645,6 +662,12 @@ export async function hierarchy(ctx: ToolContext, args: HierarchyArgs): Promise<
   // A bare type name means the type, not its constructors or same-named members.
   const types = matches.filter(m => CONTAINER_KINDS.has(m.kind) || m.kind === 'type');
   if (types.length && parseSymbolRef(args.name).container.length === 0) matches = types;
+  // A C# static class has no place in a hierarchy: prefer a same-named class that can.
+  const isStatic = (s: SymbolRow): boolean => s.lang === 'csharp' && /\bstatic\s+(partial\s+)?class\b/.test(s.signature);
+  if (matches.length > 1 && isStatic(matches[0]!)) {
+    const other = matches.findIndex(m => !isStatic(m));
+    if (other > 0) matches = [matches[other]!, ...matches.filter((_, i) => i !== other)];
+  }
   const amb = disambiguate(ctx, args.name, args.path, matches);
   if (amb.stop) return note + amb.lines.join('\n');
   const sym = matches[0]!;

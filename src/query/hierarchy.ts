@@ -2,7 +2,18 @@ import type { ClastDb } from '../db/index.js';
 import { SYMBOL_COLUMNS, SYMBOL_FROM } from '../db/index.js';
 import { CONTAINER_KINDS, type SymbolRow } from '../types.js';
 import { isTestPath } from './format.js';
-import type { Resolver } from './resolve.js';
+import { genericArity } from '../parser/spec.js';
+import { langFamily, type Resolver } from './resolve.js';
+
+/** Type parameters a type is declared with: `class ActionResult<TValue>` -> 1. */
+function declaredArity(sym: SymbolRow): number {
+  const at = sym.signature.search(new RegExp('\\b' + sym.name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '\\s*<'));
+  return at === -1 ? 0 : genericArity(sym.signature.slice(at));
+}
+
+const isPartial = (s: SymbolRow): boolean => /\bpartial\b/.test(s.signature);
+/** C# static classes cannot be inherited from. */
+const isStaticClass = (s: SymbolRow): boolean => s.lang === 'csharp' && /\bstatic\s+(partial\s+)?class\b/.test(s.signature);
 
 export interface TypeEdge {
   sym: SymbolRow;
@@ -50,7 +61,7 @@ function qualifierFits(qualifier: string, cand: SymbolRow, lang: string, strict 
 function lexicalType(db: ClastDb, from: SymbolRow, qualifier: string | null, name: string): SymbolRow | null {
   const cands = db
     .symbolsByName(name)
-    .filter(s => (CONTAINER_KINDS.has(s.kind) || s.kind === 'type') && s.id !== from.id && s.lang === from.lang);
+    .filter(s => (CONTAINER_KINDS.has(s.kind) || s.kind === 'type') && s.id !== from.id && s.lang === from.lang && !isStaticClass(s));
   if (cands.length === 0) return null;
   const parts = from.qname.split('.');
   const tail = (qualifier ? qualifier.replace(/::|\\/g, '.') + '.' : '') + name;
@@ -68,8 +79,10 @@ function lexicalType(db: ClastDb, from: SymbolRow, qualifier: string | null, nam
  * subtype's file (imports, same file, proximity) back to `sym`.
  */
 export function directSubtypes(db: ClastDb, resolver: Resolver, sym: SymbolRow): TypeEdge[] {
-  type Row = SymbolRow & { hkind: string; hqual: string | null };
-  const select = `SELECT ${SYMBOL_COLUMNS}, h.kind AS hkind, h.qualifier AS hqual FROM heritage h
+  if (isStaticClass(sym)) return [];
+  type Row = SymbolRow & { hkind: string; hqual: string | null; harity: number };
+  const symArity = sym.lang === 'csharp' ? declaredArity(sym) : -1;
+  const select = `SELECT ${SYMBOL_COLUMNS}, h.kind AS hkind, h.qualifier AS hqual, h.arity AS harity FROM heritage h
      JOIN symbols s ON s.id = h.symbol_id JOIN files f ON f.id = s.file_id`;
   const rows = db.all<Row>(`${select} WHERE h.name = ? LIMIT 5000`, sym.name);
   const sameName = db.symbolsByName(sym.name).filter(s => CONTAINER_KINDS.has(s.kind) || s.kind === 'type');
@@ -89,6 +102,10 @@ export function directSubtypes(db: ClastDb, resolver: Resolver, sym: SymbolRow):
   const symContainer = qparts.length >= 2 ? qparts[qparts.length - 2]! : null;
   for (const row of rows) {
     if (row.id === sym.id || seen.has(row.id)) continue;
+    // A C++ class does not implement a C# interface of the same name.
+    if (langFamily(row.lang) !== langFamily(sym.lang)) continue;
+    // C#: `Foo` and `Foo<T>` are different types.
+    if (symArity !== -1 && row.harity !== symArity) continue;
     let certain = true;
     const lex = row.lang === 'ruby' ? lexicalType(db, row, row.hqual, sym.name) : null;
     if (lex) {
@@ -106,11 +123,15 @@ export function directSubtypes(db: ClastDb, resolver: Resolver, sym: SymbolRow):
         0,
         true
       );
-      const top = res.candidates[0];
+      // A type does not extend itself (`class Foo<T> : Foo`), and in C# the arity must match.
+      const cands = res.candidates.filter(
+        c => c.sym.id !== row.id && (symArity === -1 || declaredArity(c.sym) === row.harity) && !isStaticClass(c.sym)
+      );
+      const top = cands[0];
       if (!top) {
         certain = false;
       } else if (top.sym.id !== sym.id) {
-        const mine = res.candidates.find(c => c.sym.id === sym.id);
+        const mine = cands.find(c => c.sym.id === sym.id);
         // The heritage name clearly refers to another definition of the same name.
         if (!mine || top.score - mine.score > 10) continue;
         certain = false;
@@ -134,15 +155,26 @@ export function directSubtypes(db: ClastDb, resolver: Resolver, sym: SymbolRow):
 
 /** Declared supertypes of `sym`, resolved to project symbols where possible. */
 export function directSupertypes(db: ClastDb, resolver: Resolver, sym: SymbolRow): SuperEdge[] {
-  const rows = db.all<{ name: string; kind: string; qualifier: string | null }>(
-    `SELECT name, kind, qualifier FROM heritage WHERE symbol_id = ?`, sym.id
+  // C# partial classes: the base list may be on any of the parts.
+  let ids = [sym.id];
+  if (sym.lang === 'csharp' && isPartial(sym)) {
+    const dir = sym.path.slice(0, sym.path.lastIndexOf('/') + 1);
+    ids = db
+      .symbolsByName(sym.name)
+      .filter(s => s.qname === sym.qname && s.kind === sym.kind && s.lang === sym.lang && isPartial(s) && s.path.startsWith(dir))
+      .map(s => s.id);
+    if (!ids.includes(sym.id)) ids.push(sym.id);
+  }
+  const rows = db.all<{ name: string; kind: string; qualifier: string | null; arity: number }>(
+    `SELECT name, kind, qualifier, arity FROM heritage WHERE symbol_id IN (${ids.map(() => '?').join(',')})`, ...ids
   );
   const out: SuperEdge[] = [];
   const seen = new Set<string>();
   for (const row of rows) {
     if (seen.has(row.name)) continue;
     seen.add(row.name);
-    const isType = (s: SymbolRow): boolean => (CONTAINER_KINDS.has(s.kind) || s.kind === 'type') && s.id !== sym.id;
+    const isType = (s: SymbolRow): boolean =>
+      (CONTAINER_KINDS.has(s.kind) || s.kind === 'type') && s.id !== sym.id && !isStaticClass(s);
     let res = resolver.resolve(
       row.name,
       { fileId: sym.file_id, path: sym.path, lang: sym.lang, receiver: row.qualifier, caller: sym },
@@ -171,6 +203,12 @@ export function directSupertypes(db: ClastDb, resolver: Resolver, sym: SymbolRow
     if (target && row.qualifier && !qualifierFits(row.qualifier, target.sym, sym.lang)) {
       const better = db.symbolsByName(row.name).find(s => isType(s) && s.lang === sym.lang && qualifierFits(row.qualifier!, s, sym.lang, true));
       target = better ? { sym: better, score: 90 } : undefined;
+    }
+    if (target && sym.lang === 'csharp' && declaredArity(target.sym) !== row.arity) {
+      // `: ActionResult` is not `ActionResult<TValue>`.
+      const fit = db.symbolsByName(row.name).filter(s => isType(s) && s.lang === 'csharp' && declaredArity(s) === row.arity);
+      const best = fit.find(s => !isTestPath(s.path)) ?? fit[0];
+      target = best ? { sym: best, score: 90 } : undefined;
     }
     // PHP traits are recorded as 'implements'; say what they are.
     const kind = target && target.sym.kind === 'trait' && sym.lang === 'php' ? 'uses' : row.kind;

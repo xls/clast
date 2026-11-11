@@ -198,6 +198,11 @@ export function otherDefinitions(
     // Interface declarations, overrides and implementations of the chosen member are not rivals.
     if (family && family.has(s.id)) continue;
     if (s.file_id === chosen.file_id && s.qname === chosen.qname) overloads++;
+    // The parts of a C# partial class are one class.
+    else if (
+      s.qname === chosen.qname && s.kind === chosen.kind && s.lang === 'csharp' &&
+      /\bpartial\b/.test(s.signature) && /\bpartial\b/.test(chosen.signature)
+    ) continue;
     // A C / C++ prototype and its definition are one function, not two candidates.
     else if (s.qname === chosen.qname && langFamily(s.lang) === 'c' && langFamily(chosen.lang) === 'c') continue;
     else others.push(s);
@@ -796,6 +801,23 @@ export class Resolver {
     return fam;
   }
 
+  /**
+   * True when `other` overrides `target` in a subtype and `target` has a body of its own:
+   * a call bound to the override never runs `target` (the reverse is not true: a call bound
+   * to the base method may dispatch to the override).
+   */
+  overriddenBelow(target: SymbolRow, other: SymbolRow): boolean {
+    if (other.id === target.id || other.qname === target.qname) return false;
+    const tc = this.containerName(target);
+    const oc = this.containerName(other);
+    if (!tc || !oc || tc === oc) return false;
+    const parent = this.parentOf(target);
+    if (!parent || (parent.kind !== 'class' && parent.kind !== 'struct')) return false;
+    if (target.kind === 'declaration' || /\babstract\b/.test(target.signature)) return false;
+    const rel = this.relatedTo(tc);
+    return rel.desc.has(oc) && !rel.anc.has(oc);
+  }
+
   /** How many genuinely different definitions (families) share this name. */
   private familyCount(name: string): number {
     let n = this.familyCountCache.get(name);
@@ -971,7 +993,9 @@ export class Resolver {
       if (!OPEN_TYPES.has(site.lang)) return null;
       if (!isMember) return null;
       const e = this.memberEvidence(name, cand, container, site, null);
-      return e >= 30 ? Math.min(50, 10 + e) + tie : null;
+      // An extension method with a distinctive name that the project defines once (`app.UseRouting()`).
+      const unique = e >= 46 && splitIdentifier(name).length >= 2 && name.length >= 8 && this.familyCount(name) === 1;
+      return e >= 30 ? Math.min(unique ? 60 : 50, 10 + e) + tie : null;
     }
 
     // --- bare call: foo() ---------------------------------------------------

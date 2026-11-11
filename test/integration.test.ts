@@ -178,7 +178,7 @@ describe('tools', () => {
 
   it('get_context links a method to its interface / override twins', async () => {
     const text = await getContext(p.ctx, { name: 'Circle.area' });
-    assert.match(text, /same method on related types \(2; callers are shared\)/);
+    assert.match(text, /same method on related types \(2; calls through a supertype or interface count as callers\)/);
     assert.match(text, /Shape\.area {2}src\/shapes\/shape\.ts:2/);
     assert.match(text, /callers \(1 resolved\):\n {2}BaseShape\.describe/);
   });

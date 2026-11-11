@@ -34,7 +34,8 @@ const testPathCache = new Map<string, boolean>();
 export function isTestPath(path: string): boolean {
   let hit = testPathCache.get(path);
   if (hit === undefined) {
-    hit = TEST_PATH_RE.test(path);
+    // Also .NET / Java style project directories: FunctionalTests/, Foo.Tests/, UnitTest/ (case matters here).
+    hit = TEST_PATH_RE.test(path) || /(^|\/)[^/]*[a-z.](Tests?|Specs)\//.test(path);
     if (testPathCache.size > 100_000) testPathCache.clear();
     testPathCache.set(path, hit);
   }

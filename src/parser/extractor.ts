@@ -1,6 +1,6 @@
 import type { Language, Node, Tree } from 'web-tree-sitter';
 import { CONTAINER_KINDS, type ExCall, type ExHeritage, type ExImport, type ExSymbol, type Extraction, type SymbolKind } from '../types.js';
-import { typeName, type Ctx, type DefOpts, type LangSpec, type Visitor } from './spec.js';
+import { genericArity, typeName, type Ctx, type DefOpts, type LangSpec, type Visitor } from './spec.js';
 import { returnTypeOf } from './returns.js';
 
 const MAX_SIGNATURE = 240;
@@ -411,9 +411,10 @@ export function extract(tree: Tree, source: string, compiled: CompiledSpec): Ext
       imports.push({ source: src.slice(0, 300), names: names.slice(0, 50), line: node.startPosition.row + 1 });
     },
 
-    inherit(sym, name, kind = 'extends'): void {
+    inherit(sym, name, kind = 'extends', arity?: number): void {
       if (!name || sym < 0) return;
       const clean = name.trim().replace(/<.*$/s, '');
+      if (arity === undefined) arity = genericArity(name);
       if (!clean || clean.length > MAX_NAME) return;
       // `pkg.mod.Base` / `ns::Base`: index by the bare name, keep the qualifier for resolution.
       const parts = clean.split(/\.|::|\\/).filter(Boolean);
@@ -421,7 +422,7 @@ export function extract(tree: Tree, source: string, compiled: CompiledSpec): Ext
       if (!bare) return;
       const qualifier = parts.length ? parts[parts.length - 1]! : null;
       if (heritage.some(h => h.symbol === sym && h.name === bare)) return;
-      heritage.push({ symbol: sym, name: bare, qualifier, kind });
+      heritage.push({ symbol: sym, name: bare, qualifier, kind, arity });
     },
 
     parentKind(): SymbolKind | null {

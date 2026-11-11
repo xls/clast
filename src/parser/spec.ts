@@ -68,7 +68,7 @@ export interface Ctx {
    */
   imp(source: string | null | undefined, node: Node, names?: string[]): void;
   /** Record that symbol `sym` extends/implements `name`. */
-  inherit(sym: number, name: string | null | undefined, kind?: 'extends' | 'implements'): void;
+  inherit(sym: number, name: string | null | undefined, kind?: 'extends' | 'implements', arity?: number): void;
   /**
    * Record an identifier occurrence under a different name than the source
    * text (e.g. C# `[Authorize]` also references `AuthorizeAttribute`).
@@ -218,6 +218,22 @@ const TYPE_WRAPPERS = new Set([
  * `Foo | null` -> Foo, `const Foo&` -> Foo. Collections and primitives
  * are not class types and yield null.
  */
+/** Number of type arguments in `Name<A, B<C>>` (0 when not generic). */
+export function genericArity(text: string): number {
+  const lt = text.indexOf('<');
+  if (lt === -1) return 0;
+  let depth = 0;
+  let n = 1;
+  for (let i = lt; i < text.length; i++) {
+    const ch = text[i];
+    if (ch === '<' || ch === '(' || ch === '[') depth++;
+    else if (ch === '>' || ch === ')' || ch === ']') {
+      if (--depth === 0) return n;
+    } else if (ch === ',' && depth === 1) n++;
+  }
+  return n;
+}
+
 export function typeName(raw: string | null | undefined, allowLowercase = false, keepPackage = false): string | null {
   if (!raw) return null;
   let t = raw.trim();

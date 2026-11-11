@@ -1,6 +1,6 @@
 import type { Node } from 'web-tree-sitter';
 import type { Ctx, LangSpec, Visitor } from '../spec.js';
-import { COMPLEX_RECEIVER, field, lastSegment, simpleReceiver } from '../spec.js';
+import { COMPLEX_RECEIVER, field, genericArity, lastSegment, simpleReceiver } from '../spec.js';
 import type { SymbolKind } from '../../types.js';
 
 const MAX_SIG_SLICE = 400;
@@ -221,7 +221,8 @@ function baseList(node: Node, sym: number, kind: SymbolKind, ctx: Ctx): void {
     if (kind === 'interface') rel = 'extends';
     else if (kind === 'struct') rel = 'implements';
     else rel = /^I[A-Z]/.test(name) ? 'implements' : 'extends';
-    ctx.inherit(sym, name, rel);
+    const text = target && target.endIndex - target.startIndex <= 400 ? target.text : '';
+    ctx.inherit(sym, name, rel, genericArity(text));
   }
 }
 

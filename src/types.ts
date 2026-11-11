@@ -79,6 +79,8 @@ export interface ExHeritage {
   /** Module / namespace the supertype was written with (`forms` in `forms.CharField`), if any. */
   qualifier: string | null;
   kind: 'extends' | 'implements';
+  /** Number of type arguments the supertype was written with (`Base<T>` -> 1); tells `Foo` from `Foo<T>` in C#. */
+  arity: number;
 }
 
 /** Everything extracted from a single source file. */
