@@ -580,6 +580,17 @@ export class Resolver {
     let range = this.arityCache.get(sym.id);
     if (range === undefined) {
       range = paramRange(sym.signature, sym.name, sym.lang);
+      if (range && langFamily(sym.lang) === 'c') {
+        // C++ default arguments are written on the declaration in the header, not on the definition:
+        // `void f(int a, int b = 0);` + `void f(int a, int b) { ... }` accept the same calls.
+        for (const id of this.familyOf(sym)) {
+          const twin = id === sym.id ? undefined : this.db.symbolById(id);
+          if (!twin || twin.qname !== sym.qname || twin.file_id === sym.file_id) continue;
+          const other = paramRange(twin.signature, twin.name, twin.lang);
+          if (!other) { range = null; break; }
+          range = { min: Math.min(range.min, other.min), max: Math.max(range.max, other.max), ext: false };
+        }
+      }
       this.arityCache.set(sym.id, range);
     }
     if (!range) return true;

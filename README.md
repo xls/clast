@@ -8,12 +8,14 @@ chain of greps and file reads.
 What an agent gets:
 
 - **Ranked symbol search** - exact names, partial names, abbreviations (`KProd`, `gcn`), typos, qualified
-  names (`Parser.parse`) and plain words (`resolve import path`) matched against names, signatures and docs.
+  names (`Parser.parse`) and plain words (`resolve import path`) matched against names, signatures, docs
+  and what function bodies mention.
 - **Exact symbol source** - the body of one function or class, read fresh from disk with line numbers,
   together with its callers, callees, overrides and subtypes. No need to read the whole file.
-- **Type-aware call graph** - calls are resolved with declared receiver types, imports, inheritance and
-  `this`/`self`, so `record.topic()` goes to the right class and `list.push()` is not mistaken for your
-  `Stack.push`. Edges that are name-only guesses are marked `?`.
+- **Type-aware call graph** - calls are resolved with declared receiver types, imports, inheritance,
+  `this`/`self`/`super` and argument counts, so `record.topic()` goes to the right class, an overload
+  gets its own callers and `list.push()` is not mistaken for your `Stack.push`. Edges that are name-only
+  guesses are marked `?`.
 - **References, type hierarchy, repo map, text search, git change impact** - see the tool list below.
 - **Always fresh** - a file watcher re-indexes on save, and every query re-checks the files it is about to
   quote, so line numbers and source are never stale, even right after the agent edits a file.
@@ -225,11 +227,13 @@ text is stored by file path and qualified name, so it survives re-indexing.
 4. **Link at query time** - call edges are stored as "symbol A calls name N on receiver R of type T" and
    resolved when queried, so nothing goes stale when another file changes. Resolution order: declared
    receiver type, then imports and same-file definitions, then `this`/`self` and inheritance, then
-   evidence scoring for untyped receivers. A call through an interface or base type counts as a caller
-   of the implementations it can reach (including Go's structural interfaces); a call bound to a
-   subclass override does not count for the base method. Types are told apart by more than their name
-   where the language allows it: Go packages (`pkg.Type` against the file's imports), C# generic arity
-   and partial classes, Ruby lexical constant lookup, Rust module paths.
+   evidence scoring for untyped receivers. Argument counts separate overloads and rule out same-named
+   methods of another shape. A call through an interface or base type counts as a caller of the
+   implementations it can reach (Go's structural interfaces as "possible"); a call bound to a subclass
+   override does not count for the base method, and `super.m()` binds to the inherited method. Types
+   are told apart by more than their name where the language allows it: Go packages (`pkg.Type`
+   against the file's imports), imports and packages in TS / Python / Java / PHP, C# generic arity and
+   partial classes, Ruby lexical constant lookup, Rust module paths.
 5. **Stay fresh** - a watcher re-indexes saved files; in addition every tool re-checks the files it is
    about to quote and re-parses them on the spot if they changed.
 
@@ -243,23 +247,23 @@ empty index; warm rescan is a restart with nothing changed.
 <!-- BENCH:START -->
 | repo | files | symbols | cold index | warm rescan | db size | search (name) | search (words) | symbol + callers/callees | callers depth 2 | references |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
-| vscode | 15726 | 461365 | 27.4 s | 1923 ms | 356 MB | 209 ms | 45 ms | 37 ms | 44 ms | 8.6 ms |
-| aspnetcore | 11470 | 145271 | 10.2 s | 1367 ms | 134 MB | 8.0 ms | 86 ms | 35 ms | 38 ms | 7.4 ms |
-| kafka | 6481 | 126393 | 9.9 s | 848 ms | 144 MB | 38 ms | 44 ms | 32 ms | 28 ms | 4.5 ms |
-| rails | 3580 | 61549 | 3.4 s | 406 ms | 51 MB | 14 ms | 23 ms | 24 ms | 32 ms | 3.6 ms |
-| framework | 3180 | 44124 | 2.9 s | 323 ms | 38 MB | 1.4 ms | 46 ms | 23 ms | 15 ms | 1.8 ms |
-| django | 2987 | 60131 | 3.2 s | 548 ms | 42 MB | 28 ms | 75 ms | 27 ms | 36 ms | 2.6 ms |
-| fastapi | 1224 | 10049 | 0.8 s | 135 ms | 7 MB | 3.8 ms | 16 ms | 6.5 ms | 50 ms | 2.5 ms |
-| hugo | 939 | 16896 | 1.2 s | 117 ms | 11 MB | 7.0 ms | 35 ms | 20 ms | 21 ms | 2.6 ms |
-| redis | 919 | 35752 | 1.9 s | 117 ms | 23 MB | 6.8 ms | 18 ms | 7.5 ms | 26 ms | 2.1 ms |
-| tokio | 816 | 12341 | 0.9 s | 60 ms | 11 MB | 2.9 ms | 12 ms | 2.7 ms | 3.6 ms | 1.7 ms |
-| http | 362 | 3947 | 0.7 s | 76 ms | 3 MB | 1.3 ms | 9.0 ms | 3.6 ms | 2.0 ms | 3.7 ms |
-| express | 142 | 439 | 0.3 s | 20 ms | 1 MB | 0.5 ms | 1.1 ms | 0.6 ms | 0.4 ms | 1.4 ms |
-| leveldb | 133 | 3456 | 0.5 s | 17 ms | 2 MB | 2.1 ms | 15 ms | 2.4 ms | 2.1 ms | 2.3 ms |
-| Alamofire | 107 | 4085 | 1.5 s | 25 ms | 4 MB | 2.8 ms | 11 ms | 0.7 ms | 501 ms | 0.7 ms |
-| ripgrep | 103 | 4496 | 0.6 s | 15 ms | 3 MB | 2.0 ms | 21 ms | 1.8 ms | 2.1 ms | 0.8 ms |
-| gin | 99 | 2157 | 0.3 s | 8.0 ms | 2 MB | 1.4 ms | 6.9 ms | 2.2 ms | 2.8 ms | 0.4 ms |
-| spring-petclinic | 50 | 323 | 0.2 s | 11 ms | 1 MB | 0.8 ms | 1.0 ms | 0.7 ms | 0.8 ms | 1.5 ms |
+| vscode | 15726 | 461365 | 26.0 s | 1888 ms | 357 MB | 210 ms | 47 ms | 35 ms | 41 ms | 11 ms |
+| aspnetcore | 11470 | 145271 | 9.9 s | 1566 ms | 135 MB | 9.7 ms | 99 ms | 32 ms | 42 ms | 5.4 ms |
+| kafka | 6481 | 126393 | 9.6 s | 792 ms | 144 MB | 32 ms | 45 ms | 33 ms | 973 ms | 4.9 ms |
+| rails | 3580 | 61549 | 3.7 s | 453 ms | 51 MB | 15 ms | 22 ms | 22 ms | 34 ms | 3.7 ms |
+| framework | 3180 | 44124 | 2.8 s | 256 ms | 38 MB | 1.0 ms | 41 ms | 24 ms | 21 ms | 2.6 ms |
+| django | 2987 | 60131 | 3.3 s | 567 ms | 42 MB | 27 ms | 64 ms | 29 ms | 48 ms | 2.5 ms |
+| fastapi | 1224 | 10049 | 0.9 s | 144 ms | 7 MB | 4.9 ms | 16 ms | 5.6 ms | 50 ms | 1.9 ms |
+| hugo | 939 | 16896 | 1.2 s | 126 ms | 11 MB | 7.2 ms | 36 ms | 20 ms | 19 ms | 2.7 ms |
+| redis | 919 | 35752 | 2.0 s | 112 ms | 23 MB | 6.4 ms | 16 ms | 7.7 ms | 25 ms | 2.2 ms |
+| tokio | 816 | 12341 | 1.1 s | 86 ms | 11 MB | 5.5 ms | 16 ms | 2.5 ms | 4.9 ms | 1.7 ms |
+| http | 362 | 3947 | 0.7 s | 82 ms | 3 MB | 1.3 ms | 9.4 ms | 2.8 ms | 1.4 ms | 3.8 ms |
+| express | 142 | 439 | 0.3 s | 38 ms | 1 MB | 0.4 ms | 1.2 ms | 0.5 ms | 0.5 ms | 1.9 ms |
+| leveldb | 133 | 3456 | 0.7 s | 16 ms | 2 MB | 1.5 ms | 15 ms | 2.6 ms | 1.7 ms | 2.3 ms |
+| Alamofire | 107 | 4063 | 1.4 s | 20 ms | 4 MB | 1.7 ms | 6.8 ms | 0.7 ms | 532 ms | 0.8 ms |
+| ripgrep | 103 | 4496 | 0.6 s | 16 ms | 3 MB | 1.8 ms | 20 ms | 2.1 ms | 1.8 ms | 0.9 ms |
+| gin | 99 | 2157 | 0.4 s | 10 ms | 2 MB | 2.2 ms | 7.4 ms | 2.6 ms | 3.1 ms | 0.7 ms |
+| spring-petclinic | 50 | 323 | 0.2 s | 12 ms | 1 MB | 0.6 ms | 0.9 ms | 0.7 ms | 0.8 ms | 1.3 ms |
 
 Node v24.7.0, win32 x64. Query times are medians of 5 in-process runs on the most-called function of each repo.
 <!-- BENCH:END -->
@@ -283,7 +287,7 @@ Node v24.7.0, win32 x64. Query times are medians of 5 in-process runs on the mos
 ```bash
 npm install
 npm run build        # tsc
-npm test             # node:test, 200+ tests incl. an end-to-end MCP session
+npm test             # node:test, 230+ tests incl. an end-to-end MCP session
 npm run bench -- /path/to/dir-with-repos
 ```
 

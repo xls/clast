@@ -736,3 +736,33 @@ class Model
     assert.deepEqual(callees.map(c => [c.target!.qname, c.certain]), [['Model.save', false]]);
   });
 });
+
+describe('C++ default arguments on the declaration', () => {
+  let q: Project;
+  before(async () => {
+    q = await createProject({
+      'cpp/log.h': `#pragma once
+void log_line(const char* text, int level = 0);
+`,
+      'cpp/log.cc': `#include "log.h"
+
+void log_line(const char* text, int level) {
+}
+`,
+      'cpp/main.cc': `#include "log.h"
+
+void run() {
+  log_line("start");
+  log_line("verbose", 2);
+}
+`,
+    });
+  });
+  after(() => q.dispose());
+
+  it('a call that relies on the default still reaches the definition', () => {
+    const def = findSymbols(q.clast.db, 'cpp/log.cc:log_line')[0]!;
+    const edges = callersOf(q.clast.db, q.ctx.resolver, def);
+    assert.equal(edges.reduce((n, e) => n + e.count, 0), 2);
+  });
+});
