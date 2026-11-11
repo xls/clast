@@ -1234,8 +1234,9 @@ export class Resolver {
         if (STRICT_IMPORTS.has(fam)) return null;
         if (inCallerClass) return (sameFile ? 88 : 72) + tie; // implicit this / same (partial) class
         if (inCallerAncestors()) return 68 + tie;
-        if (site.lang === 'java') {
+        if (site.lang === 'java' && container !== name) {
           // `import static pkg.Utils.mkEntry;` / `import static pkg.Utils.*;`
+          // (Not constructors: `import pkg.TopicPartition` + `new TopicPartition()` names the class.)
           const imp = this.importedNames(site.fileId);
           if (imp.names.get(name) === cand.file_id) return 94 + tie;
           if (imp.wildcards.has(cand.file_id)) return 58 + tie;

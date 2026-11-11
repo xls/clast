@@ -785,6 +785,20 @@ public class Main {
     String run() { return mkEntry("a", "b"); }
 }
 `,
+      'java/org/app/util/Pair.java': `package org.app.util;
+
+public class Pair {
+    public Pair(String k, String v) { }
+}
+`,
+      'java/org/app/Maker.java': `package org.app;
+
+import org.app.util.Pair;
+
+public class Maker {
+    Pair make() { return new Pair("a", "b"); }
+}
+`,
       'py/dispatch.py': `class Signal:
     def send(self, sender):
         pass
@@ -832,6 +846,10 @@ void work(int x) { check(x > 0); }
 
   it('a Java static import makes the bare name a call of that member', () => {
     assert.deepEqual(callers('Utils.mkEntry'), ['Main.run']);
+  });
+
+  it('importing a class and constructing it stays a certain call of the constructor', () => {
+    assert.deepEqual(callers('Pair.Pair'), ['Maker.make']);
   });
 
   it('a call on an imported module-level instance has the type it was created with', () => {
