@@ -247,23 +247,23 @@ empty index; warm rescan is a restart with nothing changed.
 <!-- BENCH:START -->
 | repo | files | symbols | cold index | warm rescan | db size | search (name) | search (words) | symbol + callers/callees | callers depth 2 | references |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
-| vscode | 15726 | 461365 | 27.0 s | 2087 ms | 356 MB | 210 ms | 44 ms | 29 ms | 39 ms | 11 ms |
-| aspnetcore | 11470 | 145271 | 10.4 s | 1502 ms | 135 MB | 10 ms | 91 ms | 33 ms | 38 ms | 6.2 ms |
-| kafka | 6481 | 126393 | 10.0 s | 827 ms | 144 MB | 38 ms | 43 ms | 44 ms | 40 ms | 4.3 ms |
-| rails | 3580 | 61549 | 3.7 s | 444 ms | 51 MB | 14 ms | 23 ms | 17 ms | 41 ms | 3.6 ms |
-| framework | 3180 | 44124 | 2.9 s | 344 ms | 38 MB | 1.0 ms | 42 ms | 24 ms | 22 ms | 2.4 ms |
-| django | 2987 | 60131 | 3.3 s | 527 ms | 42 MB | 27 ms | 41 ms | 28 ms | 75 ms | 3.9 ms |
-| fastapi | 1224 | 10049 | 0.9 s | 140 ms | 7 MB | 4.5 ms | 15 ms | 6.7 ms | 51 ms | 2.9 ms |
-| hugo | 939 | 16896 | 1.2 s | 122 ms | 11 MB | 6.8 ms | 33 ms | 17 ms | 20 ms | 2.7 ms |
-| redis | 919 | 35752 | 1.9 s | 110 ms | 23 MB | 5.3 ms | 16 ms | 7.8 ms | 29 ms | 2.2 ms |
-| tokio | 816 | 12341 | 1.0 s | 70 ms | 11 MB | 2.8 ms | 14 ms | 2.8 ms | 5.2 ms | 1.8 ms |
-| http | 362 | 3947 | 0.7 s | 77 ms | 3 MB | 1.2 ms | 8.2 ms | 4.8 ms | 1.6 ms | 4.1 ms |
-| express | 142 | 439 | 0.4 s | 21 ms | 1 MB | 0.4 ms | 1.3 ms | 0.8 ms | 0.6 ms | 1.7 ms |
-| leveldb | 133 | 3456 | 0.5 s | 15 ms | 2 MB | 1.5 ms | 13 ms | 3.7 ms | 2.1 ms | 2.6 ms |
-| Alamofire | 107 | 4063 | 1.5 s | 23 ms | 4 MB | 2.7 ms | 8.8 ms | 0.7 ms | 505 ms | 1.0 ms |
-| ripgrep | 103 | 4496 | 0.6 s | 16 ms | 3 MB | 1.7 ms | 21 ms | 1.9 ms | 2.7 ms | 0.8 ms |
-| gin | 99 | 2157 | 0.4 s | 12 ms | 2 MB | 2.0 ms | 6.3 ms | 2.7 ms | 4.1 ms | 1.1 ms |
-| spring-petclinic | 50 | 323 | 0.2 s | 10 ms | 1 MB | 0.6 ms | 1.3 ms | 0.8 ms | 0.6 ms | 1.1 ms |
+| vscode | 15726 | 461365 | 26.1 s | 1895 ms | 357 MB | 168 ms | 42 ms | 28 ms | 38 ms | 11 ms |
+| aspnetcore | 11470 | 145271 | 10.2 s | 1382 ms | 135 MB | 9.3 ms | 86 ms | 33 ms | 38 ms | 6.6 ms |
+| kafka | 6481 | 126393 | 9.5 s | 863 ms | 144 MB | 26 ms | 33 ms | 25 ms | 962 ms | 5.6 ms |
+| rails | 3580 | 61549 | 3.8 s | 352 ms | 52 MB | 8.7 ms | 15 ms | 22 ms | 35 ms | 3.0 ms |
+| framework | 3180 | 44124 | 3.0 s | 337 ms | 38 MB | 1.4 ms | 46 ms | 23 ms | 23 ms | 2.2 ms |
+| django | 2987 | 60131 | 3.1 s | 522 ms | 42 MB | 29 ms | 41 ms | 21 ms | 48 ms | 2.5 ms |
+| fastapi | 1224 | 10049 | 0.8 s | 161 ms | 7 MB | 5.0 ms | 17 ms | 5.7 ms | 48 ms | 2.4 ms |
+| hugo | 939 | 16896 | 1.1 s | 127 ms | 11 MB | 7.2 ms | 38 ms | 18 ms | 18 ms | 2.4 ms |
+| redis | 919 | 35752 | 1.9 s | 103 ms | 23 MB | 5.7 ms | 16 ms | 7.0 ms | 26 ms | 2.2 ms |
+| tokio | 816 | 12341 | 1.1 s | 85 ms | 11 MB | 3.9 ms | 17 ms | 2.0 ms | 4.2 ms | 1.4 ms |
+| http | 362 | 3947 | 0.7 s | 75 ms | 3 MB | 1.3 ms | 9.6 ms | 3.5 ms | 1.6 ms | 5.3 ms |
+| express | 142 | 439 | 0.4 s | 20 ms | 1 MB | 0.4 ms | 1.0 ms | 0.8 ms | 0.5 ms | 1.6 ms |
+| leveldb | 133 | 3456 | 0.6 s | 14 ms | 2 MB | 2.2 ms | 15 ms | 3.3 ms | 1.8 ms | 2.5 ms |
+| Alamofire | 107 | 4085 | 1.5 s | 23 ms | 4 MB | 2.4 ms | 7.1 ms | 1.5 ms | 530 ms | 1.3 ms |
+| ripgrep | 103 | 4496 | 0.6 s | 13 ms | 3 MB | 1.3 ms | 13 ms | 1.3 ms | 1.4 ms | 0.5 ms |
+| gin | 99 | 2157 | 0.4 s | 12 ms | 2 MB | 1.5 ms | 7.7 ms | 2.2 ms | 4.3 ms | 0.7 ms |
+| spring-petclinic | 50 | 323 | 0.2 s | 11 ms | 1 MB | 0.8 ms | 0.7 ms | 0.6 ms | 0.6 ms | 1.3 ms |
 
 Node v24.7.0, win32 x64. Query times are medians of 5 in-process runs on the most-called function of each repo.
 <!-- BENCH:END -->
