@@ -25,7 +25,7 @@ usage: clast-ai [command] [args] [--root <dir>]
   symbol <name...>           source + callers + callees of a symbol   [--path p] [--max-lines n] [--no-body]
   callers <name>             who calls it   [--depth n] [--limit n] [--within path] [--no-tests|--tests] [--uncertain]
   callees <name>             what it calls  [--depth n] [--limit n]
-  hierarchy <name>           supertypes / subtypes / overrides   [--depth n] [--limit n]
+  hierarchy <name>           supertypes / subtypes / overrides   [--depth n] [--limit n] [--within path]
   refs <name>                all references to an identifier   [--path p] [--limit n]
   grep <pattern>             text search with enclosing symbols   [--regex] [--path p] [--limit n]
   changes [base]             symbols touched by the git diff and their impact
@@ -181,7 +181,9 @@ async function main(): Promise<void> {
         break;
       case 'hierarchy':
       case 'types':
-        out = await hierarchy(ctx, { name: positional[0] ?? '', path: str('path'), depth: num('depth'), limit: num('limit') });
+        out = await hierarchy(ctx, {
+          name: positional[0] ?? '', path: str('path'), depth: num('depth'), limit: num('limit'), within: str('within'),
+        });
         break;
       case 'refs':
       case 'references':

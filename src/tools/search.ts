@@ -476,7 +476,13 @@ function disambiguate(
   }
   const ref = parseSymbolRef(name);
   const unqualified = ref.container.length === 0 && !ref.path && !path && ref.line === undefined;
-  if (unqualified && others.length >= 4) {
+  // One definition that the rest of the project overwhelmingly imports is "the" one
+  // (lifecycle.ts:Disposable vs a few same-named helpers in extensions): do not make the caller choose.
+  const importers = (s: SymbolRow): number =>
+    ctx.db.get<{ n: number }>(`SELECT COUNT(DISTINCT file_id) AS n FROM imports WHERE resolved_id = ?`, s.file_id)?.n ?? 0;
+  const mine = unqualified && others.length >= 4 ? importers(chosen) : 0;
+  const dominant = mine >= 20 && others.slice(0, 12).every(o => importers(o) * 10 <= mine);
+  if (unqualified && others.length >= 4 && !dominant) {
     const lines = [`"${name}" has ${others.length + 1} definitions. Pick one with Container.name or path:name:`];
     for (const m of [chosen, ...others].slice(0, 14)) {
       lines.push(`  ${symLine(m)}${m.signature ? '  ' + firstLine(m.signature, 70) : ''}`);
@@ -624,6 +630,8 @@ export interface HierarchyArgs {
   depth?: number;
   /** Max lines per direction. Default 80. */
   limit?: number;
+  /** Only subtypes / overrides located under this path. */
+  within?: string;
 }
 
 export async function hierarchy(ctx: ToolContext, args: HierarchyArgs): Promise<string> {
@@ -650,10 +658,18 @@ export async function hierarchy(ctx: ToolContext, args: HierarchyArgs): Promise<
       .filter(id => id !== sym.id)
       .map(id => ctx.db.symbolById(id))
       .filter((s): s is SymbolRow => !!s);
+    const total = family.length;
+    if (args.within) family.splice(0, family.length, ...family.filter(f => pathMatches(f.path, args.within!)));
     if (family.length === 0) {
-      out.push('no overrides, implementations or declarations of this member on related types.');
+      out.push(
+        total
+          ? `no overrides under "${args.within}" (${total} elsewhere).`
+          : 'no overrides, implementations or declarations of this member on related types.'
+      );
     } else {
-      out.push(`declarations / overrides / implementations on related types (${family.length}):`);
+      out.push(
+        `declarations / overrides / implementations on related types (${family.length}${args.within ? ` under ${args.within}, ${total} in total` : ''}):`
+      );
       family.sort((a, b) => Number(isTestPath(a.path)) - Number(isTestPath(b.path)) || a.path.localeCompare(b.path));
       for (const f of family.slice(0, limit)) out.push(`  ${f.kind} ${f.qname}  ${loc(f)}`);
       if (family.length > limit) out.push(`  ... ${family.length - limit} more (raise limit)`);
@@ -695,8 +711,9 @@ export async function hierarchy(ctx: ToolContext, args: HierarchyArgs): Promise<
       if (indent > depth) return;
       const subs = directSubtypes(ctx.db, ctx.resolver, s);
       for (const sub of subs) {
-        total++;
-        if (lines < limit) {
+        const shown = !args.within || pathMatches(sub.sym.path, args.within);
+        if (shown) total++;
+        if (shown && lines < limit) {
           lines++;
           body.push(`${'  '.repeat(indent)}${sub.sym.kind} ${sub.sym.qname}  ${sub.sym.path}:${sub.sym.start_line}${sub.certain ? '' : '  ?'}`);
         }

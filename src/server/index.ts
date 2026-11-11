@@ -128,6 +128,7 @@ export async function startServer(): Promise<void> {
         direction: z.enum(['supertypes', 'subtypes', 'both']).default('both'),
         depth: z.number().int().min(1).max(8).default(3).describe('Levels to expand'),
         limit: z.number().int().min(1).max(1000).default(80).describe('Max lines per direction'),
+        within: z.string().optional().describe('Only subtypes / overrides located under this path'),
       },
       annotations: READ_ONLY,
     },

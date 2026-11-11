@@ -109,7 +109,9 @@ export function findSymbols(
 
   const byName = db.symbolsByName(r.name);
   let rows = filter(byName, true);
-  if (rows.length === 0 && !opts.exact) {
+  // Case-insensitive matching is a fallback for a misspelt name, not for a name that exists
+  // but was filtered out by path / kind (that would silently swap in an unrelated symbol).
+  if (rows.length === 0 && byName.length === 0 && !opts.exact) {
     rows = filter(
       db.all<SymbolRow>(`SELECT ${SYMBOL_COLUMNS} FROM ${SYMBOL_FROM} WHERE s.name_lc = ?`, r.name.toLowerCase()),
       false

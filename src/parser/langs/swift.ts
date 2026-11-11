@@ -56,6 +56,57 @@ function signature(node: Node, mods: Node | null, ctx: Ctx, stop: Node | null): 
   return sliceSig(ctx, start, stop && stop.startIndex > start ? stop.startIndex : node.endIndex);
 }
 
+const MAX_SIG = 236;
+
+/**
+ * Signature of a callable. Long parameter lists are elided in the middle
+ * (`func f(a: A, ...) -> R`) so the return type survives truncation.
+ */
+function callableSignature(node: Node, mods: Node | null, ctx: Ctx, stop: Node | null): string {
+  const start = sigStart(node, mods);
+  let end = stop && stop.startIndex > start ? stop.startIndex : node.endIndex;
+  if (end - start <= MAX_SIG) return sliceSig(ctx, start, end);
+  if (end - start > 4000) end = start + 4000;
+  const full = ctx.src.slice(start, end).replace(/\s+/g, ' ').replace(/\s*[{=]\s*$/, '').trim();
+  if (full.length <= MAX_SIG) return full;
+  const open = full.indexOf('(');
+  if (open === -1) return full;
+  // Matching close of the parameter list and the top-level commas inside it.
+  let depth = 0;
+  let close = -1;
+  const commas: number[] = [];
+  for (let i = open; i < full.length; i++) {
+    const ch = full[i];
+    if (ch === '(' || ch === '[' || ch === '{') depth++;
+    else if (ch === ')' || ch === ']' || ch === '}') {
+      if (--depth === 0) { close = i; break; }
+    } else if (ch === ',' && depth === 1) commas.push(i);
+  }
+  if (close === -1) return full;
+  const tail = full.slice(close);
+  const budget = MAX_SIG - tail.length - 4;
+  let cut = -1;
+  for (const c of commas) {
+    if (c > budget) break;
+    cut = c;
+  }
+  if (cut === -1) return full;
+  return full.slice(0, cut + 1) + ' ...' + tail;
+}
+
+/** Identifier text without the backticks of escaped names (`default`). */
+function identText(node: Node): string {
+  const t = node.text;
+  return t.charCodeAt(0) === 96 ? t.replace(/`/g, '') : t;
+}
+
+/** Standard-library protocols that often come first in a class's inheritance clause. */
+const KNOWN_PROTOCOLS = new Set([
+  'Sendable', 'Codable', 'Decodable', 'Encodable', 'Hashable', 'Equatable', 'Comparable', 'Identifiable',
+  'CustomStringConvertible', 'CustomDebugStringConvertible', 'Error', 'LocalizedError', 'ObservableObject',
+  'AnyObject', 'Sequence', 'Collection', 'CaseIterable', 'RawRepresentable', 'View',
+]);
+
 /** Dotted name of a `user_type` without generic arguments: `Foo.Bar<T>` -> `Foo.Bar`. */
 function userTypeName(node: Node | null | undefined): string | null {
   if (!node) return null;
@@ -136,7 +187,7 @@ const classDeclaration: Visitor = (node, ctx) => {
       const sym = known.get(name.slice(name.lastIndexOf('.') + 1));
       if (sym !== undefined) {
         for (const c of node.namedChildren) {
-          if (c && c.type === 'inheritance_specifier') ctx.inherit(sym, userTypeName(c.namedChild(0)), 'implements');
+          if (c && c.type === 'inheritance_specifier') ctx.inherit(sym, userTypeName(field(c, 'inherits_from')), 'implements');
         }
       }
     }
@@ -159,7 +210,9 @@ const classDeclaration: Visitor = (node, ctx) => {
   let first = keyword === 'class';
   for (const c of node.namedChildren) {
     if (!c || c.type !== 'inheritance_specifier') continue;
-    ctx.inherit(sym, userTypeName(c.namedChild(0)), first ? 'extends' : 'implements');
+    const base = userTypeName(field(c, 'inherits_from'));
+    if (!base) continue;
+    ctx.inherit(sym, base, first && !KNOWN_PROTOCOLS.has(base) ? 'extends' : 'implements');
     first = false;
   }
 };
@@ -179,7 +232,7 @@ const protocolDeclaration: Visitor = (node, ctx) => {
   if (!known) declaredTypes.set(ctx, (known = new Map()));
   if (!known.has(name)) known.set(name, sym);
   for (const c of node.namedChildren) {
-    if (c && c.type === 'inheritance_specifier') ctx.inherit(sym, userTypeName(c.namedChild(0)), 'extends');
+    if (c && c.type === 'inheritance_specifier') ctx.inherit(sym, userTypeName(field(c, 'inherits_from')), 'extends');
   }
 };
 
@@ -205,9 +258,9 @@ const functionDeclaration: Visitor = (node, ctx) => {
   if (!nameNode || nameNode.endIndex - nameNode.startIndex > 100) return;
   const mods = modifiersOf(node);
   ctx.def(node, {
-    name: nameNode.text,
+    name: identText(nameNode),
     kind: isMember(node) ? 'method' : 'function',
-    sig: signature(node, mods, ctx, field(node, 'body')),
+    sig: callableSignature(node, mods, ctx, field(node, 'body')),
     exported: memberExported(node, mods),
   });
 };
@@ -223,7 +276,7 @@ const fixedName = (name: string): Visitor => (node, ctx) => {
   ctx.def(node, {
     name,
     kind: 'method',
-    sig: signature(node, mods, ctx, stop),
+    sig: callableSignature(node, mods, ctx, stop),
     exported: memberExported(node, mods),
   });
 };
@@ -248,7 +301,7 @@ const enumEntry: Visitor = (node, ctx) => {
   const flush = (): void => {
     if (!name) return;
     ctx.def(node, {
-      name: name.text,
+      name: identText(name),
       kind: 'constant',
       sig: 'case ' + sliceSig(ctx, name.startIndex, end),
       scope: false,
@@ -345,7 +398,7 @@ const propertyDeclaration: Visitor = (node, ctx) => {
     if (!ctx.inCallable()) return;
     for (const b of bindings) {
       const type = hintType(b.type) ?? constructedType(b.value);
-      if (type) ctx.typeHint(b.name.text, type);
+      if (type) ctx.typeHint(identText(b.name), type);
     }
     return;
   }
@@ -359,7 +412,7 @@ const propertyDeclaration: Visitor = (node, ctx) => {
   const single = bindings.length === 1;
 
   for (const b of bindings) {
-    const name = b.name.text;
+    const name = identText(b.name);
     let sig: string;
     if (single) {
       let end = b.block ? b.block.startIndex : node.endIndex;
@@ -436,13 +489,13 @@ const callExpression: Visitor = (node, ctx) => {
   for (let i = 0; callee && i < 5; i++) {
     switch (callee.type) {
       case 'simple_identifier':
-        ctx.call(callee.text, node);
+        ctx.call(identText(callee), node);
         return;
       case 'navigation_expression': {
         const name = field(field(callee, 'suffix'), 'suffix');
         if (!name || name.type !== 'simple_identifier') return;
         const target = field(callee, 'target');
-        const method = name.text;
+        const method = identText(name);
         if (method === 'init' && target && target.type === 'simple_identifier') {
           // `Foo.init(x)` constructs a Foo.
           const cls = target.text;
@@ -452,8 +505,11 @@ const callExpression: Visitor = (node, ctx) => {
           }
         }
         // `Foo().bar()` / `Foo<T>().bar()`: the receiver's class is evident.
-        const rtype = target && (target.type === 'call_expression' || target.type === 'constructor_expression')
-          ? constructedType(target)
+        // (The grammar puts a leading `try` / `await` on the receiver: `try Foo().bar()`.)
+        let made = target;
+        if (made && (made.type === 'try_expression' || made.type === 'await_expression')) made = field(made, 'expr');
+        const rtype = made && (made.type === 'call_expression' || made.type === 'constructor_expression')
+          ? constructedType(made)
           : null;
         ctx.call(method, node, receiverOf(target), rtype);
         return;
