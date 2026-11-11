@@ -37,6 +37,16 @@ function loadSqlite(): typeof import('node:sqlite') {
   }
 }
 
+function processAlive(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (err) {
+    // EPERM: the process exists but belongs to someone else.
+    return (err as NodeJS.ErrnoException).code === 'EPERM';
+  }
+}
+
 const SCHEMA = `
   CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT NOT NULL) WITHOUT ROWID;
 
@@ -169,6 +179,7 @@ export class ClastDb {
   readonly path: string;
   private stmts = new Map<string, StatementSync>();
   private nameIds = new Map<string, number>();
+  private journalOff = false;
   /** Incremented on every write; lets query caches invalidate cheaply. */
   generation = 0;
 
@@ -202,13 +213,36 @@ export class ClastDb {
       version = 0;
     }
 
-    if (version !== SCHEMA_VERSION) {
+    // A bulk load that never finished (crash, kill) leaves an index that cannot be trusted.
+    let interrupted = false;
+    if (version === SCHEMA_VERSION) {
+      try {
+        const row = raw.prepare(`SELECT value FROM meta WHERE key = 'bulk_in_progress'`).get() as
+          | { value: string }
+          | undefined;
+        // The marker holds the pid of the loading process. If that process is still alive
+        // (another session indexing the same project) the index is merely busy, not broken.
+        const pid = row ? Number(row.value) : 0;
+        interrupted = pid > 0 && pid !== process.pid && !processAlive(pid);
+        if (pid === process.pid) interrupted = true; // our own earlier load in this process failed
+      } catch {
+        interrupted = true;
+      }
+    }
+
+    if (version !== SCHEMA_VERSION || interrupted) {
       const hasTables =
         (raw.prepare(`SELECT COUNT(*) AS n FROM sqlite_master`).get() as { n: number }).n > 0;
       if (hasTables && !memory) {
-        // Old or foreign schema: the index is a cache, start over.
+        // Old or foreign schema, or an interrupted load: the index is a cache, start over.
         raw.close();
-        for (const suffix of ['', '-wal', '-shm']) rmSync(dbPath + suffix, { force: true });
+        try {
+          for (const suffix of ['', '-wal', '-shm']) rmSync(dbPath + suffix, { force: true });
+        } catch (err) {
+          throw new Error(
+            `clast: cannot replace the outdated index at ${dbPath} (is another clast process using it?): ${String(err)}`
+          );
+        }
         raw = new sqlite.DatabaseSync(dbPath);
       }
       raw.exec('PRAGMA journal_mode = WAL');
@@ -242,11 +276,21 @@ export class ClastDb {
    * is a rebuildable cache, so durability is traded for speed here.
    */
   beginBulk(dropIndexes: boolean): void {
+    // If the process dies mid-load the index is rebuilt from scratch on the next start.
+    this.setMeta('bulk_in_progress', String(process.pid));
     this.db.exec('PRAGMA synchronous = OFF');
     this.db.exec('PRAGMA wal_autocheckpoint = 0');
     if (dropIndexes) {
-      for (const name of INDEX_NAMES) this.db.exec(`DROP INDEX IF EXISTS ${name}`);
+      // Cold load of an empty index: no journal at all (nothing to roll back to).
       this.stmts.clear();
+      try {
+        this.db.exec('PRAGMA wal_checkpoint(TRUNCATE)');
+        this.db.exec('PRAGMA journal_mode = OFF');
+        this.journalOff = true;
+      } catch {
+        this.journalOff = false; // another connection holds the database: stay in WAL
+      }
+      for (const name of INDEX_NAMES) this.db.exec(`DROP INDEX IF EXISTS ${name}`);
     }
   }
 
@@ -262,6 +306,11 @@ export class ClastDb {
   }
 
   endBulk(): void {
+    this.stmts.clear();
+    if (this.journalOff) {
+      this.db.exec('PRAGMA journal_mode = WAL');
+      this.journalOff = false;
+    }
     this.db.exec(INDEXES);
     this.db.exec('PRAGMA wal_checkpoint(TRUNCATE)');
     this.db.exec('PRAGMA wal_autocheckpoint = 1000');
@@ -270,6 +319,7 @@ export class ClastDb {
     this.db.exec('PRAGMA analysis_limit = 400');
     this.db.exec('ANALYZE');
     this.stmts.clear();
+    this.setMeta('bulk_in_progress', '0');
   }
 
   // --- generic helpers -----------------------------------------------------
@@ -304,7 +354,9 @@ export class ClastDb {
       this.generation++;
       return result;
     } catch (err) {
-      try { this.db.exec('ROLLBACK'); } catch { /* already rolled back */ }
+      // Without a journal (cold bulk load) there is nothing to roll back to; the
+      // bulk_in_progress marker makes the next start rebuild the index.
+      try { this.db.exec(this.journalOff ? 'COMMIT' : 'ROLLBACK'); } catch { /* already closed */ }
       throw err;
     }
   }
