@@ -7,6 +7,7 @@ import { directSubtypes, directSupertypes, goShape, structuralImplementers } fro
 import { callGraph, hierarchy } from '../src/tools/search.js';
 import { fileSummary } from '../src/tools/explore.js';
 import { arityFits, paramRange } from '../src/query/arity.js';
+import { searchSymbols } from '../src/query/search.js';
 
 /**
  * Precision cases found by reviewer agents on real repositories (hugo, tokio,
@@ -496,5 +497,48 @@ describe('argument counts', () => {
     assert.equal(callersOf(q.clast.db, q.ctx.resolver, target).length, 0);
     const info = findSymbols(q.clast.db, 'PartitionInfo.partition')[0]!;
     assert.deepEqual(callersOf(q.clast.db, q.ctx.resolver, info).map(e => e.caller?.qname), ['Mock.first']);
+  });
+});
+
+describe('descriptive search', () => {
+  let q: Project;
+  before(async () => {
+    q = await createProject({
+      'src/middleware.ts': `export class ProxyMiddleware {
+  /** Entry point of the middleware. */
+  apply(ctx: Ctx): void {
+    const forwardedFor = ctx.headers.get('X-Forwarded-For');
+    const remoteIp = parseAddress(forwardedFor);
+    ctx.connection.remoteIpAddress = remoteIp;
+  }
+}
+
+export function parseAddress(text: string): string { return text.trim(); }
+`,
+      'src/options.ts': `/** Options for forwarded headers. */
+export class ForwardedHeadersOptions {
+  limit = 1;
+}
+`,
+      'src/overloads.ts': `export function debounce(fn: () => void): void;
+export function debounce(fn: () => void, wait: number): void;
+export function debounce(fn: () => void, wait?: number): void {
+  setTimeout(fn, wait ?? 0);
+}
+`,
+    });
+  });
+  after(() => q.dispose());
+
+  it('finds a function by what its body does when no name says it', () => {
+    const { hits } = searchSymbols(q.clast.db, 'update remote ip from forwarded headers', { limit: 5 });
+    assert.equal(hits[0]!.sym.qname, 'ProxyMiddleware.apply');
+  });
+
+  it('folds overloads into one hit', () => {
+    const { hits } = searchSymbols(q.clast.db, 'debounce', { limit: 5 });
+    const own = hits.filter(h => h.sym.name === 'debounce');
+    assert.equal(own.length, 1);
+    assert.equal(own[0]!.overloads, 2);
   });
 });

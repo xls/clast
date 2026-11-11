@@ -67,7 +67,7 @@ export async function startServer(): Promise<void> {
     {
       title: 'Search symbols',
       description:
-        'Ranked symbol search (functions, classes, methods, types, variables). Query by exact name, partial or abbreviated name ("parseConf", "pcfg"), typo, qualified name ("Parser.parse"), or plain words describing behaviour ("resolve import path": matched against names, signatures, docs). Returns kind, qualified name, file:line, signature and doc summary. Prefer over grep for finding definitions. An array runs several searches in one call.',
+        'Ranked symbol search (functions, classes, methods, types, variables). Query by exact name, partial or abbreviated name ("parseConf", "pcfg"), typo, qualified name ("Parser.parse"), or plain words describing behaviour ("resolve import path": matched against names, signatures, docs, and the identifiers used inside function bodies). Returns kind, qualified name, file:line, signature and doc summary. Prefer over grep for finding definitions. An array runs several searches in one call.',
       inputSchema: {
         query: names.describe('Name, partial name, Container.name, or descriptive words. Array = several searches.'),
         kind: z.enum(SYMBOL_KINDS as [string, ...string[]]).optional().describe('Only this kind of symbol'),

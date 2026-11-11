@@ -68,7 +68,7 @@ The project root is `CLAST_PROJECT_DIR`, else `CLAUDE_PROJECT_DIR`, else the wor
 |------|---------|-------------|
 | `clast_overview` | What is in this repo / directory? | First call in an unfamiliar codebase: languages, layout with sizes, most referenced symbols, hub files, entry points |
 | `clast_file_summary` | What is in this file / directory? | Outline of a file (signatures, line ranges, doc summaries, imports, importers) or a directory listing with main symbols |
-| `clast_search` | Where is X? What is it called? | Ranked symbol search by name, partial name, abbreviation, typo, qualified name or descriptive words |
+| `clast_search` | Where is X? What is it called? | Ranked symbol search by name, partial name, abbreviation, typo, qualified name or descriptive words (matched against names, signatures, docs and what function bodies mention) |
 | `clast_get_context` | Show me X. | Source of one symbol plus callers, callees, overloads, overrides, subtypes. Batch several names in one call |
 | `clast_call_graph` | Who calls X? What does X call? | Caller / callee tree to depth N, test callers separated, `within` path filter. Works for external names too |
 | `clast_references` | Where is X used? | Every usage of an identifier (calls, types, imports, assignments) with the enclosing symbol of each line |
