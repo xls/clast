@@ -91,7 +91,9 @@ export function findSymbols(
   ref: string | SymbolRef,
   opts: { path?: string; kind?: string; exact?: boolean } = {}
 ): SymbolRow[] {
-  const r = typeof ref === 'string' ? parseSymbolRef(ref) : ref;
+  let r = typeof ref === 'string' ? parseSymbolRef(ref) : ref;
+  // Ruby `loaded!`: the parser drops a trailing `!` (Rust macro syntax), keep it when such a name exists.
+  if (typeof ref === 'string' && /!\s*$/.test(ref) && r.name && db.symbolsByName(r.name + '!').length) r = { ...r, name: r.name + '!' };
   const pathFilter = opts.path ?? r.path;
 
   if (r.line !== undefined && r.path) {
