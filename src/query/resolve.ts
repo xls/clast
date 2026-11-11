@@ -408,7 +408,11 @@ const BUILTIN_RECEIVERS: Record<string, Set<string>> = {
   ]),
   python: new Set(['os', 'sys', 're', 'json', 'math', 'logging', 'time', 'datetime', 'itertools', 'functools', 'str', 'dict', 'list']),
   java: new Set(['System', 'Math', 'String', 'Objects', 'Arrays', 'Collections', 'Integer', 'Long', 'Thread', 'Optional']),
-  csharp: new Set(['Console', 'Math', 'String', 'Convert', 'Task', 'Enumerable', 'Path', 'File', 'Guid', 'Environment']),
+  csharp: new Set([
+    'Console', 'Math', 'String', 'Convert', 'Task', 'Enumerable', 'Path', 'File', 'Guid', 'Environment',
+    // keyword types: string.IsNullOrEmpty(), int.Parse(), object.ReferenceEquals()
+    'string', 'object', 'int', 'long', 'short', 'byte', 'uint', 'ulong', 'double', 'float', 'decimal', 'bool', 'char',
+  ]),
   go: new Set(['fmt', 'os', 'strings', 'strconv', 'bytes', 'errors', 'time', 'sync', 'math', 'sort', 'io', 'context']),
   rust: new Set(['std', 'core', 'alloc', 'Vec', 'String', 'Box', 'Arc', 'Rc', 'Option', 'Result', 'HashMap', 'mem', 'ptr', 'fmt']),
   ruby: new Set([

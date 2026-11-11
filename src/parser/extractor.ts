@@ -123,6 +123,9 @@ function boundVariable(call: Node): string | null {
 
 const ARGUMENT_LISTS = new Set(['argument_list', 'arguments', 'value_arguments']);
 
+/** Languages where a bare name inside a method can be a field of the enclosing class. */
+const IMPLICIT_THIS_SPECS = new Set(['java', 'csharp', 'cpp', 'c', 'swift', 'dart', 'kotlin']);
+
 /** Number of arguments of a call node, or -1 when it cannot be counted (spread, no argument list). */
 function argCount(node: Node): number {
   // Flat grammars (Dart) hand in synthetic call spans that are not real nodes.
@@ -538,9 +541,13 @@ export function extract(tree: Tree, source: string, compiled: CompiledSpec): Ext
       return containerByName.get(name);
     };
     /** Declared type of `name` visible from symbol `owner` (walks enclosing symbols, then the file). */
+    // Only where members can be named without `this.` is a class field in scope for a bare name:
+    // in TypeScript or Python a local `targets` is not the field `this.targets`.
+    const implicitThis = IMPLICIT_THIS_SPECS.has(compiled.spec.id);
     const lookup = (owner: number, name: string): string | undefined => {
       for (let cur = owner, guard = 0; guard < 12; guard++) {
-        const hit = hints.get(cur)?.get(name);
+        const skip = !implicitThis && cur >= 0 && CONTAINER_KINDS.has(symbols[cur]!.kind);
+        const hit = skip ? undefined : hints.get(cur)?.get(name);
         if (hit) return hit;
         if (cur < 0) return undefined;
         cur = symbols[cur]!.parent;

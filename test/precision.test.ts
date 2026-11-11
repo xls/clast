@@ -1109,3 +1109,34 @@ end
     assert.deepEqual(callers('Person.offset'), [], 'offset is assigned as a local in update');
   });
 });
+
+describe('a local that shadows a field', () => {
+  let q: Project;
+  before(async () => {
+    q = await createProject({
+      'src/list.ts': `export class LinkedList {
+  push(item: number): void {}
+}
+`,
+      'src/touch.ts': `import { LinkedList } from './list.js';
+
+export class Gesture {
+  private targets = new LinkedList();
+
+  viaField(): void { this.targets.push(1); }
+
+  viaLocal(): void {
+    const targets: number[] = [];
+    targets.push(2);
+  }
+}
+`,
+    });
+  });
+  after(() => q.dispose());
+
+  it('a bare name is not the class field of that name where this. is required', () => {
+    const edges = callersOf(q.clast.db, q.ctx.resolver, findSymbols(q.clast.db, 'LinkedList.push')[0]!);
+    assert.deepEqual(edges.filter(e => e.certain).map(e => e.caller?.qname), ['Gesture.viaField']);
+  });
+});
