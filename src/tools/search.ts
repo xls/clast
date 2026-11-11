@@ -1,3 +1,4 @@
+import { SYMBOL_COLUMNS, SYMBOL_FROM } from '../db/index.js';
 import { CALLABLE_KINDS, CONTAINER_KINDS, SYMBOL_KINDS, type SymbolRow } from '../types.js';
 import {
   buildGraph, calleesOf, callersOf, externalCallSites, groupCallers, type CallerEdge, type GraphNode,
@@ -96,6 +97,52 @@ function memberOutline(ctx: ToolContext, sym: SymbolRow, max: number): string[] 
     const names = [...new Set(data.map(d => d.name))];
     out.push(`  fields (${names.length}): ${names.slice(0, 40).join(', ')}${names.length > 40 ? ', ...' : ''}`);
   }
+  return out;
+}
+
+/** Languages where methods are (or may be) written outside the body of their type. */
+const OUTSIDE_METHOD_LANGS = new Set(['go', 'rust', 'cpp', 'c', 'swift', 'dart', 'csharp']);
+
+/**
+ * Methods of a type that are defined outside its body: Go receivers, Rust impl
+ * blocks, C++ out-of-line definitions, Swift / Dart extensions, other parts of
+ * a C# partial class. A struct's source alone does not show them.
+ */
+function outsideMethods(ctx: ToolContext, sym: SymbolRow, max: number): string[] {
+  if (!OUTSIDE_METHOD_LANGS.has(sym.lang)) return [];
+  const prefix = sym.qname + '.';
+  const dir = sym.path.slice(0, sym.path.lastIndexOf('/') + 1);
+  const rows = ctx.db
+    .all<SymbolRow>(
+      `SELECT ${SYMBOL_COLUMNS} FROM ${SYMBOL_FROM}
+       WHERE s.qname LIKE ? ESCAPE '\\' AND s.kind IN ('method', 'function') AND f.lang = ? LIMIT 2000`,
+      prefix.replace(/[\\%_]/g, c => '\\' + c) + '%', sym.lang
+    )
+    .filter(m =>
+      m.parent_id !== sym.id && m.qname.startsWith(prefix) && !m.qname.slice(prefix.length).includes('.') &&
+      // Go type names repeat across packages: stay with this one's directory. Rust modules are files:
+      // a same-named type next door (semaphore.rs / batch_semaphore.rs) is another type.
+      (sym.lang === 'go' ? m.path.startsWith(dir) && !m.path.slice(dir.length).includes('/') : sym.lang === 'rust' ? m.file_id === sym.file_id : true)
+    );
+  if (rows.length === 0) return [];
+  rows.sort((a, b) => a.path.localeCompare(b.path) || a.start_line - b.start_line);
+  const out: string[] = [`methods defined outside the body (${rows.length}):`];
+  let file = '';
+  const seen = new Set<string>();
+  let shown = 0;
+  for (const m of rows) {
+    if (shown >= max) break;
+    const key = m.path + ':' + m.name;
+    if (seen.has(key)) continue; // overloads / cfg variants
+    seen.add(key);
+    if (m.path !== file) {
+      file = m.path;
+      out.push(`  ${file}`);
+    }
+    out.push(`    ${range(m).padEnd(9)} ${firstLine(m.signature || m.name, 130)}`);
+    shown++;
+  }
+  if (rows.length > shown && shown >= max) out.push(`  ... more (clast_search "${sym.name}." or clast_file_summary on the files above)`);
   return out;
 }
 
@@ -287,6 +334,8 @@ async function describe(ctx: ToolContext, sym: SymbolRow, args: ContextArgs, ove
       }
     }
   }
+
+  if (isContainer || sym.kind === 'type') out.push(...outsideMethods(ctx, sym, 40));
 
   if (overloads.length) {
     out.push(`overloads / other declarations here (address one as ${sym.path}:<line>):`);
