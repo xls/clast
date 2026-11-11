@@ -45,6 +45,25 @@ export class ToolContext {
     return `note: index is still being built (${p.done}/${p.total} files parsed) - results may be incomplete; retry shortly.\n\n`;
   }
 
+  /**
+   * Gate for query tools: waits briefly for a running index. If a FIRST-TIME
+   * build is still going after that, returns a message to send instead of
+   * running the query (the half-loaded index has no lookup indexes yet, so a
+   * query would be slow and incomplete). Otherwise returns null.
+   */
+  async gate(): Promise<string | null> {
+    if (!this.indexer.isIndexing) return null;
+    const done = await this.indexer.whenIdle(this.waitMs);
+    if (done || !this.indexer.coldBuild) return null;
+    const p = this.indexer.progress;
+    const pct = p.total ? Math.floor((100 * p.done) / p.total) : 0;
+    return (
+      `clast is building its index for the first time (${p.done}/${p.total} files, ${pct}%). ` +
+      `This takes seconds to about half a minute depending on repository size; call again shortly. ` +
+      `(Later sessions start from the saved index and are ready immediately.)`
+    );
+  }
+
   /** Re-index any of these files that changed on disk since they were indexed. */
   async fresh(paths: Iterable<string>): Promise<void> {
     const list = [...paths];

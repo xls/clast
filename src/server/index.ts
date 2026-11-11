@@ -49,8 +49,12 @@ export async function startServer(): Promise<void> {
   const server = new McpServer({ name: 'clast', version: VERSION }, { instructions: INSTRUCTIONS });
 
   const names = z.union([z.string(), z.array(z.string()).max(20)]);
-  const guard = <A>(fn: (args: A) => Promise<string>) => async (args: A) => {
+  const guard = <A>(fn: (args: A) => Promise<string>, gated = true) => async (args: A) => {
     try {
+      if (gated) {
+        const building = await ctx.gate();
+        if (building) return text(building);
+      }
       return text(await fn(args));
     } catch (err) {
       log(`tool error: ${err instanceof Error ? err.stack ?? err.message : err}`);
@@ -227,7 +231,7 @@ export async function startServer(): Promise<void> {
       inputSchema: {},
       annotations: READ_ONLY,
     },
-    guard(() => status(ctx, watcher))
+    guard(() => status(ctx, watcher), false)
   );
 
   server.registerTool(
@@ -242,7 +246,7 @@ export async function startServer(): Promise<void> {
       },
       annotations: { readOnlyHint: false, idempotentHint: true, openWorldHint: false },
     },
-    guard(args => reindex(ctx, args))
+    guard(args => reindex(ctx, args), false)
   );
 
   server.registerTool(

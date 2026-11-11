@@ -42,6 +42,8 @@ export class Indexer {
   readonly parser = new SourceParser();
   progress: IndexProgress = { phase: 'idle', done: 0, total: 0 };
   lastResult: IndexResult | null = null;
+  /** True while a first-time index is being loaded (secondary indexes are not built yet). */
+  coldBuild = false;
   private running: Promise<IndexResult> | null = null;
   private structureChanged = false;
 
@@ -121,6 +123,7 @@ export class Indexer {
     const cold = known.size === 0;
     const writeBatch = bulk ? BULK_WRITE_BATCH : WRITE_BATCH;
     if (bulk) this.db.beginBulk(cold);
+    this.coldBuild = bulk && cold;
 
     this.progress = { phase: 'parsing', done: 0, total: tasks.length };
     let parsed = 0;
@@ -144,26 +147,45 @@ export class Indexer {
       writeMs += performance.now() - t0;
     };
 
+    const completed = new Set<string>();
     const onResult = (r: FileResult): void => {
       pending.push(r);
+      completed.add(r.rel);
       this.progress.done++;
       if (pending.length >= writeBatch) flush();
     };
-
-    const workerCount = this.workerCount(tasks.length);
-    if (workerCount > 1) {
-      await this.runPool(tasks, workerCount, onResult);
-    } else {
-      for (const task of tasks) {
+    const inline = async (list: FileTask[]): Promise<void> => {
+      for (const task of list) {
         onResult(await processFile(this.parser, task, this.config.maxFileSize));
         // Yield so the MCP transport stays responsive during a cold index.
         if (this.progress.done % 25 === 0) await new Promise<void>(res => setImmediate(res));
       }
+    };
+
+    let workerCount = this.workerCount(tasks.length);
+    let endBulkMs = 0;
+    try {
+      if (workerCount > 1) {
+        try {
+          await this.runPool(tasks, workerCount, onResult);
+        } catch (err) {
+          // A worker died (out of memory, a crashing grammar): finish the rest on this thread.
+          console.error(`[clast] parser worker failed (${err instanceof Error ? err.message : err}); continuing without workers`);
+          workerCount = 1;
+          await inline(tasks.filter(t => !completed.has(t.rel)));
+        }
+      } else {
+        await inline(tasks);
+      }
+      flush();
+    } finally {
+      // Always leave bulk mode: it restores the journal and rebuilds the secondary indexes,
+      // without which every query would scan whole tables.
+      const tBulk = performance.now();
+      if (bulk) this.db.endBulk();
+      endBulkMs = performance.now() - tBulk;
+      this.coldBuild = false;
     }
-    flush();
-    const tBulk = performance.now();
-    if (bulk) this.db.endBulk();
-    const endBulkMs = performance.now() - tBulk;
 
     const parseDoneMs = performance.now() - start;
     this.progress.phase = 'finalizing';
