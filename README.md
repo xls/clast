@@ -1,487 +1,270 @@
-# Clast v0.1e
+# Clast v0.2
 
-AST-based code intelligence plugin for Claude Code. Indexes your repository using [tree-sitter](https://tree-sitter.github.io/), maintains a live AST database, and exposes MCP tools for fast symbol search, call graph traversal, and context retrieval.
+A code index for LLM coding agents, served over MCP. Clast parses your repository with
+[tree-sitter](https://tree-sitter.github.io/), keeps a live index of symbols, calls, references, imports and
+type relationships in SQLite, and exposes tools that answer navigation questions in one call instead of a
+chain of greps and file reads.
 
-## Features
+What an agent gets:
 
-- **Multi-language AST parsing** — TypeScript, JavaScript, Python, Java, C#, Go, Rust, C/C++, Ruby, PHP
-- **Call graph tracking** — Trace callers and callees with configurable depth
-- **Live file watching** — Automatic incremental re-indexing on file changes
-- **Comment extraction** — Reads existing docstrings/comments; optionally generates missing ones via local LLM
-- **Per-project database** — Each repo gets its own `.clast/` SQLite database with file hashes for change detection
-- **Cross-platform** — Pure WASM (no native compilation), works on Windows, macOS, Linux
-- **Zero config** — Automatically indexes the current working directory on startup
+- **Ranked symbol search** - exact names, partial names, abbreviations (`KProd`, `gcn`), typos, qualified
+  names (`Parser.parse`) and plain words (`resolve import path`) matched against names, signatures and docs.
+- **Exact symbol source** - the body of one function or class, read fresh from disk with line numbers,
+  together with its callers, callees, overrides and subtypes. No need to read the whole file.
+- **Type-aware call graph** - calls are resolved with declared receiver types, imports, inheritance and
+  `this`/`self`, so `record.topic()` goes to the right class and `list.push()` is not mistaken for your
+  `Stack.push`. Edges that are name-only guesses are marked `?`.
+- **References, type hierarchy, repo map, text search, git change impact** - see the tool list below.
+- **Always fresh** - a file watcher re-indexes on save, and every query re-checks the files it is about to
+  quote, so line numbers and source are never stale, even right after the agent edits a file.
+- **Fast** - parallel indexing in worker threads; warm start only stats files; queries take milliseconds.
+- **No native compilation** - grammars are WASM, storage is Node's built-in `node:sqlite`.
+
+Languages: TypeScript, TSX, JavaScript, Python, Java, C#, Go, Rust, C, C++, Ruby, PHP.
 
 ---
 
-## Quick Start
+## Quick start
 
-**Two steps:** install the package, then register it with Claude Code.
-
-### Step 1: Install
+Requires **Node.js 22.22 or newer** (Clast uses the built-in SQLite module).
 
 ```bash
 npm install -g clast-ai
-```
-
-### Step 2: Register with Claude Code
-
-```bash
 claude mcp add -s user clast clast-ai
 ```
 
-The `-s user` flag makes it available globally across all projects. Without it, the server is only registered for the current directory.
+`-s user` registers the server for all projects. Restart Claude Code (or "Developer: Reload Window" in
+VS Code) and run `/mcp`: `clast` should be listed with 12 tools. The first start indexes the project in
+the background; the tools are usable immediately and report progress while the index is being built.
 
-### Step 3: Reload
-
-- **VS Code:** Press `Ctrl+Shift+P` (or `Cmd+Shift+P` on Mac) → type "Developer: Reload Window" → Enter
-- **CLI:** Just relaunch `claude`
-
-### Step 4: Verify
-
-Type `/mcp` in the Claude Code chat panel. You should see `clast` listed with 7 tools.
-
-> **That's it.** Clast will automatically index your project when Claude Code starts. No config files needed.
-
----
-
-### Alternative Install Methods
-
-**From GitHub (no npm publish needed):**
+Other ways to install:
 
 ```bash
+# from GitHub
 npm install -g github:xls/clast
-claude mcp add -s user clast clast-ai
-```
 
-**Clone and build:**
-
-```bash
-git clone https://github.com/xls/clast.git
-cd clast
+# from a clone
+git clone https://github.com/xls/clast.git && cd clast
 npm install && npm run build
-claude mcp add clast node /path/to/clast/dist/server/index.js
-```
+claude mcp add -s user clast node /path/to/clast/dist/cli.js
 
-**As a Claude Code Plugin** (includes auto-triggering skill):
-
-```bash
-git clone https://github.com/xls/clast.git
-cd clast
-npm install && npm run build
+# as a Claude Code plugin (bundles a skill that teaches Claude when to use the tools)
 claude plugin add /path/to/clast
 ```
 
-> The plugin install bundles a model-invoked skill that automatically tells Claude to prefer Clast tools over grep/file reading. With the MCP-only install, you may need to tell Claude to use the clast tools.
+Per-project registration: put this in `.mcp.json` in the project root.
+
+```json
+{ "mcpServers": { "clast": { "command": "clast-ai" } } }
+```
+
+The project root is `CLAST_PROJECT_DIR`, else `CLAUDE_PROJECT_DIR`, else the working directory.
 
 ---
 
-## Setup for CLI
+## Tools
 
-Add to `~/.claude/settings.local.json`:
+| Tool | Answers | Typical use |
+|------|---------|-------------|
+| `clast_overview` | What is in this repo / directory? | First call in an unfamiliar codebase: languages, layout with sizes, most referenced symbols, hub files, entry points |
+| `clast_file_summary` | What is in this file / directory? | Outline of a file (signatures, line ranges, doc summaries, imports, importers) or a directory listing with main symbols |
+| `clast_search` | Where is X? What is it called? | Ranked symbol search by name, partial name, abbreviation, typo, qualified name or descriptive words |
+| `clast_get_context` | Show me X. | Source of one symbol plus callers, callees, overloads, overrides, subtypes. Batch several names in one call |
+| `clast_call_graph` | Who calls X? What does X call? | Caller / callee tree to depth N, test callers separated, `within` path filter. Works for external names too |
+| `clast_references` | Where is X used? | Every usage of an identifier (calls, types, imports, assignments) with the enclosing symbol of each line |
+| `clast_hierarchy` | What implements / extends / overrides X? | Supertypes and transitive subtypes; Go interface satisfaction by method set; the same method across related types |
+| `clast_grep` | Where does this text appear? | Literal or regex search over all text files; each hit is labelled with its enclosing function |
+| `clast_changes` | What did this diff touch? | Symbols changed vs HEAD or a base ref, their callers outside the change, and the tests that exercise them |
+| `clast_status` | Is the index healthy? | Counts, languages, indexing progress, watcher state |
+| `clast_reindex` | Rebuild | Rarely needed; incremental rescan or forced rebuild |
+| `clast_comment` | Docs for X | Existing doc comment, or one generated by a local LLM (optional) |
 
-```json
-{
-  "mcpServers": {
-    "clast": {
-      "command": "clast-ai"
-    }
-  }
-}
+All tools return compact plain text (not JSON): one line per fact, `path:line` locations that can be
+passed straight to an editor, and a hint about the next useful call when something is not found.
+
+### Addressing symbols
+
+Anywhere a tool takes a symbol name you can write:
+
+| Form | Example |
+|------|---------|
+| bare name | `parseConfig` |
+| member | `Parser.parse`, `Parser::parse`, `Parser#parse` |
+| inherited member | `Engine.GET` (defined on an embedded / base type) |
+| package or module path | `django.shortcuts.render`, `page.Clear`, `Illuminate\Pipeline\Pipeline` |
+| file and name | `src/db/index.ts:open` |
+| file and line | `src/db/index.ts:120` (the symbol containing that line) |
+
+When a bare name has many unrelated definitions the tools list them instead of guessing.
+
+### Example
+
+```
+> clast_get_context { "name": "cylinderVolume" }
+
+function cylinderVolume  src/math/volume.ts:4-6  [exported]
+3| /** Volume of a cylinder. */
+4| export function cylinderVolume(radius: number, height: number): number {
+5|   return circleArea(radius) * height;
+6| }
+callers (1 resolved):
+  main  src/app.ts:10
+calls (1):
+  circleArea  src/math/area.ts:2-4
 ```
 
-Or using the CLI:
+```
+> clast_call_graph { "name": "MemTable.Add", "direction": "callers" }
+
+method leveldb.MemTable.Add  db/memtable.cc:76-100
+  void MemTable::Add(SequenceNumber s, ValueType type, const Slice& key, const Slice& value)
+callers (3; caller  call-site):
+  leveldb.MemTableInserter.Put  db/write_batch.cc:122
+  leveldb.MemTableInserter.Delete  db/write_batch.cc:126
+  leveldb.MemTableConstructor.FinishImpl  table/table_test.cc:315
+```
+
+---
+
+## How Claude knows to use it
+
+The server sends usage instructions to the client when it connects, and every tool description says when
+to prefer it over grep or reading files. Installed as a plugin, the bundled `clast-explore` skill adds a
+short workflow guide. You can also say it once: "use the clast tools to navigate the code".
+
+---
+
+## Command line
+
+The same queries are available from a shell, which is handy for scripts, hooks and debugging:
 
 ```bash
-claude mcp add -s user clast clast-ai
-#              ^^^^^^^ ^^^^^ ^^^^^^^^
-#              global   name  command
+clast-ai overview                      # repository map
+clast-ai outline src/db                # directory or file outline
+clast-ai search "resolve import path"  # ranked symbol search
+clast-ai symbol Indexer.indexAll       # source + callers + callees
+clast-ai callers resolveImports --depth 2 --no-tests
+clast-ai hierarchy Shape
+clast-ai refs DEFAULT_CONFIG
+clast-ai grep "TODO" --path src
+clast-ai changes main                  # symbols changed vs main and their impact
+clast-ai index --force                 # rebuild the index
+clast-ai parse file.go                 # debug: what the extractor sees
 ```
 
-> `-s user` makes it global (available in all projects). `clast` is the server name. `clast-ai` is the npm binary.
-
-Reload VS Code (`Ctrl+Shift+P` → "Developer: Reload Window") or relaunch the CLI. Clast will automatically index whichever project directory you open.
-
-## Setup for VS Code (Claude Code Extension)
-
-The Claude Code extension for VS Code uses the **same MCP configuration files** as the CLI. There is no separate VS Code-specific config.
-
-**Step 1:** Open VS Code's integrated terminal and run:
-
-```bash
-claude mcp add -s user clast clast-ai
-```
-
-Or manually add to `~/.claude/settings.local.json`:
-
-```json
-{
-  "mcpServers": {
-    "clast": {
-      "command": "clast-ai"
-    }
-  }
-}
-```
-
-**Step 2:** Reload VS Code:
-
-- Press `Ctrl+Shift+P` (or `Cmd+Shift+P` on Mac)
-- Type "Developer: Reload Window" and hit Enter
-
-**Step 3:** Verify by typing `/mcp` in the Claude Code chat panel — you should see `clast` listed with 7 tools.
-
-> **Note:** When VS Code spawns the MCP server, the working directory is your open workspace folder. Clast automatically indexes that directory — no path configuration needed.
-
-If you built from source instead of installing globally:
-
-```json
-{
-  "mcpServers": {
-    "clast": {
-      "command": "node",
-      "args": ["/path/to/clast/dist/server/index.js"]
-    }
-  }
-}
-```
-
-## Per-Project Config (Optional)
-
-To only enable Clast for a specific project instead of globally, create `.mcp.json` in the project root:
-
-```json
-{
-  "mcpServers": {
-    "clast": {
-      "command": "clast-ai"
-    }
-  }
-}
-```
-
-This way Clast only activates when you open that project.
-
----
-
-## Usage
-
-### What happens when you start Claude Code?
-
-1. Claude Code spawns the Clast MCP server as a background process
-2. Clast automatically scans and indexes your entire project (typically under a second)
-3. The file watcher starts monitoring for changes
-4. All 7 `clast_*` tools become available to Claude
-
-**You don't need to do anything** — the AST database is created automatically. There's no manual "index" step.
-
-### How does Claude know to use Clast?
-
-**If installed as a plugin** (`claude plugin add`): The bundled skill automatically tells Claude to prefer Clast tools over `Grep`/`Read` when exploring code.
-
-**If installed as an MCP server** (`claude mcp add`): Claude sees the tools and their descriptions, which instruct it to prefer Clast for symbol lookups, call graphs, and file structure. You can also explicitly ask Claude to use them:
-
-- *"Use clast to find the Database class"*
-- *"What calls parseAndStore? Check the call graph"*
-- *"Show me the structure of queries.ts using clast"*
-
-Or you can tell Claude once at the start of a session:
-
-> *"Use the clast tools to navigate code instead of reading files directly"*
-
-### What can you ask Claude?
-
-| What you want | What to ask | Tool Claude uses |
-|---------------|-------------|------------------|
-| Find a function | *"Find the extractFromTree function"* | `clast_search` |
-| Understand a function before editing | *"What does parseAndStore do? Show me its context"* | `clast_get_context` |
-| Check what calls a function | *"What calls resolveCallEdges?"* | `clast_call_graph` |
-| Understand a file's structure | *"What's in src/db/queries.ts?"* | `clast_file_summary` |
-| Check if the index is working | *"Show clast status"* | `clast_status` |
-| Force re-index after big changes | *"Reindex the project"* | `clast_reindex` |
-| Generate a missing docstring | *"Generate a comment for the insertNodes function"* | `clast_comment` |
-
-### Does the index stay up to date?
-
-Yes. The file watcher detects changes in real-time:
-
-- **File saved** → re-parsed, AST database updated, call edges re-resolved
-- **File deleted** → removed from database
-- **New file created** → parsed and added
-
-Only changed files are re-parsed (SHA-256 hash comparison), so incremental updates are near-instant.
-
----
-
-## Testing with MCP Inspector
-
-To interactively test the tools without Claude Code:
-
-```bash
-npx @modelcontextprotocol/inspector node /path/to/clast/dist/server/index.js
-```
-
-Opens a web UI where you can call each tool and see responses.
-
----
-
-## How It Detects Your Project
-
-Clast resolves the project root in this order:
-
-1. `CLAST_PROJECT_DIR` environment variable (explicit override)
-2. `CLAUDE_PROJECT_DIR` (set automatically by Claude Code for plugins)
-3. `process.cwd()` — the current working directory
-
-**In most cases you don't need to set anything.** Claude Code (both CLI and VS Code) sets the working directory to your project folder when spawning MCP servers.
-
-Override example (for indexing a different directory):
-
-```json
-{
-  "mcpServers": {
-    "clast": {
-      "command": "clast-ai",
-      "env": {
-        "CLAST_PROJECT_DIR": "/path/to/other/project"
-      }
-    }
-  }
-}
-```
-
----
-
-## MCP Tools
-
-| Tool | Description | Read-only |
-|------|-------------|-----------|
-| `clast_search` | Search symbols by name, type, or pattern | Yes |
-| `clast_call_graph` | Trace callers/callees with configurable depth (1-5 levels) | Yes |
-| `clast_file_summary` | All symbols in a file, grouped by type (imports, classes, functions, etc.) | Yes |
-| `clast_get_context` | Full symbol context: definition, comments, callers, callees, parent class | Yes |
-| `clast_status` | Index statistics: files, nodes, edges, watcher state | Yes |
-| `clast_reindex` | Force re-index a specific file or the entire repo | No |
-| `clast_comment` | Get existing or generate new documentation comments via LLM | No |
-
-### Example Usage in Claude Code
-
-- *"Search for the ParserManager class"* → Claude uses `clast_search`
-- *"What calls the `parseAndStore` function?"* → Claude uses `clast_call_graph`
-- *"Show me the structure of `src/db/queries.ts`"* → Claude uses `clast_file_summary`
-- *"I need to refactor `extractFromTree` — what's the blast radius?"* → Claude uses `clast_get_context` + `clast_call_graph`
+Add `--root <dir>` to point at another project. `clast-ai` with no arguments runs the MCP server.
 
 ---
 
 ## Configuration
 
-Configuration is optional. Clast works with sensible defaults out of the box.
-
-To customize, create `clast.config.json` in your project root (or `.claude/clast.config.json`):
+Optional. Create `clast.config.json` (or `.claude/clast.config.json`) in the project root:
 
 ```json
 {
-  "languages": ["typescript", "javascript", "python", "java", "go", "rust"],
-  "ignoredPaths": ["node_modules", ".git", "dist", "build"],
-  "dbPath": ".clast/clast.db",
-  "maxBodySize": 2000,
-  "llm": {
-    "endpoint": "http://localhost:11434/v1",
-    "model": "qwen2.5-coder:7b",
-    "apiKey": "",
-    "alwaysGenerate": false,
-    "maxConcurrent": 3
-  },
-  "watch": {
-    "debounceMs": 300,
-    "enabled": true
-  }
+  "languages": ["typescript", "python"],
+  "ignoredPaths": ["node_modules", "dist", "*.min.js"],
+  "respectGitignore": true,
+  "maxFileSize": 1000000,
+  "workers": 0,
+  "watch": { "enabled": true, "debounceMs": 200 },
+  "llm": { "endpoint": "http://localhost:11434/v1", "model": "" }
 }
 ```
 
-| Setting | Default | Description |
-|---------|---------|-------------|
-| `languages` | All supported (see below) | Which languages to parse |
-| `ignoredPaths` | `node_modules`, `.git`, `dist`, etc. | Directories to skip |
-| `dbPath` | `.clast/clast.db` | SQLite database location (relative to project root) |
-| `maxBodySize` | `2000` | Max characters of function body stored per node |
-| `llm.endpoint` | `http://localhost:11434/v1` | OpenAI-compatible API endpoint |
-| `llm.model` | `""` (disabled) | LLM model name — empty string disables comment generation |
-| `llm.apiKey` | `""` | API key if the endpoint requires one |
-| `llm.alwaysGenerate` | `false` | Generate LLM comments even when original comments exist |
-| `llm.maxConcurrent` | `3` | Max parallel LLM requests during batch generation |
-| `watch.enabled` | `true` | Watch filesystem for changes |
-| `watch.debounceMs` | `300` | Debounce delay for file change events |
+| Setting | Default | Meaning |
+|---------|---------|---------|
+| `languages` | all | Language ids to index (see below) |
+| `ignoredPaths` | common build / dependency dirs | gitignore-style patterns to skip, in addition to `.gitignore` |
+| `respectGitignore` | `true` | Honour `.gitignore` files, including nested ones |
+| `dbPath` | `.clast/index.db` | Index location (the directory gets its own `.gitignore`) |
+| `maxFileSize` | `1000000` | Skip files larger than this many bytes |
+| `workers` | `0` (auto) | Parser threads for bulk indexing; `1` disables workers |
+| `watch.enabled` | `true` | Re-index files as they change |
+| `watch.debounceMs` | `200` | Debounce for file change events |
+| `llm.*` | disabled | OpenAI-compatible endpoint for `clast_comment` generation |
 
-### Supported Languages
+Environment: `CLAST_PROJECT_DIR` (project root), `CLAST_DB_PATH` (index location override),
+`CLAST_GRAMMARS_DIR` (alternative grammar directory), `CLAST_DEBUG=1` (timings and spec warnings).
 
-| Language | Config name | File extensions |
-|----------|-------------|-----------------|
-| TypeScript | `typescript` | `.ts` |
-| TSX | `tsx` | `.tsx` |
+| Language | id | Extensions |
+|----------|----|------------|
+| TypeScript | `typescript` (also enables `tsx`) | `.ts`, `.mts`, `.cts`, `.tsx` |
 | JavaScript | `javascript` | `.js`, `.jsx`, `.mjs`, `.cjs` |
-| Python | `python` | `.py`, `.pyw` |
+| Python | `python` | `.py`, `.pyi`, `.pyw` |
 | Java | `java` | `.java` |
 | C# | `csharp` | `.cs` |
 | Go | `go` | `.go` |
 | Rust | `rust` | `.rs` |
-| C | `c` | `.c`, `.h` |
-| C++ | `cpp` | `.cpp`, `.hpp`, `.cc`, `.hh`, `.cxx`, `.hxx` |
-| Ruby | `ruby` | `.rb` |
+| C | `c` | `.c`, `.h` (headers that look like C++ are parsed as C++) |
+| C++ | `cpp` | `.cpp`, `.hpp`, `.cc`, `.hh`, `.cxx`, `.hxx`, `.inl`, `.ipp` |
+| Ruby | `ruby` | `.rb`, `.rake`, `.gemspec` |
 | PHP | `php` | `.php` |
 
-Use the **Config name** values in the `languages` array to enable/disable specific languages:
+### Optional: generated doc comments
 
-```json
-{
-  "languages": ["typescript", "javascript", "python", "go"]
-}
-```
+`clast_comment` can ask a local or hosted OpenAI-compatible model (Ollama, LM Studio, vLLM, OpenAI,
+OpenRouter) to write a doc comment for an undocumented symbol. Set `llm.model` to enable it, for example
+`{"llm": {"endpoint": "http://localhost:11434/v1", "model": "qwen2.5-coder:7b"}}` for Ollama. Generated
+text is stored by file path and qualified name, so it survives re-indexing.
 
 ---
 
-## LLM Comment Generation
+## How it works
 
-Clast can generate documentation comments for functions and classes that lack them. This is **optional and disabled by default** — you need to configure an OpenAI-compatible API endpoint.
+1. **Scan** - walk the tree honouring `.gitignore` (root and nested) and `ignoredPaths`; compare size and
+   mtime with the index so an unchanged file costs one `stat`.
+2. **Parse** - changed files are read, hashed and parsed by a pool of worker threads (tree-sitter WASM).
+   A per-language spec turns the syntax tree into symbols (with qualified names, signatures, doc comments,
+   line ranges), calls (with receiver text and declared receiver type), imports, inheritance and
+   identifier occurrences.
+3. **Store** - the main thread writes to SQLite (`node:sqlite`, WAL). A cold index uses a bulk-load mode
+   that builds secondary indexes at the end. Symbol names, signatures and docs also go into an FTS5 index.
+4. **Link at query time** - call edges are stored as "symbol A calls name N on receiver R of type T" and
+   resolved when queried, so nothing goes stale when another file changes. Resolution order: declared
+   receiver type, then imports and same-file definitions, then `this`/`self` and inheritance, then
+   evidence scoring for untyped receivers. Interface methods, overrides, overloads and C/C++ prototypes
+   are treated as one target.
+5. **Stay fresh** - a watcher re-indexes saved files; in addition every tool re-checks the files it is
+   about to quote and re-parses them on the spot if they changed.
 
-### Comment Priority Logic
+The index lives in `.clast/index.db` and is a pure cache: delete it at any time.
 
-1. If a function has an existing comment/docstring → use it (no LLM call)
-2. If no comment exists and LLM is configured → generate on demand via `clast_comment`
-3. Set `llm.alwaysGenerate: true` to generate LLM descriptions even when original comments exist
+### Performance
 
-### Setup with Ollama (Free, Local)
+Measured with `npm run bench` (Node 24, Windows 11, 8 parser workers). Cold index is a first run on an
+empty index; warm rescan is a restart with nothing changed.
 
-[Ollama](https://ollama.com/) runs models locally on your machine. No API key needed.
+<!-- BENCH:START -->
+<!-- BENCH:END -->
+
+---
+
+## Upgrading from 0.1
+
+- Node.js 22.22+ is required (was 18).
+- The index moved from `.clast/clast.db` (sql.js) to `.clast/index.db` (`node:sqlite`); the old file is
+  ignored and can be deleted.
+- Tool output is compact text instead of JSON.
+- `clast_call_graph` defaults to depth 1 and gained `within` and `includeTests`.
+- New tools: `clast_references`, `clast_hierarchy`, `clast_overview`, `clast_grep`, `clast_changes`.
+- The binary entry point is `dist/cli.js`; `dist/server/index.js` still starts the server for old configs.
+
+---
+
+## Development
 
 ```bash
-# Install Ollama (https://ollama.com/download)
-# Then pull a code model:
-ollama pull qwen2.5-coder:7b
+npm install
+npm run build        # tsc
+npm test             # node:test, 150+ tests incl. an end-to-end MCP session
+npm run bench -- /path/to/dir-with-repos
 ```
 
-Add to your `clast.config.json`:
-
-```json
-{
-  "llm": {
-    "endpoint": "http://localhost:11434/v1",
-    "model": "qwen2.5-coder:7b"
-  }
-}
-```
-
-Ollama's default port (11434) and Clast's default endpoint already match — so you only need to set the model name.
-
-**Recommended Ollama models for code:**
-
-| Model | Size | VRAM | Quality |
-|-------|------|------|---------|
-| `qwen2.5-coder:7b` | 4.7 GB | ~6 GB | Good |
-| `qwen2.5-coder:14b` | 9 GB | ~12 GB | Better |
-| `qwen2.5-coder:32b` | 18 GB | ~24 GB | Best |
-| `codellama:7b` | 3.8 GB | ~6 GB | Good |
-| `deepseek-coder-v2:16b` | 8.9 GB | ~12 GB | Very good |
-
-### Setup with LM Studio (Free, Local)
-
-[LM Studio](https://lmstudio.ai/) provides a GUI for running local models.
-
-1. Download and install LM Studio
-2. Download a code model (search for "Qwen 2.5 Coder" or "DeepSeek Coder")
-3. Start the local server (LM Studio → Local Server → Start)
-4. LM Studio serves on `http://localhost:1234/v1` by default
-
-```json
-{
-  "llm": {
-    "endpoint": "http://localhost:1234/v1",
-    "model": "qwen2.5-coder-7b-instruct"
-  }
-}
-```
-
-> **Note:** The model name in `clast.config.json` must match exactly what LM Studio shows in its server panel.
-
-### Setup with OpenAI / OpenRouter / Any Cloud API
-
-Any service that exposes an OpenAI-compatible `/v1/chat/completions` endpoint works:
-
-```json
-{
-  "llm": {
-    "endpoint": "https://api.openai.com/v1",
-    "model": "gpt-4o-mini",
-    "apiKey": "sk-..."
-  }
-}
-```
-
-**OpenRouter** (access many models via one API):
-
-```json
-{
-  "llm": {
-    "endpoint": "https://openrouter.ai/api/v1",
-    "model": "qwen/qwen-2.5-coder-32b-instruct",
-    "apiKey": "sk-or-..."
-  }
-}
-```
-
-### Setup with vLLM (Self-Hosted)
-
-If you run [vLLM](https://docs.vllm.ai/) on a server or cloud GPU:
-
-```json
-{
-  "llm": {
-    "endpoint": "http://your-server:8000/v1",
-    "model": "Qwen/Qwen2.5-Coder-7B-Instruct"
-  }
-}
-```
-
----
-
-## How It Works
-
-1. **Startup** — Clast scans your project and parses all supported files using tree-sitter (WASM)
-2. **Storage** — Extracted symbols (functions, classes, methods, imports, etc.) are stored in a SQLite database at `.clast/clast.db`, along with SHA-256 file hashes
-3. **Call graph** — Call relationships are extracted from function bodies and resolved across files using name matching
-4. **Watching** — A file watcher detects changes and incrementally re-indexes only modified files (hash comparison skips unchanged files)
-5. **Querying** — Claude Code queries the AST database through MCP tools instead of reading raw files, getting structured context with file paths and line numbers
-
-### What Gets Indexed
-
-For each supported file, Clast extracts:
-- **Functions and methods** — name, signature, body, line numbers
-- **Classes, interfaces, structs, traits** — with their methods as children
-- **Imports and exports** — module relationships
-- **Enums and type aliases**
-- **Call edges** — which function calls which (resolved across files)
-- **Comments and docstrings** — linked to their parent symbol
-
-### Database Location
-
-Each project gets its own database at `{project_root}/.clast/clast.db`. Add `.clast/` to your `.gitignore` — the database is regenerated on startup from source files.
-
----
-
-## VS Code Extension (Optional)
-
-The `vscode/` directory contains a VS Code extension scaffold that:
-- Auto-detects workspace folders
-- Configures Claude Code's MCP settings automatically
-- Provides commands: `Clast: Reindex`, `Clast: Status`, `Clast: Configure`
-
-This is optional — most users just need the MCP server config described in [Setup for VS Code](#setup-for-vs-code).
-
-## Requirements
-
-- Node.js >= 18
-- For LLM comment generation: an OpenAI-compatible API endpoint (optional)
-- No native compilation required — all dependencies are pure JS/WASM
+Adding a language: create `src/parser/langs/<name>.ts` exporting a `LangSpec` (see `typescript.ts` and
+`python.ts` for the two reference implementations), register it in `src/parser/registry.ts`, and add a
+test under `test/langs/`. `clast-ai ast <file>` dumps the syntax tree and `clast-ai parse <file>` shows what
+your spec extracts. The grammar must be available in `@repomix/tree-sitter-wasms`.
 
 ## License
 

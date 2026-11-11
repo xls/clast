@@ -100,7 +100,7 @@ export function searchSymbols(db: ClastDb, query: string, opts: SearchOptions = 
       add(
         db.all<SymbolRow>(
           `${select} WHERE s.name_lc >= ? AND s.name_lc < ? ORDER BY length(s.name_lc) LIMIT ${CANDIDATE_CAP}`,
-          nameLc, nameLc + '￿'
+          nameLc, nameLc + '\uffff'
         ),
         78, 'prefix',
         s => -Math.min(12, (s.name.length - name.length) * 0.5)
@@ -219,13 +219,15 @@ export function searchSymbols(db: ClastDb, query: string, opts: SearchOptions = 
   // 6. Typos: edit distance against names that share the first two characters.
   best = 0;
   for (const h of found.values()) if (h.score > best) best = h.score;
-  if (!isMultiWord && best < 60 && nameLc.length >= 4 && nameLc.length <= 40) {
+  let nameHit = false;
+  for (const h of found.values()) if (h.match === 'exact' || h.match === 'prefix') { nameHit = true; break; }
+  if (!isMultiWord && !nameHit && nameLc.length >= 4 && nameLc.length <= 40) {
     const bound = nameLc.length >= 9 ? 3 : nameLc.length >= 6 ? 2 : 1;
     const prefix = nameLc.slice(0, 2);
     const names = db.all<{ name_lc: string }>(
       `SELECT DISTINCT s.name_lc AS name_lc FROM symbols s
        WHERE s.name_lc >= ? AND s.name_lc < ? AND length(s.name_lc) BETWEEN ? AND ? LIMIT 20000`,
-      prefix, prefix + '￿', nameLc.length - bound, nameLc.length + bound
+      prefix, prefix + '\uffff', nameLc.length - bound, nameLc.length + bound
     );
     const close: Array<[string, number]> = [];
     for (const row of names) {
@@ -234,7 +236,7 @@ export function searchSymbols(db: ClastDb, query: string, opts: SearchOptions = 
     }
     close.sort((a, b) => a[1] - b[1]);
     for (const [candidate, d] of close.slice(0, 12)) {
-      add(db.all<SymbolRow>(`${select} WHERE s.name_lc = ? LIMIT 40`, candidate), 62 - d * 7, 'typo');
+      add(db.all<SymbolRow>(`${select} WHERE s.name_lc = ? LIMIT 40`, candidate), 84 - d * 9, 'typo');
     }
   }
 
@@ -267,8 +269,12 @@ export function searchSymbols(db: ClastDb, query: string, opts: SearchOptions = 
     h.score -= Math.min(3, (s.qname.split('.').length - 1) * 0.5);
   }
 
+  // Production code always comes before tests / examples / docs (unless the query asks for those):
+  // tests mention every concept by name and would otherwise bury the implementation.
+  const testRank = (h: SearchHit): number => (!wantTests && isTestPath(h.sym.path) ? 1 : 0);
   hits.sort(
     (a, b) =>
+      testRank(a) - testRank(b) ||
       b.score - a.score ||
       a.sym.path.length - b.sym.path.length ||
       a.sym.path.localeCompare(b.sym.path) ||

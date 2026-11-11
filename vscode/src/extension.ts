@@ -62,7 +62,7 @@ function setupClaudeCodeIntegration(context: vscode.ExtensionContext) {
     const clastServerPath = findClastServer(context);
     if (!clastServerPath) {
       vscode.window.showWarningMessage(
-        'Clast: Could not find clast server. Please run `npm install -g clast` or install the Clast Claude Code plugin.'
+        'Clast: Could not find clast server. Please run `npm install -g clast-ai` or install the Clast Claude Code plugin.'
       );
       return;
     }
@@ -113,11 +113,11 @@ function findClastServer(context: vscode.ExtensionContext): string | null {
   // 1. Check if clast is installed globally (npm global)
   const globalPaths = [
     // Unix-like
-    '/usr/local/lib/node_modules/clast/dist/server/index.js',
+    '/usr/local/lib/node_modules/clast-ai/dist/cli.js',
     // Windows npm global
-    path.join(process.env.APPDATA ?? '', 'npm/node_modules/clast/dist/server/index.js'),
+    path.join(process.env.APPDATA ?? '', 'npm/node_modules/clast-ai/dist/cli.js'),
     // Homebrew
-    '/opt/homebrew/lib/node_modules/clast/dist/server/index.js',
+    '/opt/homebrew/lib/node_modules/clast-ai/dist/cli.js',
   ];
 
   for (const p of globalPaths) {
@@ -127,8 +127,8 @@ function findClastServer(context: vscode.ExtensionContext): string | null {
   // 2. Check Claude Code plugins directory
   const homeDir = process.env.HOME ?? process.env.USERPROFILE ?? '';
   const pluginPaths = [
-    path.join(homeDir, '.claude/plugins/marketplaces/claude-plugins-official/clast/dist/server/index.js'),
-    path.join(homeDir, '.claude/plugins/clast/dist/server/index.js'),
+    path.join(homeDir, '.claude/plugins/marketplaces/claude-plugins-official/clast/dist/cli.js'),
+    path.join(homeDir, '.claude/plugins/clast/dist/cli.js'),
   ];
 
   for (const p of pluginPaths) {
@@ -139,7 +139,7 @@ function findClastServer(context: vscode.ExtensionContext): string | null {
   const workspaceFolders = vscode.workspace.workspaceFolders;
   if (workspaceFolders) {
     for (const folder of workspaceFolders) {
-      const localPath = path.join(folder.uri.fsPath, 'node_modules/clast/dist/server/index.js');
+      const localPath = path.join(folder.uri.fsPath, 'node_modules/clast-ai/dist/cli.js');
       if (fs.existsSync(localPath)) return localPath;
     }
   }
@@ -148,10 +148,10 @@ function findClastServer(context: vscode.ExtensionContext): string | null {
   try {
     const { execSync } = require('child_process');
     const prefix = execSync('npm prefix -g', { encoding: 'utf-8' }).trim();
-    const npmGlobalPath = path.join(prefix, 'lib/node_modules/clast/dist/server/index.js');
+    const npmGlobalPath = path.join(prefix, 'lib/node_modules/clast-ai/dist/cli.js');
     if (fs.existsSync(npmGlobalPath)) return npmGlobalPath;
     // Windows variant
-    const npmGlobalPathWin = path.join(prefix, 'node_modules/clast/dist/server/index.js');
+    const npmGlobalPathWin = path.join(prefix, 'node_modules/clast-ai/dist/cli.js');
     if (fs.existsSync(npmGlobalPathWin)) return npmGlobalPathWin;
   } catch {
     // npm not available

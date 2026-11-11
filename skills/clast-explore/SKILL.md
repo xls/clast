@@ -1,41 +1,44 @@
 ---
 name: clast-explore
 description: >
-  Use when exploring or understanding code structure: finding functions, tracing call graphs,
-  understanding symbol context before editing, or generating documentation. Triggers when Claude
-  needs to navigate a codebase, find definitions, understand relationships between functions,
-  or prepare context for code modifications.
-version: 0.1.0
+  Use when exploring, navigating or reviewing code in a repository that has the clast MCP server:
+  finding where something is defined, reading one function or class, tracing who calls what,
+  finding implementations or overrides, checking the blast radius of a change, or getting oriented
+  in an unfamiliar codebase. Prefer these tools over grep and whole-file reads.
+version: 0.2.0
 ---
 
-# Clast Code Intelligence
+# Clast code index
 
-This project has Clast AST indexing active. Before reading entire files or using grep to find
-code, prefer using Clast tools for faster, more structured results:
+This project is indexed by Clast (symbols, calls, references, imports, type hierarchy). The index is
+always current: it follows file changes and re-checks files when you query them, so results are valid
+right after you edit. Answers come back as compact text with `path:line` locations.
 
-## Available Tools
+## Pick the tool by question
 
-1. **clast_search** — Find functions, classes, methods by name pattern.
-   Use this BEFORE grep when looking for a symbol definition.
+| Question | Tool |
+|----------|------|
+| What is in this repo / directory? | `clast_overview` (optionally with `path`) |
+| What is in this file? | `clast_file_summary` (also accepts a directory or a partial path) |
+| Where is X / what is it called? | `clast_search` (names, partial names, abbreviations, typos, or plain words) |
+| Show me X / I am about to edit X | `clast_get_context` (source of that symbol + callers + callees + overrides) |
+| Who calls X? What does X call? | `clast_call_graph` (`depth` 2-3 to follow a chain, `within` to scope) |
+| Where is X used at all? | `clast_references` (types, imports, assignments, not only calls) |
+| What implements / extends / overrides X? | `clast_hierarchy` |
+| Where does this string / comment / config key appear? | `clast_grep` (hits are labelled with their function) |
+| What did my change touch, and what may break? | `clast_changes` (vs HEAD or a base ref) |
 
-2. **clast_get_context** — Get full context for a symbol: definition, comments, who calls it,
-   what it calls. Use this BEFORE reading a file to understand a specific function or class.
+## Habits that save round trips
 
-3. **clast_call_graph** — Trace the call chain: what calls a function (callers) and what it
-   calls (callees). Use this before refactoring to understand impact.
-
-4. **clast_file_summary** — Get all symbols in a file grouped by type. Use this instead of
-   reading a whole file when you just need to understand its structure.
-
-5. **clast_status** — Check if the index is up to date.
-
-6. **clast_reindex** — Force re-index if data seems stale.
-
-7. **clast_comment** — Get or generate documentation for a function/class.
-
-## Workflow Tips
-
-- When asked to edit a function: use `clast_get_context` first to understand it, then edit.
-- When asked to refactor: use `clast_call_graph` to understand the blast radius.
-- When exploring unfamiliar code: use `clast_file_summary` on key files.
-- When adding features: use `clast_search` to find related existing code.
+- Batch: `clast_search` and `clast_get_context` accept arrays of names.
+- Address symbols precisely: `Class.method`, `path/file.ext:name`, `path/file.ext:123`,
+  `pkg.module.name`. If a bare name is ambiguous the tool lists the candidates.
+- Read the symbol, not the file: `clast_get_context` returns exactly the lines of the definition.
+  Use `clast_file_summary` first when you need the shape of a file.
+- Before changing a signature: `clast_call_graph` with `direction: "callers"`; add
+  `includeTests: false` to see production callers only. Edges marked `?` are name-only matches on an
+  untyped receiver: verify those before relying on them.
+- After editing: `clast_changes` lists the touched symbols, callers outside the change and the test
+  files that exercise them.
+- If a tool says a name is not defined in the project, it is external or built dynamically:
+  `clast_references` and `clast_grep` still find its uses.

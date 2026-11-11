@@ -25,21 +25,34 @@ export interface SuperEdge {
  * subtype's file (imports, same file, proximity) back to `sym`.
  */
 export function directSubtypes(db: ClastDb, resolver: Resolver, sym: SymbolRow): TypeEdge[] {
-  const rows = db.all<SymbolRow & { hkind: string }>(
-    `SELECT ${SYMBOL_COLUMNS}, h.kind AS hkind FROM heritage h
-     JOIN symbols s ON s.id = h.symbol_id JOIN files f ON f.id = s.file_id
-     WHERE h.name = ? LIMIT 3000`,
-    sym.name
-  );
+  type Row = SymbolRow & { hkind: string; hqual: string | null };
+  const select = `SELECT ${SYMBOL_COLUMNS}, h.kind AS hkind, h.qualifier AS hqual FROM heritage h
+     JOIN symbols s ON s.id = h.symbol_id JOIN files f ON f.id = s.file_id`;
+  const rows = db.all<Row>(`${select} WHERE h.name = ? LIMIT 5000`, sym.name);
   const sameName = db.symbolsByName(sym.name).filter(s => CONTAINER_KINDS.has(s.kind) || s.kind === 'type');
   const out: TypeEdge[] = [];
   const seen = new Set<number>();
+
+  // Subtypes that name the supertype through an import alias (`import { X as Base }`).
+  for (const use of resolver.aliasesOf(sym)) {
+    for (const row of db.all<Row>(`${select} WHERE h.name = ? AND h.file_id = ?`, use.alias, use.fileId)) {
+      if (row.id === sym.id || seen.has(row.id)) continue;
+      seen.add(row.id);
+      out.push({ sym: row, kind: row.hkind, certain: true });
+    }
+  }
+
+  const qparts = sym.qname.split('.');
+  const symContainer = qparts.length >= 2 ? qparts[qparts.length - 2]! : null;
   for (const row of rows) {
     if (row.id === sym.id || seen.has(row.id)) continue;
     let certain = true;
-    if (sameName.length > 1) {
+    if (row.hqual && symContainer) {
+      // Written as Outer::Name / Outer.Name: the qualifier must be our enclosing type or namespace.
+      if (row.hqual !== symContainer) continue;
+    } else if (sameName.length > 1 || row.hqual) {
       const res = resolver.resolve(sym.name, {
-        fileId: row.file_id, path: row.path, lang: row.lang, receiver: null, caller: row,
+        fileId: row.file_id, path: row.path, lang: row.lang, receiver: row.hqual, caller: row,
       });
       const top = res.candidates[0];
       if (!top) {
@@ -69,17 +82,32 @@ export function directSubtypes(db: ClastDb, resolver: Resolver, sym: SymbolRow):
 
 /** Declared supertypes of `sym`, resolved to project symbols where possible. */
 export function directSupertypes(db: ClastDb, resolver: Resolver, sym: SymbolRow): SuperEdge[] {
-  const rows = db.all<{ name: string; kind: string }>(`SELECT name, kind FROM heritage WHERE symbol_id = ?`, sym.id);
+  const rows = db.all<{ name: string; kind: string; qualifier: string | null }>(
+    `SELECT name, kind, qualifier FROM heritage WHERE symbol_id = ?`, sym.id
+  );
   const out: SuperEdge[] = [];
   const seen = new Set<string>();
   for (const row of rows) {
     if (seen.has(row.name)) continue;
     seen.add(row.name);
-    const res = resolver.resolve(row.name, {
-      fileId: sym.file_id, path: sym.path, lang: sym.lang, receiver: null, caller: sym,
+    const isType = (s: SymbolRow): boolean => (CONTAINER_KINDS.has(s.kind) || s.kind === 'type') && s.id !== sym.id;
+    let res = resolver.resolve(row.name, {
+      fileId: sym.file_id, path: sym.path, lang: sym.lang, receiver: row.qualifier, caller: sym,
     });
-    const target = res.candidates.find(c => (CONTAINER_KINDS.has(c.sym.kind) || c.sym.kind === 'type') && c.sym.id !== sym.id);
-    out.push({ name: row.name, kind: row.kind, sym: target ? target.sym : null });
+    let target = res.candidates.find(c => isType(c.sym));
+    if (!target && row.qualifier) {
+      // Qualified by an enclosing type / namespace that is part of the qualified name.
+      const want = row.qualifier + '.' + row.name;
+      const direct = db.symbolsByName(row.name).find(s => isType(s) && (s.qname === want || s.qname.endsWith('.' + want)));
+      if (direct) target = { sym: direct, score: 90 };
+      else {
+        res = resolver.resolve(row.name, { fileId: sym.file_id, path: sym.path, lang: sym.lang, receiver: null, caller: sym });
+        target = res.candidates.find(c => isType(c.sym));
+      }
+    }
+    // PHP traits are recorded as 'implements'; say what they are.
+    const kind = target && target.sym.kind === 'trait' && sym.lang === 'php' ? 'uses' : row.kind;
+    out.push({ name: row.name, kind, sym: target ? target.sym : null });
   }
   return out;
 }

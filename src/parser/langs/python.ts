@@ -66,7 +66,14 @@ const classDef: Visitor = (node, ctx) => {
   if (supers) {
     for (const s of supers.namedChildren) {
       if (!s || s.type === 'keyword_argument') continue;
-      ctx.inherit(sym, lastSegment(s.text.replace(/\[.*$/s, '')), 'extends');
+      if (s.type === 'call') {
+        // Dynamic base built from a class: `class Manager(BaseManager.from_queryset(QuerySet))`.
+        const fn = field(s, 'function');
+        if (fn && fn.type === 'attribute') ctx.inherit(sym, field(fn, 'object')?.text, 'extends');
+        continue;
+      }
+      // Keep the module qualifier (`forms.CharField`): it tells same-named classes apart.
+      ctx.inherit(sym, s.text.replace(/\[.*$/s, ''), 'extends');
     }
   }
 };
@@ -126,7 +133,10 @@ const call: Visitor = (node, ctx) => {
   if (!fn) return;
   if (fn.type === 'identifier') ctx.call(fn.text, node);
   else if (fn.type === 'attribute') {
-    ctx.call(field(fn, 'attribute')?.text, node, simpleReceiver(field(fn, 'object')));
+    const obj = field(fn, 'object');
+    // super().method() is a call on the parent class, not on an unknown expression.
+    const isSuper = obj?.type === 'call' && field(obj, 'function')?.text === 'super';
+    ctx.call(field(fn, 'attribute')?.text, node, isSuper ? 'super' : simpleReceiver(obj));
   }
 };
 
@@ -164,7 +174,12 @@ const importFrom: Visitor = (node, ctx) => {
   const names: string[] = [];
   for (const c of node.childrenForFieldName('name')) {
     if (!c) continue;
-    if (c.type === 'aliased_import') names.push(field(c, 'name')?.text ?? c.text);
+    // The name bound in this module is the alias when there is one.
+    if (c.type === 'aliased_import') {
+      const original = field(c, 'name')?.text ?? c.text;
+      const alias = field(c, 'alias')?.text;
+      names.push(alias && alias !== original ? `${alias}=${original}` : original);
+    }
     else names.push(c.text);
   }
   ctx.imp(mod.text, node, names);

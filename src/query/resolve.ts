@@ -33,7 +33,7 @@ export interface SymbolRef {
  * `path/file.ts:name`, `path/file.ts:123` (symbol at line).
  */
 export function parseSymbolRef(ref: string): SymbolRef {
-  let text = ref.trim().replace(/\(\)$/, '');
+  let text = ref.trim().replace(/\(.*\)$/s, '').replace(/!$/, '');
   let path: string | undefined;
   let line: number | undefined;
   const m = /^(.*[\\/.][^:]*):([^:\\/]+)$/.exec(text);
@@ -184,12 +184,20 @@ export function findSymbols(
 }
 
 /** Drop overloads / re-declarations of `chosen` (same qualified name in the same file). */
-export function otherDefinitions(chosen: SymbolRow, all: SymbolRow[]): { others: SymbolRow[]; overloads: number } {
+export function otherDefinitions(
+  chosen: SymbolRow,
+  all: SymbolRow[],
+  family?: Set<number>
+): { others: SymbolRow[]; overloads: number } {
   const others: SymbolRow[] = [];
   let overloads = 0;
   for (const s of all) {
     if (s.id === chosen.id) continue;
+    // Interface declarations, overrides and implementations of the chosen member are not rivals.
+    if (family && family.has(s.id)) continue;
     if (s.file_id === chosen.file_id && s.qname === chosen.qname) overloads++;
+    // A C / C++ prototype and its definition are one function, not two candidates.
+    else if (s.qname === chosen.qname && langFamily(s.lang) === 'c' && langFamily(chosen.lang) === 'c') continue;
     else others.push(s);
   }
   return { others, overloads };
@@ -256,12 +264,16 @@ const CALL_TARGET_KINDS = new Set<SymbolKind>([
   'field', 'property', 'variable', 'constant',
 ]);
 const VALUE_KINDS = new Set<SymbolKind>(['field', 'property', 'variable', 'constant']);
+const TYPE_KINDS = new Set<SymbolKind>(['class', 'struct', 'interface', 'trait', 'enum', 'type']);
 
 /** In C nothing but functions and macros can be called. */
 const C_CALLABLE = new Set<SymbolKind>(['function', 'declaration', 'macro']);
 
 /** Families where a bare name must be defined in the file or imported into it. */
 const STRICT_IMPORTS = new Set(['js', 'python']);
+/** Languages where every file in a directory shares one namespace (no import needed). */
+const SAME_DIR_PACKAGE = new Set(['java', 'go', 'kotlin', 'scala', 'csharp', 'php']);
+const CALLABLE = new Set<SymbolKind>(['function', 'method', 'declaration', 'macro']);
 /** Families where an unresolved import of a name proves the name is external. */
 const EXTERNAL_IF_UNRESOLVED = new Set(['js', 'python', 'java']);
 /** Languages where extension methods / open classes let unrelated code add methods to a type. */
@@ -315,6 +327,54 @@ const SELF_RECEIVERS = new Set(['this', 'self', 'super', '$this', 'cls', 'base',
 const CONFIDENT_SCORE = 55;
 const CONFIDENT_GAP = 12;
 
+/** Above this many same-named definitions, candidates are pre-selected before scoring. */
+const PRESELECT_THRESHOLD = 40;
+
+interface NameIndex {
+  all: SymbolRow[];
+  /** Members by the name of their class / struct / trait. */
+  byContainer: Map<string, SymbolRow[]>;
+  byFile: Map<number, SymbolRow[]>;
+  /** Free functions, classes, variables: everything that is not a member. */
+  free: SymbolRow[];
+  containers: string[];
+}
+
+interface ImportedNames {
+  /** Bound name -> file it is imported from (null = outside the project). */
+  names: Map<string, number | null>;
+  /** Files imported with `*`. */
+  wildcards: Set<number>;
+  /** Bound alias -> original name in the source file. */
+  aliases: Map<string, string>;
+}
+
+/** Receivers that are language / runtime globals: nothing reached through them is project code. */
+const BUILTIN_RECEIVERS: Record<string, Set<string>> = {
+  js: new Set([
+    'console', 'Math', 'JSON', 'Object', 'Array', 'Number', 'String', 'Boolean', 'Date', 'Promise', 'Reflect',
+    'Symbol', 'process', 'window', 'document', 'navigator', 'globalThis', 'Buffer', 'Intl', 'Atomics', 'RegExp',
+    'WebAssembly', 'localStorage', 'sessionStorage', 'performance', 'crypto', 'URL', 'Error', 'Map', 'Set',
+    'BigInt', 'Proxy', 'global', 'self', 'location', 'history', 'fs', 'path', 'os', 'util',
+  ]),
+  python: new Set(['os', 'sys', 're', 'json', 'math', 'logging', 'time', 'datetime', 'itertools', 'functools', 'str', 'dict', 'list']),
+  java: new Set(['System', 'Math', 'String', 'Objects', 'Arrays', 'Collections', 'Integer', 'Long', 'Thread', 'Optional']),
+  csharp: new Set(['Console', 'Math', 'String', 'Convert', 'Task', 'Enumerable', 'Path', 'File', 'Guid', 'Environment']),
+  go: new Set(['fmt', 'os', 'strings', 'strconv', 'bytes', 'errors', 'time', 'sync', 'math', 'sort', 'io', 'context']),
+  rust: new Set(['std', 'core', 'alloc', 'Vec', 'String', 'Box', 'Arc', 'Rc', 'Option', 'Result', 'HashMap', 'mem', 'ptr', 'fmt']),
+  ruby: new Set(['Kernel', 'File', 'Dir', 'Time', 'Math', 'JSON', 'String', 'Array', 'Hash', 'Integer']),
+  php: new Set(['parent']),
+};
+
+/** Variable names that say nothing about the type of the object they hold. */
+const GENERIC_RECEIVERS = new Set([
+  'obj', 'object', 'item', 'instance', 'inst', 'value', 'val', 'data', 'result', 'res', 'ret', 'it', 'el', 'elem',
+  'element', 'entry', 'node', 'target', 'source', 'src', 'dst', 'dest', 'other', 'that', 'tmp', 'temp', 'ref',
+  'ptr', 'arg', 'args', 'param', 'params', 'input', 'output', 'out', 'key', 'thing', 'current', 'cur', 'next',
+  'prev', 'first', 'last', 'left', 'right', 'child', 'parent', 'root', 'base', 'impl', 'delegate', 'inner',
+  'outer', 'wrapped',
+]);
+
 function dirOf(path: string): string {
   const i = path.lastIndexOf('/');
   return i === -1 ? '' : path.slice(0, i);
@@ -327,7 +387,7 @@ function dirOf(path: string): string {
  */
 export class Resolver {
   private importCache = new Map<number, Set<number>>();
-  private importNameCache = new Map<number, { names: Map<string, number | null>; wildcards: Set<number> }>();
+  private importNameCache = new Map<number, ImportedNames>();
   private candidateCache = new Map<string, SymbolRow[]>();
   private ancestorCache = new Map<number, Set<string>>();
   private relatedCache = new Map<string, { anc: Set<string>; desc: Set<string> }>();
@@ -355,25 +415,76 @@ export class Resolver {
   }
 
   /** Names a file imports, mapped to the file they come from (null = not in this project). */
-  private importedNames(fileId: number): { names: Map<string, number | null>; wildcards: Set<number> } {
+  private importedNames(fileId: number): ImportedNames {
     let entry = this.importNameCache.get(fileId);
     if (!entry) {
-      entry = { names: new Map(), wildcards: new Set() };
+      entry = { names: new Map(), wildcards: new Set(), aliases: new Map() };
       for (const r of this.db.all<{ names: string; resolved_id: number | null }>(
         `SELECT names, resolved_id FROM imports INDEXED BY idx_imports_file WHERE file_id = ?`, fileId
       )) {
         if (!r.names) continue;
-        for (const n of r.names.split(',')) {
-          if (n === '*') {
+        for (const raw of r.names.split(',')) {
+          if (raw === '*') {
             if (r.resolved_id !== null) entry.wildcards.add(r.resolved_id);
-          } else if (!entry.names.has(n) || entry.names.get(n) === null) {
-            entry.names.set(n, r.resolved_id);
+            continue;
           }
+          // "alias=original": the file binds `alias`, the definition is called `original`.
+          const eq = raw.indexOf('=');
+          const n = eq === -1 ? raw : raw.slice(0, eq);
+          if (eq !== -1) entry.aliases.set(n, raw.slice(eq + 1));
+          if (!entry.names.has(n) || entry.names.get(n) === null) entry.names.set(n, r.resolved_id);
         }
       }
       this.importNameCache.set(fileId, entry);
     }
     return entry;
+  }
+
+  private defaultExportCache = new Map<number, string | null>();
+
+  /** Name of the symbol a file exports as its default / `module.exports`, if any. */
+  private defaultExportOf(fileId: number): string | null {
+    let name = this.defaultExportCache.get(fileId);
+    if (name === undefined) {
+      name = this.db.get<{ default_export: string | null }>(
+        `SELECT default_export FROM files WHERE id = ?`, fileId
+      )?.default_export ?? null;
+      this.defaultExportCache.set(fileId, name);
+    }
+    return name;
+  }
+
+  private aliasUseCache = new Map<string, Array<{ fileId: number; alias: string }>>();
+
+  /**
+   * Local names under which other files refer to `sym`: import aliases
+   * (`import { X as Y }`) and default-import / require bindings of a file
+   * whose default export is `sym`.
+   */
+  aliasesOf(sym: SymbolRow): Array<{ fileId: number; alias: string }> {
+    const key = sym.file_id + ':' + sym.name;
+    let out = this.aliasUseCache.get(key);
+    if (out) return out;
+    out = [];
+    const isDefault = this.defaultExportOf(sym.file_id) === sym.name;
+    const rows = this.db.all<{ file_id: number; names: string }>(
+      `SELECT file_id, names FROM imports INDEXED BY idx_imports_resolved WHERE resolved_id = ? AND names <> ''`,
+      sym.file_id
+    );
+    for (const r of rows) {
+      const parts = r.names.split(',');
+      for (const raw of parts) {
+        const eq = raw.indexOf('=');
+        if (eq !== -1) {
+          if (raw.slice(eq + 1) === sym.name && raw.slice(0, eq) !== sym.name) out.push({ fileId: r.file_id, alias: raw.slice(0, eq) });
+        } else if (isDefault && parts.length === 1 && raw !== sym.name && raw !== '*') {
+          // `const express = require('./express')` / `import express from './express'`
+          out.push({ fileId: r.file_id, alias: raw });
+        }
+      }
+    }
+    this.aliasUseCache.set(key, out);
+    return out;
   }
 
   candidates(name: string): SymbolRow[] {
@@ -446,11 +557,11 @@ export class Resolver {
       for (const a of this.ancestorsOf(s.id)) rel.anc.add(a);
     }
     let frontier = [name];
-    for (let depth = 0; depth < 3 && frontier.length; depth++) {
+    for (let depth = 0; depth < 6 && frontier.length && rel.desc.size < 4000; depth++) {
       const next: string[] = [];
       for (const n of frontier) {
         for (const row of this.db.all<{ name: string }>(
-          `SELECT s.name FROM heritage h JOIN symbols s ON s.id = h.symbol_id WHERE h.name = ? LIMIT 300`, n
+          `SELECT s.name FROM heritage h JOIN symbols s ON s.id = h.symbol_id WHERE h.name = ? LIMIT 1000`, n
         )) {
           if (row.name !== name && !rel.desc.has(row.name)) {
             rel.desc.add(row.name);
@@ -458,7 +569,7 @@ export class Resolver {
           }
         }
       }
-      frontier = next.slice(0, 60);
+      frontier = next.slice(0, 400);
     }
     this.relatedCache.set(name, rel);
     return rel;
@@ -516,7 +627,11 @@ export class Resolver {
     const cFamily = langFamily(sym.lang) === 'c';
     for (const other of same) {
       if (other.id === sym.id) continue;
-      if (other.qname === sym.qname && (other.file_id === sym.file_id || (cFamily && langFamily(other.lang) === 'c'))) {
+      const sameKindOfThing = CALLABLE.has(other.kind) === CALLABLE.has(sym.kind);
+      if (
+        other.qname === sym.qname && sameKindOfThing &&
+        (other.file_id === sym.file_id || (cFamily && langFamily(other.lang) === 'c' && CALLABLE.has(sym.kind)))
+      ) {
         // Overloads; in C/C++ also the header declaration of a definition.
         fam.add(other.id);
       } else if (related && (other.kind === 'method' || other.kind === sym.kind)) {
@@ -559,7 +674,7 @@ export class Resolver {
     else if (dirOf(cand.path) === dirOf(site.path)) e += site.lang === 'go' || site.lang === 'java' ? 15 : 8;
     if (container && cand.file_id !== site.fileId && this.fileMentions(site.fileId, container)) e += 18;
     let receiverMatches = false;
-    if (recv && container) {
+    if (recv && container && !GENERIC_RECEIVERS.has(recv.toLowerCase())) {
       if (looselyNamed(recv, container)) {
         e += 30;
         receiverMatches = true;
@@ -585,6 +700,13 @@ export class Resolver {
 
     // Production code does not call into tests, fixtures or examples.
     if (isTestPath(cand.path) && !isTestPath(site.path)) return null;
+    // ... nor into vendored / third-party trees it does not import.
+    if (
+      isVendoredPath(cand.path) && !isVendoredPath(site.path) && cand.file_id !== site.fileId &&
+      !this.importsOf(site.fileId).has(cand.file_id)
+    ) {
+      return null;
+    }
 
     const sameFile = cand.file_id === site.fileId;
     const parent = this.parentOf(cand);
@@ -594,6 +716,15 @@ export class Resolver {
       if (!sameFile || !site.caller) return null;
       const q = site.caller.qname;
       if (q !== parent.qname && !q.startsWith(parent.qname + '.')) return null;
+    }
+
+    // A type nested inside a class is visible by its bare name only within that class.
+    if (
+      !site.receiver && parent && TYPE_KINDS.has(cand.kind) &&
+      CONTAINER_KINDS.has(parent.kind) && parent.kind !== 'namespace'
+    ) {
+      const q = site.caller?.qname ?? '';
+      if (!sameFile || !(q === parent.qname || q.startsWith(parent.qname + '.'))) return null;
     }
 
     const container = this.containerName(cand);
@@ -616,10 +747,11 @@ export class Resolver {
     if (site.rtype && recv && !SELF_RECEIVERS.has(recv)) {
       const T = site.rtype;
       if (isMember && container) {
-        if (container === T) return 100 + tie;
+        const vis = this.typeVisibility(T, cand, site);
+        if (container === T) return 100 + vis + tie;
         const rel = this.relatedTo(T);
-        if (rel.anc.has(container)) return 86 + tie; // inherited from a supertype
-        if (rel.desc.has(container)) return 72 + tie; // override in a subtype
+        if (rel.anc.has(container)) return 86 + vis + tie; // inherited from a supertype
+        if (rel.desc.has(container)) return 72 + vis + tie; // override in a subtype
       }
       // Not a member of T or its relatives. Only languages with extension
       // methods / open classes can still reach an unrelated definition.
@@ -663,11 +795,20 @@ export class Resolver {
       }
       if (site.lang === 'go') return dirOf(cand.path) === dirOf(site.path) ? 78 + tie : null;
       if (this.importsOf(site.fileId).has(cand.file_id)) return 64 + tie;
+      if (fam === 'c') {
+        // Headers include headers: one transitive hop still counts as "included".
+        for (const f of this.importsOf(site.fileId)) {
+          if (this.importsOf(f).has(cand.file_id)) return 56 + tie;
+        }
+      }
       const a = cand.path.split('/');
       const b = site.path.split('/');
       let common = 0;
       while (common < a.length - 1 && common < b.length - 1 && a[common] === b[common]) common++;
-      if (common === a.length - 1 && common === b.length - 1) return 46 + tie; // same directory
+      if (common === a.length - 1 && common === b.length - 1) {
+        // Same directory. In package-per-directory languages that is the same package: no import needed.
+        return (SAME_DIR_PACKAGE.has(site.lang) ? 66 : 46) + tie;
+      }
       return 18 + Math.min(12, common * 3) + tie;
     }
 
@@ -694,7 +835,14 @@ export class Resolver {
     // --- named receiver: obj.foo(), Foo.bar(), pkg.Func(), ns::func() ---------
     const bare = recv.replace(/^[$@&*]+/, '');
     const last = bare.split(/\.|::|->|\\/).pop() ?? bare;
-    if (container && (last === container || bare === container)) return 92 + tie; // static / qualified call
+    const first = bare.split(/\.|::|->|\\/)[0] ?? bare;
+    // console.log(), Math.max(), os.path.join(): runtime globals and external modules.
+    if (BUILTIN_RECEIVERS[fam]?.has(first) && !this.isProjectType(first)) return null;
+    const names = this.importedNames(site.fileId).names;
+    if (EXTERNAL_IF_UNRESOLVED.has(fam) && names.get(first) === null) return null;
+    if (container && (last === container || bare === container)) {
+      return 92 + this.typeVisibility(container, cand, site) + tie; // static / qualified call
+    }
     if (isMember) {
       // Static / class-level call through a subclass: Sub.inheritedMethod().
       if (container && /^[A-Z]/.test(last) && this.isProjectType(last) && this.relatedTo(last).anc.has(container)) {
@@ -703,10 +851,35 @@ export class Resolver {
       const e = this.memberEvidence(name, cand, container, site, last);
       return e >= 15 ? 10 + e + tie : null;
     }
-    const from = this.importedNames(site.fileId).names.get(last);
-    if (from !== undefined && from !== null) return from === cand.file_id ? 94 + tie : null; // import * as ns
+    // Rust macros are addressed through a crate / module path: tokio::select!, crate::cfg_rt!.
+    if (cand.kind === 'macro' && site.lang === 'rust') return 70 + tie;
+    const from = names.get(last);
+    if (from !== undefined && from !== null) {
+      if (from === cand.file_id) return 94 + tie; // import * as ns / import module
+      // The namespace is a package whose __init__ / index re-exports the definition.
+      return this.importsOf(from).has(cand.file_id) ? 72 + tie : null;
+    }
     if (moduleLike(last, cand.path)) return (this.importsOf(site.fileId).has(cand.file_id) ? 86 : 74) + tie;
     return null;
+  }
+
+  /**
+   * Small bonus for the definition of type `typeName` that the calling file
+   * can actually see (same file, imported by name, or nearest in the tree).
+   * Decides between identical copies of a class (vendored forks, monorepo
+   * packages).
+   */
+  private typeVisibility(typeName: string, cand: SymbolRow, site: CallSite): number {
+    if (cand.file_id === site.fileId) return 8;
+    const from = this.importedNames(site.fileId).names.get(typeName);
+    if (from === cand.file_id) return 8;
+    if (this.importsOf(site.fileId).has(cand.file_id)) return 6;
+    if (from !== undefined && from !== null && this.importsOf(from).has(cand.file_id)) return 5;
+    const a = cand.path.split('/');
+    const b = site.path.split('/');
+    let common = 0;
+    while (common < a.length - 1 && common < b.length - 1 && a[common] === b[common]) common++;
+    return Math.min(4, common);
   }
 
   private fieldTypeCache = new Map<string, string | null>();
@@ -748,16 +921,171 @@ export class Resolver {
     return t ? { ...site, rtype: t } : site;
   }
 
+  private nameIndexCache = new Map<string, NameIndex>();
+
+  /** Candidates of a name grouped for fast pre-selection (only built for crowded names). */
+  private nameIndex(name: string): NameIndex {
+    let idx = this.nameIndexCache.get(name);
+    if (idx) return idx;
+    const all = this.candidates(name);
+    idx = { all, byContainer: new Map(), byFile: new Map(), free: [], containers: [] };
+    for (const c of all) {
+      const f = idx.byFile.get(c.file_id);
+      if (f) f.push(c);
+      else idx.byFile.set(c.file_id, [c]);
+      const parent = this.parentOf(c);
+      const inContainer = parent !== null && CONTAINER_KINDS.has(parent.kind);
+      const isMember = c.kind === 'method' || (inContainer && c.kind !== 'class' && c.kind !== 'struct' && c.kind !== 'interface');
+      const container = isMember ? this.containerName(c) : null;
+      if (container) {
+        const list = idx.byContainer.get(container);
+        if (list) list.push(c);
+        else idx.byContainer.set(container, [c]);
+      } else {
+        idx.free.push(c);
+      }
+    }
+    idx.containers = [...idx.byContainer.keys()];
+    this.nameIndexCache.set(name, idx);
+    return idx;
+  }
+
+  /**
+   * Candidates that can possibly score for this call site. Purely an
+   * optimisation for names with hundreds of definitions (`run`, `add`,
+   * `get`): it must return a superset of what score() accepts.
+   */
+  private preselect(name: string, site: CallSite): SymbolRow[] {
+    const idx = this.nameIndex(name);
+    const recv = site.receiver;
+    const fam = langFamily(site.lang);
+    const common = COMMON_MEMBER_NAMES.has(name.toLowerCase());
+    const out = new Set<SymbolRow>();
+    const add = (list: SymbolRow[] | undefined): void => {
+      if (list) for (const s of list) out.add(s);
+    };
+    const addRelated = (type: string): void => {
+      add(idx.byContainer.get(type));
+      const rel = this.relatedTo(type);
+      for (const a of rel.anc) add(idx.byContainer.get(a));
+      if (rel.desc.size < idx.containers.length) {
+        for (const d of rel.desc) add(idx.byContainer.get(d));
+      } else {
+        for (const c of idx.containers) if (rel.desc.has(c)) add(idx.byContainer.get(c));
+      }
+    };
+    const callerC = site.caller ? this.enclosingContainer(site.caller) : null;
+
+    if (site.rtype && recv && !SELF_RECEIVERS.has(recv)) {
+      addRelated(site.rtype);
+      return out.size === 0 && OPEN_TYPES.has(site.lang) ? idx.all : [...out];
+    }
+    if (!recv) {
+      if (callerC) addRelated(callerC.name);
+      add(idx.byFile.get(site.fileId));
+      const imported = this.importedNames(site.fileId);
+      const from = imported.names.get(name);
+      if (from !== undefined && from !== null) {
+        add(idx.byFile.get(from));
+        for (const f of this.importsOf(from)) add(idx.byFile.get(f));
+      }
+      if (STRICT_IMPORTS.has(fam)) {
+        const imports = this.importsOf(site.fileId);
+        if (site.lang === 'javascript' && imports.size === 0 && imported.names.size === 0) return idx.all;
+        for (const f of imported.wildcards) add(idx.byFile.get(f));
+        for (const f of imports) add(idx.byFile.get(f));
+        return [...out];
+      }
+      if (site.lang === 'go') {
+        const dir = dirOf(site.path);
+        for (const s of idx.free) if (dirOf(s.path) === dir) out.add(s);
+        return [...out];
+      }
+      if (!common && (site.lang === 'ruby' || site.lang === 'php')) return idx.all;
+      add(idx.free);
+      return [...out];
+    }
+    if (SELF_RECEIVERS.has(recv)) {
+      if (!common) return idx.all;
+      if (callerC) addRelated(callerC.name);
+      add(idx.byFile.get(site.fileId));
+      return [...out];
+    }
+    if (recv === '?') return common ? [] : idx.all;
+    if (!common) return idx.all;
+
+    // Named receiver + common method name: only the receiver's name can link it.
+    const bare = recv.replace(/^[$@&*]+/, '');
+    const last = bare.split(/\.|::|->|\\/).pop() ?? bare;
+    const lastLc = last.toLowerCase();
+    const generic = GENERIC_RECEIVERS.has(lastLc);
+    const typeAncestors = /^[A-Z]/.test(last) && this.isProjectType(last) ? this.relatedTo(last).anc : null;
+    for (const c of idx.containers) {
+      if (
+        c === last || bare === c ||
+        (typeAncestors !== null && typeAncestors.has(c)) ||
+        (!generic && (looselyNamed(last, c) || (last.length <= 2 && c.toLowerCase().startsWith(lastLc))))
+      ) {
+        add(idx.byContainer.get(c));
+      }
+    }
+    add(idx.free);
+    return [...out];
+  }
+
+  /**
+   * True when a member call's receiver gives no usable type information: an
+   * expression (`a.b().foo()`) or an untyped variable that is neither
+   * this/self, a runtime global, nor an external module. Such call sites
+   * cannot be attributed to any one definition of a common method name.
+   */
+  isOpaqueReceiver(rawSite: CallSite): boolean {
+    const site = this.withFieldType(rawSite);
+    const recv = site.receiver;
+    if (!recv || site.rtype || SELF_RECEIVERS.has(recv)) return false;
+    if (recv === '?') return true;
+    const fam = langFamily(site.lang);
+    const first = recv.replace(/^[$@&*]+/, '').split(/\.|::|->|\\/)[0] ?? recv;
+    if (BUILTIN_RECEIVERS[fam]?.has(first) && !this.isProjectType(first)) return false;
+    if (EXTERNAL_IF_UNRESOLVED.has(fam) && this.importedNames(site.fileId).names.get(first) === null) return false;
+    // A capitalised receiver that is a known type is a static call: not opaque.
+    if (/^[A-Z]/.test(first) && this.isProjectType(first)) return false;
+    return true;
+  }
+
   /** Rank the definitions a call to `name` at `site` may refer to. */
   resolve(name: string, rawSite: CallSite): Resolution {
-    const cands = this.candidates(name);
-    if (cands.length === 0) return { candidates: [], confident: false };
+    // The calling file may know the definition under another name:
+    // `import { X as Y }`, `import express from './express'`, `const express = require('./express')`.
+    if (!rawSite.receiver) {
+      const imported = this.importedNames(rawSite.fileId);
+      const from = imported.names.get(name);
+      if (from !== undefined && from !== null) {
+        const original = imported.aliases.get(name);
+        let real: string | null = original ?? null;
+        if (!real && !this.candidates(name).some(c => c.file_id === from)) real = this.defaultExportOf(from);
+        if (real && real !== name) {
+          const hits = this.candidates(real).filter(c => c.file_id === from || this.importsOf(from).has(c.file_id));
+          if (hits.length) {
+            const scored = hits
+              .map(sym => ({ sym, score: (sym.file_id === from ? 96 : 62) + definitionScore(sym) * 0.5 }))
+              .sort((a, b) => b.score - a.score);
+            return { candidates: scored, confident: true };
+          }
+        }
+      }
+    }
+
+    const all = this.candidates(name);
+    if (all.length === 0) return { candidates: [], confident: false };
     const site = this.withFieldType(rawSite);
+    const cands = all.length > PRESELECT_THRESHOLD ? this.preselect(name, site) : all;
+    if (cands.length === 0) return { candidates: [], confident: false };
 
     // A bare name imported from outside the project cannot be a project symbol.
     if (!site.receiver && EXTERNAL_IF_UNRESOLVED.has(langFamily(site.lang))) {
       const from = this.importedNames(site.fileId).names.get(name);
-      if (from === null && !cands.some(c => c.file_id === site.fileId)) return { candidates: [], confident: false };
+      if (from === null && !all.some(c => c.file_id === site.fileId)) return { candidates: [], confident: false };
     }
     // A receiver whose declared type is not defined in this project is external too
     // (except where extension methods can add project methods to foreign types).

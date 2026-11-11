@@ -1,6 +1,7 @@
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { resolve } from 'node:path';
+import { pathToFileURL } from 'node:url';
 import { z } from 'zod';
 
 import { Clast } from '../engine.js';
@@ -69,7 +70,7 @@ export async function startServer(): Promise<void> {
         path: z.string().optional().describe('Only symbols in files under / matching this path (e.g. "src/db" or "parser.ts")'),
         lang: z.string().optional().describe('Only this language id (typescript, python, go, ...)'),
         exported: z.boolean().optional().describe('Only exported / public symbols'),
-        limit: z.number().int().min(1).max(100).default(15).describe('Max results per query'),
+        limit: z.number().int().min(1).max(100).default(10).describe('Max results per query'),
       },
       annotations: READ_ONLY,
     },
@@ -106,8 +107,9 @@ export async function startServer(): Promise<void> {
         direction: z.enum(['callers', 'callees', 'both']).default('both'),
         depth: z.number().int().min(1).max(6).default(1).describe('Levels to traverse (1 = direct only; 2-3 to follow a chain)'),
         limit: z.number().int().min(1).max(2000).default(50).describe('Max nodes per direction'),
-        includeTests: z.boolean().default(true).describe('Include callers / callees located in test files'),
+        includeTests: z.boolean().optional().describe('true = list test callers in full, false = drop them; default: one summary line naming the test files'),
         within: z.string().optional().describe('Only callers located under this path (e.g. "src/server")'),
+        uncertain: z.boolean().default(false).describe('List every unconfirmed caller instead of a short summary'),
       },
       annotations: READ_ONLY,
     },
@@ -161,6 +163,7 @@ export async function startServer(): Promise<void> {
           .enum(['auto', 'all', 'callable'])
           .default('auto')
           .describe('Whether to list fields/properties/constants inside classes (auto hides them in very large files)'),
+        limit: z.number().int().min(20).max(5000).default(300).describe('Max outline lines for a file'),
       },
       annotations: READ_ONLY,
     },
@@ -319,4 +322,14 @@ export async function startServer(): Promise<void> {
   process.on('SIGTERM', shutdown);
   // The client closing stdin is the normal way an MCP server is stopped.
   process.stdin.on('close', shutdown);
+}
+
+// Backwards compatibility: configurations written for 0.1.x launch this file
+// directly (`node dist/server/index.js`). Keep that working.
+const invoked = process.argv[1] ? pathToFileURL(process.argv[1]).href : '';
+if (invoked === import.meta.url) {
+  startServer().catch(err => {
+    console.error('[clast] Fatal error:', err);
+    process.exit(1);
+  });
 }

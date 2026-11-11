@@ -9,7 +9,7 @@ import { ftsWords, initials, splitIdentifier } from '../query/words.js';
  * Bump whenever the schema or the extraction output changes shape. The index
  * is a cache: a version mismatch simply drops and rebuilds it.
  */
-export const SCHEMA_VERSION = 7;
+export const SCHEMA_VERSION = 9;
 
 /** Kinds that get a full-text row (concept search). Others are found by name. */
 const FTS_KINDS = new Set(['function', 'method', 'class', 'interface', 'struct', 'trait', 'enum', 'type', 'namespace', 'macro']);
@@ -49,7 +49,8 @@ const SCHEMA = `
     lang TEXT NOT NULL,
     line_count INTEGER NOT NULL DEFAULT 0,
     symbol_count INTEGER NOT NULL DEFAULT 0,
-    indexed_at INTEGER NOT NULL
+    indexed_at INTEGER NOT NULL,
+    default_export TEXT
   );
 
   CREATE TABLE symbols (
@@ -107,7 +108,8 @@ const SCHEMA = `
     symbol_id INTEGER NOT NULL,
     file_id INTEGER NOT NULL,
     name TEXT NOT NULL,
-    kind TEXT NOT NULL
+    kind TEXT NOT NULL,
+    qualifier TEXT
   );
 
   CREATE TABLE field_types (
@@ -378,13 +380,13 @@ export class ClastDb {
       fileId = existing.id;
       this.clearFileData(fileId);
       this.run(
-        `UPDATE files SET hash = ?, mtime = ?, size = ?, lang = ?, line_count = ?, symbol_count = ?, indexed_at = ? WHERE id = ?`,
-        meta.hash, meta.mtime, meta.size, ex.lang, ex.lineCount, ex.symbols.length, now, fileId
+        `UPDATE files SET hash = ?, mtime = ?, size = ?, lang = ?, line_count = ?, symbol_count = ?, indexed_at = ?, default_export = ? WHERE id = ?`,
+        meta.hash, meta.mtime, meta.size, ex.lang, ex.lineCount, ex.symbols.length, now, ex.defaultExport, fileId
       );
     } else {
       fileId = this.run(
-        `INSERT INTO files (path, hash, mtime, size, lang, line_count, symbol_count, indexed_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-        meta.path, meta.hash, meta.mtime, meta.size, ex.lang, ex.lineCount, ex.symbols.length, now
+        `INSERT INTO files (path, hash, mtime, size, lang, line_count, symbol_count, indexed_at, default_export) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        meta.path, meta.hash, meta.mtime, meta.size, ex.lang, ex.lineCount, ex.symbols.length, now, ex.defaultExport
       ).lastInsertRowid;
     }
 
@@ -428,10 +430,10 @@ export class ClastDb {
       insertImport.run(fileId, im.source, im.names.join(','), im.line);
     }
 
-    const insertHeritage = this.stmt(`INSERT INTO heritage (symbol_id, file_id, name, kind) VALUES (?, ?, ?, ?)`);
+    const insertHeritage = this.stmt(`INSERT INTO heritage (symbol_id, file_id, name, kind, qualifier) VALUES (?, ?, ?, ?, ?)`);
     for (const h of ex.heritage) {
       const sid = ids[h.symbol];
-      if (sid !== undefined) insertHeritage.run(sid, fileId, h.name, h.kind);
+      if (sid !== undefined) insertHeritage.run(sid, fileId, h.name, h.kind, h.qualifier);
     }
 
     const insertFieldType = this.stmt(`INSERT INTO field_types (container, field, type, file_id) VALUES (?, ?, ?, ?)`);

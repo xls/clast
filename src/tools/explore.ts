@@ -1,5 +1,5 @@
 import { execFileSync } from 'node:child_process';
-import { readFileSync } from 'node:fs';
+import { readFile } from 'node:fs/promises';
 import { basename, join } from 'node:path';
 import { CONTAINER_KINDS, type SymbolRow } from '../types.js';
 import { callersOf } from '../query/callgraph.js';
@@ -56,8 +56,8 @@ export async function references(ctx: ToolContext, args: ReferencesArgs): Promis
   const out: string[] = [];
   out.push(`"${name}": ${plural(totalLines, 'reference line')} in ${plural(totalFiles, 'file')}`);
   if (defs.length) {
-    out.push(`defined: ${defs.slice(0, 4).map(d => `${d.kind} ${d.qname} ${loc(d)}`).join('; ')}${defs.length > 4 ? `; +${defs.length - 4} more` : ''}`);
-    if (defs.length > 1) out.push('(references are matched by name, so they cover all definitions above)');
+    out.push(`defined: ${defs.slice(0, 2).map(d => `${d.kind} ${d.qname} ${loc(d)}`).join('; ')}${defs.length > 2 ? `; +${defs.length - 2} more definitions of this name` : ''}`);
+    if (defs.length > 1) out.push('(references are matched by name, so they cover every definition of it)');
   }
 
   if (ref.container.length) {
@@ -124,6 +124,8 @@ export interface FileSummaryArgs {
   path: string;
   /** Include fields / properties / constants inside containers. Default: auto. */
   members?: 'all' | 'callable' | 'auto';
+  /** Max outline lines for a file. Default 300. */
+  limit?: number;
 }
 
 const MINOR_KINDS = new Set(['property', 'field', 'constant', 'variable']);
@@ -132,7 +134,7 @@ function range(s: { start_line: number; end_line: number }): string {
   return s.start_line === s.end_line ? `${s.start_line}` : `${s.start_line}-${s.end_line}`;
 }
 
-function outlineFile(ctx: ToolContext, file: FileHit, members: 'all' | 'callable' | 'auto'): string[] {
+function outlineFile(ctx: ToolContext, file: FileHit, members: 'all' | 'callable' | 'auto', maxLines = 300): string[] {
   const out: string[] = [];
   const symbols = ctx.db.symbolsInFile(file.id);
   out.push(`${file.path}  (${file.lang}, ${plural(file.line_count, 'line')}, ${plural(symbols.length, 'symbol')})`);
@@ -153,7 +155,7 @@ function outlineFile(ctx: ToolContext, file: FileHit, members: 'all' | 'callable
     file.id
   );
   if (importedBy.length) {
-    out.push(`imported by (${importedBy.length}${importedBy.length === 200 ? '+' : ''}): ${importedBy.slice(0, 10).map(r => r.path).join(', ')}${importedBy.length > 10 ? ', ...' : ''}`);
+    out.push(`imported by (${importedBy.length}${importedBy.length === 200 ? '+' : ''}): ${importedBy.slice(0, 5).map(r => r.path).join(', ')}${importedBy.length > 5 ? ', ...' : ''}`);
   }
 
   const hideMinor = members === 'callable' || (members === 'auto' && symbols.length > 150);
@@ -161,6 +163,8 @@ function outlineFile(ctx: ToolContext, file: FileHit, members: 'all' | 'callable
   const hidden = new Map<number | null, number>();
   const width = String(file.line_count).length * 2 + 1;
   let lastLine = '';
+  let printed = 0;
+  let omitted = 0;
   for (const s of symbols) {
     const depth = s.parent_id !== null && depthOf.has(s.parent_id) ? depthOf.get(s.parent_id)! + 1 : 0;
     depthOf.set(s.id, depth);
@@ -180,7 +184,18 @@ function outlineFile(ctx: ToolContext, file: FileHit, members: 'all' | 'callable
       `${s.doc ? '  // ' + firstLine(s.doc, 70) : ''}`;
     if (line === lastLine) continue; // multi-declarator lines
     lastLine = line;
+    if (printed >= maxLines) {
+      omitted++;
+      continue;
+    }
+    printed++;
     out.push(line);
+  }
+  if (omitted) {
+    out.push(
+      `... ${omitted} more symbols not shown (limit ${maxLines}). Narrow with clast_search path="${file.path}", ` +
+        `or fetch a region with clast_get_context "${file.path}:<line>".`
+    );
   }
   if (hidden.size) {
     let n = 0;
@@ -247,7 +262,7 @@ export async function fileSummary(ctx: ToolContext, args: FileSummaryArgs): Prom
   }
   const dirFiles = ctx.db.all<FileHit>(
     `SELECT ${cols} FROM files WHERE path >= ? AND path < ? ORDER BY path`,
-    q + '/', q + '/￿'
+    q + '/', q + '/\uffff'
   );
   if (dirFiles.length) return note + outlineDirectory(ctx, q, dirFiles).join('\n');
 
@@ -265,7 +280,7 @@ export async function fileSummary(ctx: ToolContext, args: FileSummaryArgs): Prom
   await ctx.fresh([files[0]!.path]);
   const file = findFiles(ctx.db, files[0]!.path, 1)[0];
   if (!file) return note + `"${args.path}": file is no longer indexable.`;
-  return note + outlineFile(ctx, file, args.members ?? 'auto').join('\n');
+  return note + outlineFile(ctx, file, args.members ?? 'auto', Math.max(20, Math.min(args.limit ?? 300, 5000))).join('\n');
 }
 
 // ---------------------------------------------------------------------------
@@ -292,7 +307,7 @@ export async function overview(ctx: ToolContext, args: OverviewArgs = {}): Promi
     scope
       ? `SELECT id, path, lang, line_count, symbol_count FROM files WHERE path >= ? AND path < ? ORDER BY path`
       : `SELECT id, path, lang, line_count, symbol_count FROM files ORDER BY path`,
-    ...(scope ? [prefix, prefix + '￿'] : [])
+    ...(scope ? [prefix, prefix + '\uffff'] : [])
   );
   if (files.length === 0) return note + (scope ? `no indexed files under "${scope}"` : 'the index is empty (no supported source files found)');
 
@@ -428,6 +443,15 @@ export async function overview(ctx: ToolContext, args: OverviewArgs = {}): Promi
       const importers =
         ctx.db.get<{ n: number }>(`SELECT COUNT(*) AS n FROM imports WHERE resolved_id = ?`, c.file_id)?.n ?? 0;
       if (importers < Math.max(2, p.refs * 0.04)) continue;
+      if (defs.length > 1) {
+        // Several definitions share the name: this one must itself be imported by name
+        // often enough to own that popularity (an `Error` class next to a famous `Error`).
+        const byName = ctx.db.get<{ n: number }>(
+          `SELECT COUNT(DISTINCT file_id) AS n FROM imports WHERE resolved_id = ? AND (',' || names || ',') LIKE ? ESCAPE '\\'`,
+          c.file_id, '%,' + c.name.replace(/[\\%_]/g, ch => '\\' + ch) + ',%'
+        )?.n ?? 0;
+        if (byName < Math.max(2, p.refs * 0.03)) continue;
+      }
     }
     keyLines.push(`  ${c.kind} ${c.qname}  ${c.path}:${c.start_line}  refs:${p.refs}${c.doc ? '  // ' + firstLine(c.doc, 60) : ''}`);
   }
@@ -467,6 +491,10 @@ export async function overview(ctx: ToolContext, args: OverviewArgs = {}): Promi
     for (const e of entries) out.push(`  ${e.qname}  ${e.path}:${e.start_line}`);
   }
 
+  if (scope && files.length <= 40) {
+    // Small enough to show whole: save the follow-up clast_file_summary call.
+    out.push(...outlineDirectory(ctx, scope, files.map(f => ({ ...f }))).slice(1));
+  }
   out.push('next: clast_file_summary <dir or file> for an outline, clast_search <words> to find symbols.');
   const text = out.join('\n');
   cache.set(scope, { gen: ctx.db.generation, text });
@@ -490,6 +518,17 @@ export interface GrepArgs {
   includeTests?: boolean;
 }
 
+/** Non-indexed text files, cached per project (re-listed at most once a minute). */
+const otherFilesCache = new WeakMap<object, { at: number; files: string[] }>();
+
+function otherTextFiles(ctx: ToolContext): string[] {
+  const hit = otherFilesCache.get(ctx.indexer);
+  if (hit && Date.now() - hit.at < 60_000) return hit.files;
+  const files = ctx.indexer.rules.otherTextFiles();
+  otherFilesCache.set(ctx.indexer, { at: Date.now(), files });
+  return files;
+}
+
 export async function grep(ctx: ToolContext, args: GrepArgs): Promise<string> {
   const note = await ctx.ready();
   if (!args.pattern) return 'error: pattern is required';
@@ -502,6 +541,10 @@ export async function grep(ctx: ToolContext, args: GrepArgs): Promise<string> {
   } catch (err) {
     return `error: invalid regular expression: ${err instanceof Error ? err.message : err}`;
   }
+  // For plain ASCII literals a one-byte view of the file is enough to reject
+  // it, which avoids UTF-8 decoding the (vast majority of) non-matching files.
+  const cheapProbe = !args.regex && /^[\x20-\x7E]+$/.test(args.pattern);
+  const needle = cheapProbe && caseSensitive ? Buffer.from(args.pattern, 'latin1') : null;
 
   let files = ctx.db.all<{ id: number; path: string; lang: string }>(`SELECT id, path, lang FROM files ORDER BY path`);
   if (args.path) files = files.filter(f => pathMatches(f.path, args.path!));
@@ -509,28 +552,39 @@ export async function grep(ctx: ToolContext, args: GrepArgs): Promise<string> {
   if (args.includeTests === false) files = files.filter(f => !isTestPath(f.path));
   files.sort((a, b) => Number(isTestPath(a.path)) - Number(isTestPath(b.path)));
 
+  // Then everything else that is text: config, docs, data files, unsupported languages.
+  let others: string[] = [];
+  if (!args.lang) {
+    others = otherTextFiles(ctx);
+    if (args.path) others = others.filter(p => pathMatches(p, args.path!));
+    if (args.includeTests === false) others = others.filter(p => !isTestPath(p));
+  }
+
   const started = performance.now();
   const out: string[] = [];
   let matches = 0;
   let filesWithMatches = 0;
   let scanned = 0;
   let timedOut = false;
+  const total = files.length + others.length;
 
-  for (const f of files) {
-    if (matches >= limit) break;
-    if (performance.now() - started > 8000) { timedOut = true; break; }
-    let text: string;
-    try {
-      text = readFileSync(join(ctx.clast.root, f.path), 'utf-8');
-    } catch {
-      continue;
-    }
+  const scanFile = async (path: string, fileId: number | null, buf: Buffer | null): Promise<void> => {
+    if (!buf) return;
     scanned++;
+    if (fileId === null && (buf.length > ctx.clast.config.maxFileSize || buf.subarray(0, 1024).includes(0))) return;
+    if (needle) {
+      if (!buf.includes(needle)) return;
+    } else if (cheapProbe) {
+      re.lastIndex = 0;
+      if (!re.test(buf.toString('latin1'))) return;
+    }
+    let text = buf.toString('utf-8');
+    if (text.charCodeAt(0) === 0xfeff) text = text.slice(1);
     re.lastIndex = 0;
-    if (!re.test(text)) continue;
-    await ctx.fresh([f.path]);
+    if (!cheapProbe && !re.test(text)) return;
+    if (fileId !== null) await ctx.fresh([path]);
     filesWithMatches++;
-    out.push(f.path);
+    out.push(fileId === null ? `${path}  (not indexed)` : path);
     re.lastIndex = 0;
     let lineNo = 1;
     let pos = 0;
@@ -555,19 +609,37 @@ export async function grep(ctx: ToolContext, args: GrepArgs): Promise<string> {
         const at = Math.max(0, m.index - pos - 60);
         line = (at > 0 ? '...' : '') + line.slice(at, at + 165) + '...';
       }
-      const enclosing = ctx.db.enclosingSymbol(f.id, lineNo);
+      const enclosing = fileId !== null ? ctx.db.enclosingSymbol(fileId, lineNo) : undefined;
       out.push(`  ${String(lineNo).padStart(5)}  ${enclosing ? '[' + enclosing.qname + '] ' : ''}${line}`);
       matches++;
     }
+  };
+
+  // Read in parallel batches (file opens dominate on large trees), process in order.
+  const work: Array<{ path: string; id: number | null }> = [
+    ...files.map(f => ({ path: f.path, id: f.id as number | null })),
+    ...others.map(p => ({ path: p, id: null })),
+  ];
+  const BATCH = 96;
+  for (let i = 0; i < work.length && matches < limit; i += BATCH) {
+    if (performance.now() - started > 8000) { timedOut = true; break; }
+    const batch = work.slice(i, i + BATCH);
+    const bufs = await Promise.all(
+      batch.map(w => readFile(join(ctx.clast.root, w.path)).catch(() => null))
+    );
+    for (let k = 0; k < batch.length && matches < limit; k++) {
+      await scanFile(batch[k]!.path, batch[k]!.id, bufs[k] ?? null);
+    }
   }
 
+  const what = args.regex ? '/' + args.pattern + '/' : JSON.stringify(args.pattern);
   const header =
     matches === 0
-      ? `no matches for ${args.regex ? '/' + args.pattern + '/' : JSON.stringify(args.pattern)} in ${plural(scanned, 'indexed file')}` +
-        (timedOut ? ' (time budget hit; narrow with path)' : '') +
-        '. Only indexed source files are searched; use a regular grep for other file types.'
+      ? `no matches for ${what} in ${plural(scanned, 'file')}` +
+        (timedOut ? ' (time budget hit before all files were read; narrow with path)' : '') +
+        (caseSensitive && !args.caseSensitive ? ' (case-sensitive because the pattern has uppercase; pass caseSensitive=false to relax)' : '')
       : `${matches >= limit ? 'first ' : ''}${plural(matches, 'matching line')} in ${plural(filesWithMatches, 'file')}` +
-        (matches >= limit ? ` (limit reached after scanning ${scanned}/${files.length} files; narrow with path or raise limit)` : '') +
+        (matches >= limit ? ` (limit reached after ${scanned}/${total} files; narrow with path or raise limit)` : '') +
         (timedOut ? ' (time budget hit; narrow with path)' : '') +
         '  [enclosing symbol in brackets]';
   return note + [header, ...out].join('\n');
@@ -736,6 +808,9 @@ export async function status(ctx: ToolContext, watcher?: { isActive: boolean; pe
     );
   }
   if (s.lastIndexed) out.push(`last file indexed: ${new Date(s.lastIndexed).toISOString()}`);
+  if (ctx.indexer.rules.skippedLarge) {
+    out.push(`skipped: ${plural(ctx.indexer.rules.skippedLarge, 'file')} larger than ${ctx.clast.config.maxFileSize} bytes (maxFileSize)`);
+  }
   if (watcher) out.push(`watcher: ${watcher.isActive ? 'active' : 'off'}${watcher.pendingCount ? `, ${watcher.pendingCount} pending` : ''}`);
   out.push(`database: ${ctx.db.path}`);
   return out.join('\n');

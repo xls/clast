@@ -24,6 +24,19 @@ function inType(ctx: Ctx): boolean {
 }
 
 /** `Foo` / `A::Foo` / `Foo[1]` / `Foo.new(...)` -> `Foo`. */
+/**
+ * Like constName(), but keeps one level of qualification (`ActiveSupport::Callbacks`)
+ * so that same-named constants in different namespaces can be told apart.
+ */
+function qualifiedConstName(node: Node | null | undefined): string | null {
+  if (node && node.type === 'scope_resolution') {
+    const name = field(node, 'name');
+    const scope = constName(field(node, 'scope'));
+    if (name && scope) return scope + '::' + name.text;
+  }
+  return constName(node);
+}
+
 function constName(node: Node | null | undefined): string | null {
   for (let i = 0; node && i < 4; i++) {
     switch (node.type) {
@@ -94,7 +107,7 @@ function firstLine(ctx: Ctx, node: Node, end = node.endIndex): string {
  * `module ClassMethods; include Foo::ClassMethods`).
  */
 function inherit(ctx: Ctx, sym: number, own: string, name: string | null, kind: 'extends' | 'implements'): void {
-  if (!name || sym < 0 || name === own) return;
+  if (!name || sym < 0 || name === own || name.endsWith('::' + own)) return;
   const key = sym + ':' + name;
   if (heritageSeen.has(key)) return;
   heritageSeen.add(key);
@@ -124,7 +137,7 @@ function scanBody(body: Node | null, sym: number, own: string, ctx: Ctx): void {
       const name = m.text;
       if (MIXINS.has(name)) {
         if (sym < 0) continue;
-        for (const a of args(c)) inherit(ctx, sym, own, constName(a), 'implements');
+        for (const a of args(c)) inherit(ctx, sym, own, qualifiedConstName(a), 'implements');
       } else if (HIDERS.has(name)) {
         for (const a of args(c)) {
           const lit = literal(a);
@@ -161,7 +174,7 @@ const classDef: Visitor = (node, ctx) => {
   const sig = ctx.src.slice(node.startIndex, (superclass ?? nameNode).endIndex);
   const name = openQualifier(nameNode, ctx);
   const sym = ctx.def(node, { name, kind: 'class', sig, doc: firstChildDoc(node), exported: !name.startsWith('_') });
-  if (superclass) inherit(ctx, sym, name, constName(superclass.namedChildren[0]), 'extends');
+  if (superclass) inherit(ctx, sym, name, qualifiedConstName(superclass.namedChildren[0]), 'extends');
   scanBody(field(node, 'body'), sym, name, ctx);
 };
 

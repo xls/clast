@@ -1,7 +1,7 @@
 {
   "name": "clast-ai",
   "version": "0.2.0",
-  "description": "AST-based code intelligence plugin for Claude Code: search symbols, trace call graphs, generate comments, and provide structured context for any repository",
+  "description": "Code index MCP server for LLM coding agents: ranked symbol search, exact symbol source, type-aware call graph, references, type hierarchy and git change impact",
   "main": "dist/engine.js",
   "bin": {
     "clast-ai": "dist/cli.js"
@@ -12,6 +12,7 @@
     "start": "node dist/cli.js",
     "dev": "tsx src/cli.ts",
     "test": "node --import tsx --test \"test/**/*.test.ts\"",
+    "bench": "node bench/bench.mjs",
     "clean": "node -e \"require('node:fs').rmSync('dist',{recursive:true,force:true})\"",
     "prepare": "npm run build",
     "prepublishOnly": "npm run build"
@@ -38,6 +39,7 @@
     "commands",
     ".claude-plugin",
     ".mcp.json",
+    "bench",
     "tsconfig.json",
     "README.md",
     "LICENSE"

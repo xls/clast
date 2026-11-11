@@ -99,7 +99,7 @@ export function subwordMatch(query: string, name: string): number {
 export function stem(word: string): string {
   let w = word.toLowerCase();
   if (w.length <= 3) return w;
-  if (w.endsWith('ies') && w.length > 4) return w.slice(0, -3) + 'y';
+  if (w.endsWith('ies') && w.length > 4) return w.slice(0, -3) + 'i';
   if (w.endsWith('sses')) return w.slice(0, -2);
   if (w.endsWith('s') && !w.endsWith('ss') && !w.endsWith('us') && !w.endsWith('is')) w = w.slice(0, -1);
   if (w.endsWith('ing') && w.length > 5) w = w.slice(0, -3);

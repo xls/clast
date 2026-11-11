@@ -52,7 +52,6 @@ describe('typescript extraction', () => {
   it('extracts symbols with qualified names and kinds', async () => {
     const ex = await extractSource('a.ts', SRC);
     assert.deepEqual(symbolList(ex), [
-      'constant fs',
       'constant MAX_RETRIES',
       'interface Shape',
       'method Shape.area',
@@ -105,7 +104,9 @@ describe('typescript extraction', () => {
   it('extracts imports and heritage', async () => {
     const ex = await extractSource('a.ts', SRC);
     assert.deepEqual(importList(ex), ['node:fs', './base.js', 'fs']);
-    assert.deepEqual(ex.imports[1]!.names, ['Base', 'helper']);
+    assert.deepEqual(ex.imports[1]!.names, ['Base', 'h=helper']);
+    // require() bindings are imports, not symbols.
+    assert.deepEqual(ex.imports[2]!.names, ['fs']);
     assert.deepEqual(heritageList(ex), ['Circle extends Base', 'Circle implements Shape']);
   });
 
@@ -116,7 +117,7 @@ describe('typescript extraction', () => {
   });
 
   it('handles JSX components as calls and non-ASCII source', async () => {
-    const ex = await extractSource('b.tsx', `// héllo wörld ☃\nexport function App() { return <Layout title="é"><Item /></Layout>; }\nfunction Item() { return <div/>; }`);
+    const ex = await extractSource('b.tsx', `// h\u00e9llo w\u00f6rld \u2603\nexport function App() { return <Layout title="\u00e9"><Item /></Layout>; }\nfunction Item() { return <div/>; }`);
     assert.deepEqual(symbolList(ex), ['function App', 'function Item']);
     assert.deepEqual(callList(ex), ['App -> Layout', 'App -> Item']);
     assert.deepEqual(occLines(ex, 'Item'), [2, 3]);

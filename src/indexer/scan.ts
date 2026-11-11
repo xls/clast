@@ -9,6 +9,18 @@ import { supportedExtensions } from '../parser/registry.js';
 const createIgnore: () => Ignore =
   (ignoreFactory as unknown as { default?: () => Ignore }).default ?? (ignoreFactory as unknown as () => Ignore);
 
+const BINARY_EXTENSIONS = new Set([
+  '.png', '.jpg', '.jpeg', '.gif', '.bmp', '.ico', '.webp', '.tiff', '.psd', '.svgz', '.pdf', '.zip', '.gz',
+  '.tgz', '.bz2', '.xz', '.7z', '.rar', '.tar', '.jar', '.war', '.class', '.exe', '.dll', '.so', '.dylib', '.a',
+  '.o', '.obj', '.lib', '.pdb', '.wasm', '.woff', '.woff2', '.ttf', '.otf', '.eot', '.mp3', '.mp4', '.mov',
+  '.avi', '.wav', '.ogg', '.flac', '.webm', '.bin', '.dat', '.db', '.sqlite', '.pyc', '.pyo', '.node', '.snap',
+  '.map', '.min.js', '.icns', '.cur', '.keystore', '.p12', '.pfx', '.der', '.nupkg', '.dmg', '.iso', '.blend',
+]);
+const LOCK_FILES = new Set([
+  'package-lock.json', 'yarn.lock', 'pnpm-lock.yaml', 'Cargo.lock', 'composer.lock', 'Gemfile.lock', 'poetry.lock',
+  'go.sum', 'bun.lockb', 'npm-shrinkwrap.json',
+]);
+
 export interface ScannedFile {
   abs: string;
   /** Project-relative path with forward slashes. */
@@ -104,9 +116,51 @@ export class IgnoreRules {
     return this.extensions.has(extname(rel).toLowerCase());
   }
 
+  /** Files skipped by the last scan because they exceed maxFileSize. */
+  skippedLarge = 0;
+
+  /**
+   * Project-relative paths of text-like files that are NOT indexed (config,
+   * docs, data, unsupported languages) but pass the ignore rules. Used by
+   * text search so it can replace a plain grep.
+   */
+  otherTextFiles(limit = 60000): string[] {
+    const out: string[] = [];
+    const visit = (dirRel: string, parentRules: Rule[], depth: number): void => {
+      if (depth > 40 || out.length >= limit) return;
+      const rule = this.ruleFor(dirRel);
+      const rules = rule ? [...parentRules, rule] : parentRules;
+      let entries;
+      try {
+        entries = readdirSync(join(this.root, dirRel), { withFileTypes: true });
+      } catch {
+        return;
+      }
+      for (const e of entries) {
+        const name = e.name;
+        if (e.isDirectory()) {
+          if (name.startsWith('.') && name !== '.github') continue;
+          const rel = dirRel + name;
+          if (IgnoreRules.test(rules, rel, true)) continue;
+          visit(rel + '/', rules, depth + 1);
+        } else if (e.isFile()) {
+          const ext = extname(name).toLowerCase();
+          if (this.extensions.has(ext) || BINARY_EXTENSIONS.has(ext) || LOCK_FILES.has(name)) continue;
+          const rel = dirRel + name;
+          if (IgnoreRules.test(rules, rel, false)) continue;
+          out.push(rel);
+          if (out.length >= limit) return;
+        }
+      }
+    };
+    visit('', [this.rootRule], 0);
+    return out;
+  }
+
   /** Walk the project and return every indexable file. */
   async scan(): Promise<ScannedFile[]> {
     const candidates: string[] = [];
+    this.skippedLarge = 0;
     const rules: Rule[] = [this.rootRule];
     this.walk('', rules, candidates, 0);
 
@@ -122,6 +176,7 @@ export class IgnoreRules {
         try {
           const st = await stat(abs);
           if (st.size <= this.maxFileSize) out[i] = { abs, rel, mtime: st.mtimeMs, size: st.size };
+          else this.skippedLarge++;
         } catch {
           // vanished between readdir and stat
         }

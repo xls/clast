@@ -23,7 +23,7 @@ usage: clast-ai [command] [args] [--root <dir>]
   outline <path>             file or directory outline
   search <query...>          ranked symbol search   [--kind k] [--path p] [--lang l] [--limit n]
   symbol <name...>           source + callers + callees of a symbol   [--path p] [--max-lines n] [--no-body]
-  callers <name>             who calls it   [--depth n] [--limit n] [--within path] [--no-tests]
+  callers <name>             who calls it   [--depth n] [--limit n] [--within path] [--no-tests|--tests] [--uncertain]
   callees <name>             what it calls  [--depth n] [--limit n]
   hierarchy <name>           supertypes / subtypes / overrides   [--depth n] [--limit n]
   refs <name>                all references to an identifier   [--path p] [--limit n]
@@ -34,12 +34,28 @@ usage: clast-ai [command] [args] [--root <dir>]
 
 Query commands refresh the index incrementally first (skip with --no-scan).`;
 
+const CLI_NAMES: Record<string, string> = {
+  clast_search: 'clast-ai search',
+  clast_get_context: 'clast-ai symbol',
+  clast_call_graph: 'clast-ai callers / callees',
+  clast_references: 'clast-ai refs',
+  clast_hierarchy: 'clast-ai hierarchy',
+  clast_file_summary: 'clast-ai outline',
+  clast_overview: 'clast-ai overview',
+  clast_grep: 'clast-ai grep',
+  clast_changes: 'clast-ai changes',
+  clast_reindex: 'clast-ai index',
+  clast_status: 'clast-ai status',
+};
+
 interface Parsed {
   positional: string[];
   flags: Map<string, string | true>;
 }
 
-const BOOLEAN_FLAGS = new Set(['force', 'json', 'regex', 'no-body', 'no-scan', 'no-tests', 'help', 'version', 'all']);
+const BOOLEAN_FLAGS = new Set([
+  'force', 'json', 'regex', 'no-body', 'no-scan', 'no-tests', 'tests', 'uncertain', 'help', 'version', 'all',
+]);
 
 function parseArgs(argv: string[]): Parsed {
   const positional: string[] = [];
@@ -129,7 +145,7 @@ async function main(): Promise<void> {
     }
 
     if (!flags.has('no-scan')) await clast.indexer.indexAll();
-    const includeTests = flags.has('no-tests') ? false : undefined;
+    const includeTests = flags.has('no-tests') ? false : flags.has('tests') ? true : undefined;
     let out: string;
     switch (cmd) {
       case 'status':
@@ -160,7 +176,7 @@ async function main(): Promise<void> {
         out = await callGraph(ctx, {
           name: positional[0] ?? '', path: str('path'),
           direction: cmd === 'graph' ? 'both' : cmd,
-          depth: num('depth'), limit: num('limit'), includeTests, within: str('within'),
+          depth: num('depth'), limit: num('limit'), includeTests, within: str('within'), uncertain: flags.has('uncertain'),
         });
         break;
       case 'hierarchy':
@@ -185,7 +201,9 @@ async function main(): Promise<void> {
         process.exitCode = 1;
         return;
     }
-    console.log(out);
+    // Tool hints name MCP tools; say the same thing in CLI terms here.
+    console.log(out.replace(/clast_[a-z_]+/g, t => CLI_NAMES[t] ?? t));
+    if (out.startsWith('error:')) process.exitCode = 1;
   } finally {
     try { clast.close(); } catch { /* closed above */ }
   }

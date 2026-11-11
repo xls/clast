@@ -61,7 +61,11 @@ export interface Ctx {
    * (`new Foo().bar()`, casts); otherwise it is derived from type hints.
    */
   call(name: string | null | undefined, node: Node, receiver?: string | null, receiverType?: string | null): void;
-  /** Record an import of `source`. */
+  /**
+   * Record an import of `source`. `names` are the names bound in this file;
+   * write `alias=original` when the binding is renamed (`import { a as b }`
+   * -> `b=a`) and `*` for wildcard imports.
+   */
   imp(source: string | null | undefined, node: Node, names?: string[]): void;
   /** Record that symbol `sym` extends/implements `name`. */
   inherit(sym: number, name: string | null | undefined, kind?: 'extends' | 'implements'): void;
@@ -80,6 +84,12 @@ export interface Ctx {
    * properties, `self.x = Foo()` assignments.
    */
   typeHint(name: string | null | undefined, type: string | null | undefined, onContainer?: boolean): void;
+  /**
+   * Declare the symbol this file exports as its default
+   * (`export default X`, `module.exports = X`). Importers that bind it to
+   * another local name are then linked to X.
+   */
+  exportDefault(name: string | null | undefined): void;
   /** Kind of the innermost enclosing symbol, or null at file level. */
   parentKind(): SymbolKind | null;
   /** True if any enclosing symbol is a function or method. */

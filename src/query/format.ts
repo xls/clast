@@ -26,7 +26,7 @@ export function plural(n: number, word: string): string {
   return `${n} ${word}${/(ch|sh|s|x)$/.test(word) ? 'es' : 's'}`;
 }
 
-const TEST_PATH_RE = /(^|\/)(tests?|__tests__|spec|specs|testing|testdata|fixtures|__mocks__|mocks?|e2e|benchmarks?|bench|examples?|samples?|demos?|docs?|docs_src|documentation|tutorials?|playground|stubs?)(\/|$)|(\.|_|-)(test|spec|tests|bench)\.[a-z0-9]+$|(^|\/)test_[^/]+$|Tests?\.(java|cs|kt|swift)$/i;
+const TEST_PATH_RE = /(^|\/)(tests?|__tests__|spec|specs|testing|testdata|fixtures|__mocks__|mocks?|e2e|benchmarks?|bench|examples?|samples?|demos?|docs?|docs_src|documentation|tutorials?|playground|stubs?)(\/|$)|(\.|_|-)(test|spec|tests|bench)\.[a-z0-9]+$|(^|\/)test_[^/]+\.py$|(^|\/)(testassets|test-assets|perf|benchmarkapps)(\/|$)|Tests?\.(java|cs|kt|swift)$/i;
 
 /** Tests, fixtures, examples and benchmarks rank below production code. */
 export function isTestPath(path: string): boolean {

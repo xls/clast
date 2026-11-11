@@ -99,9 +99,14 @@ const parameter: Visitor = (node, ctx) => {
   const type = field(node, 'type');
   if (!pattern || pattern.type !== 'identifier' || !type) return;
   ctx.typeHint(pattern.text, type.text);
-  const first = node.child(0);
-  if (first && (first.type === 'accessibility_modifier' || first.type === 'readonly' || first.type === 'override_modifier')) {
-    ctx.typeHint(pattern.text, type.text, true);
+  // `constructor(@IFoo private readonly foo: IFoo)`: a parameter property is also a field.
+  for (let i = 0; i < node.childCount; i++) {
+    const c = node.child(i);
+    if (!c || c === pattern) break;
+    if (c.type === 'accessibility_modifier' || c.type === 'readonly' || c.type === 'override_modifier') {
+      ctx.typeHint(pattern.text, type.text, true);
+      break;
+    }
   }
 };
 
@@ -126,9 +131,36 @@ const functionExpression: Visitor = (node, ctx) => {
   ctx.def(node, { name: name.text, kind: 'function' });
 };
 
+/** Module path if `value` is `require('x')` or `require('x').member`, else null. */
+function requireSource(value: Node | null): string | null {
+  let call = value;
+  if (call && call.type === 'member_expression') call = field(call, 'object');
+  if (!call || call.type !== 'call_expression' || field(call, 'function')?.text !== 'require') return null;
+  const arg = field(call, 'arguments')?.namedChildren[0];
+  return arg && arg.type === 'string' ? stripQuotes(arg.text) : null;
+}
+
 const variableDeclarator: Visitor = (node, ctx) => {
   const nameNode = field(node, 'name');
   const value = field(node, 'value');
+  if (nameNode && nameNode.type === 'object_pattern') {
+    // const { a, b: c } = require('./x')
+    const source = requireSource(value);
+    if (source) {
+      const names: string[] = [];
+      for (const p of nameNode.namedChildren) {
+        if (!p) continue;
+        if (p.type === 'shorthand_property_identifier_pattern') names.push(p.text);
+        else if (p.type === 'pair_pattern') {
+          const key = field(p, 'key')?.text;
+          const bound = field(p, 'value');
+          if (key && bound && bound.type === 'identifier') names.push(bound.text === key ? key : `${bound.text}=${key}`);
+        }
+      }
+      ctx.imp(source, node, names);
+    }
+    return;
+  }
   if (!nameNode || nameNode.type !== 'identifier') return;
   const decl = node.parent; // lexical_declaration | variable_declaration
   const exp = decl ? isExported(decl) : null;
@@ -145,10 +177,12 @@ const variableDeclarator: Visitor = (node, ctx) => {
     classHeritage(value, sym, ctx);
     return;
   }
-  // require() imports
-  if (value && value.type === 'call_expression' && field(value, 'function')?.text === 'require') {
-    const arg = field(value, 'arguments')?.namedChildren[0];
-    if (arg && arg.type === 'string') ctx.imp(stripQuotes(arg.text), node, [name]);
+  // CommonJS: `const x = require('y')` and `const f = require('y').f` bind imports, they define nothing.
+  const required = requireSource(value);
+  if (required) {
+    const member = value && value.type === 'member_expression' ? field(value, 'property')?.text : undefined;
+    ctx.imp(required, node, [member && member !== name ? `${name}=${member}` : name]);
+    return;
   }
   // Only module-level (or namespace-level) variables become symbols; locals
   // inside callbacks (tests, event handlers) are not worth indexing.
@@ -182,6 +216,13 @@ const assignment: Visitor = (node, ctx) => {
     right = field(right, 'right');
   }
   if (!right) return;
+  // module.exports = createApplication / exports = module.exports = createApplication
+  if (targets.some(t => /^(module\.)?exports$/.test(t.text))) {
+    if (right.type === 'identifier') ctx.exportDefault(right.text);
+    else if ((FUNCTION_VALUES.has(right.type) || right.type === 'class') && field(right, 'name')) {
+      ctx.exportDefault(field(right, 'name')!.text);
+    }
+  }
   const isFn = FUNCTION_VALUES.has(right.type);
   const isClass = right.type === 'class';
   if (!isFn && !isClass) return;
@@ -257,7 +298,12 @@ const importStatement: Visitor = (node, ctx) => {
       else if (c.type === 'namespace_import') names.push(c.namedChildren[0]?.text ?? '*');
       else if (c.type === 'named_imports') {
         for (const s of c.namedChildren) {
-          if (s && s.type === 'import_specifier') names.push(field(s, 'name')?.text ?? s.text);
+          // The local binding is the alias when there is one (import { a as b }).
+          if (s && s.type === 'import_specifier') {
+            const original = field(s, 'name')?.text ?? s.text;
+            const alias = field(s, 'alias')?.text;
+            names.push(alias && alias !== original ? `${alias}=${original}` : original);
+          }
         }
       }
     }
@@ -269,6 +315,33 @@ const exportStatement: Visitor = (node, ctx) => {
   // Re-exports: export { a } from './x'; export * from './x';
   const source = field(node, 'source');
   if (source) ctx.imp(stripQuotes(source.text), node);
+  // export default X / export default function name() {} / export default class Name {}
+  if (node.children.some(c => c?.type === 'default')) {
+    const value = field(node, 'value');
+    const decl = field(node, 'declaration');
+    if (value && value.type === 'identifier') ctx.exportDefault(value.text);
+    else if (decl) ctx.exportDefault(field(decl, 'name')?.text);
+  }
+};
+
+/**
+ * Anonymous class expressions (`registerAction2(class extends Action2 { run() {} })`):
+ * give them a synthetic name so their methods have a container and the class
+ * shows up as a subtype of what it extends.
+ */
+const classExpression: Visitor = (node, ctx) => {
+  if (field(node, 'name')) return; // named class expressions are handled where they are bound
+  const p = node.parent;
+  if (p && (p.type === 'variable_declarator' || p.type === 'assignment_expression')) return;
+  let base = '';
+  for (const c of node.namedChildren) {
+    if (!c || c.type !== 'class_heritage') continue;
+    const ext = c.namedChildren.find(h => h?.type === 'extends_clause');
+    const value = ext ? ext.childrenForFieldName('value')[0] : c.namedChildren[0];
+    if (value) base = lastSegment(value.text);
+  }
+  const sym = ctx.def(node, { name: base ? `(anonymous ${base})` : '(anonymous class)', kind: 'class' });
+  classHeritage(node, sym, ctx);
 };
 
 const typeAlias: Visitor = (node, ctx) => {
@@ -322,6 +395,7 @@ const jsVisitors: Record<string, Visitor> = {
   export_statement: exportStatement,
   decorator,
   function_expression: functionExpression,
+  class: classExpression,
 };
 
 const tsVisitors: Record<string, Visitor> = {

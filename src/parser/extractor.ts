@@ -104,6 +104,7 @@ export function extract(tree: Tree, source: string, compiled: CompiledSpec): Ext
   const occ = new Map<string, number[]>();
   const scopes: Scope[] = [];
   const containerDefs = new Map<string, number>();
+  let defaultExport: string | null = null;
   /** Declared types: owner symbol index (-1 = file) -> variable/field name -> type name. */
   const hints = new Map<number, Map<string, string>>();
 
@@ -259,6 +260,10 @@ export function extract(tree: Tree, source: string, compiled: CompiledSpec): Ext
       scopes.push({ sym: -1, name, kind: null, callScope: false });
     },
 
+    exportDefault(name): void {
+      if (name && name.length <= MAX_NAME && /^[\p{L}_$][\p{L}\p{N}_$]*$/u.test(name)) defaultExport = name;
+    },
+
     ref(name, node): void {
       if (!name || name.length < 2 || name.length > MAX_NAME) return;
       addOcc(name, node.startPosition.row + 1);
@@ -302,9 +307,15 @@ export function extract(tree: Tree, source: string, compiled: CompiledSpec): Ext
 
     inherit(sym, name, kind = 'extends'): void {
       if (!name || sym < 0) return;
-      const clean = name.trim();
+      const clean = name.trim().replace(/<.*$/s, '');
       if (!clean || clean.length > MAX_NAME) return;
-      heritage.push({ symbol: sym, name: clean, kind });
+      // `pkg.mod.Base` / `ns::Base`: index by the bare name, keep the qualifier for resolution.
+      const parts = clean.split(/\.|::|\\/).filter(Boolean);
+      const bare = parts.pop();
+      if (!bare) return;
+      const qualifier = parts.length ? parts[parts.length - 1]! : null;
+      if (heritage.some(h => h.symbol === sym && h.name === bare)) return;
+      heritage.push({ symbol: sym, name: bare, qualifier, kind });
     },
 
     parentKind(): SymbolKind | null {
@@ -464,6 +475,7 @@ export function extract(tree: Tree, source: string, compiled: CompiledSpec): Ext
     imports,
     heritage,
     fieldTypes,
+    defaultExport,
     occ: [...occ.entries()].map(([name, lines]) => [name, lines.join(',')] as [string, string]),
     hadError,
   };

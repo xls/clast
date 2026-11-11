@@ -1,7 +1,7 @@
 import type { ClastDb } from '../db/index.js';
 import { CONTAINER_KINDS, type SymbolRow } from '../types.js';
 import { isTestPath } from './format.js';
-import type { Resolver } from './resolve.js';
+import { langFamily, type Resolver } from './resolve.js';
 
 export interface CallerEdge {
   /** Calling symbol, or null for a call at file level. */
@@ -11,6 +11,12 @@ export interface CallerEdge {
   count: number;
   /** False when name-based resolution could not rule out another target. */
   certain: boolean;
+  /**
+   * True for call sites whose receiver type is unknown and that could not be
+   * attributed to any definition: they MAY call the target (same method
+   * name), but there is no evidence either way.
+   */
+  weak?: boolean;
 }
 
 export interface CalleeEdge {
@@ -37,6 +43,29 @@ interface CallRow {
 }
 
 const MAX_CALL_ROWS = 4000;
+const MAX_WEAK = 1500;
+
+/**
+ * The definition that best stands for a symbol's family member with the same
+ * qualified name: the function body rather than its prototype, the
+ * out-of-line C++ method rather than the in-class declaration.
+ */
+export function representative(db: ClastDb, resolver: Resolver, sym: SymbolRow): SymbolRow {
+  if (sym.kind !== 'declaration' && sym.end_line - sym.start_line >= 2) return sym;
+  let best = sym;
+  let bestScore = (sym.kind === 'declaration' ? 0 : 1000) + (sym.end_line - sym.start_line);
+  for (const id of resolver.familyOf(sym)) {
+    if (id === sym.id) continue;
+    const other = db.symbolById(id);
+    if (!other || other.qname !== sym.qname) continue;
+    const score = (other.kind === 'declaration' ? 0 : 1000) + (other.end_line - other.start_line);
+    if (score > bestScore) {
+      best = other;
+      bestScore = score;
+    }
+  }
+  return best;
+}
 
 /** Ids of the symbol itself plus (for containers) its direct members. */
 function bodyIds(db: ClastDb, sym: SymbolRow): number[] {
@@ -78,6 +107,8 @@ export function callersOf(db: ClastDb, resolver: Resolver, target: SymbolRow): C
 
   const family = resolver.familyOf(target);
   const edges: CallerEdge[] = [];
+  const weak: CallerEdge[] = [];
+  const targetIsMember = target.kind === 'method' || target.qname.includes('.');
   const callerCache = new Map<number, SymbolRow | undefined>();
   for (const row of rows) {
     let caller: SymbolRow | null = null;
@@ -89,7 +120,16 @@ export function callersOf(db: ClastDb, resolver: Resolver, target: SymbolRow): C
     const res = resolver.resolve(target.name, {
       fileId: row.file_id, path: row.path, lang: row.lang, receiver: row.receiver, rtype: row.rtype, caller,
     });
-    if (res.candidates.length === 0) continue;
+    if (res.candidates.length === 0) {
+      // Nothing could be attributed. If the receiver's type is simply unknown,
+      // keep the site as a possible caller instead of silently dropping it.
+      if (targetIsMember && weak.length < MAX_WEAK && resolver.isOpaqueReceiver({
+        fileId: row.file_id, path: row.path, lang: row.lang, receiver: row.receiver, rtype: row.rtype, caller,
+      }) && langFamily(row.lang) === langFamily(target.lang) && !(isTestPath(target.path) && !isTestPath(row.path))) {
+        weak.push({ caller, path: row.path, line: row.line, count: row.count, certain: false, weak: true });
+      }
+      continue;
+    }
     const top = res.candidates[0]!;
     let certain: boolean;
     if (family.has(top.sym.id)) {
@@ -104,11 +144,31 @@ export function callersOf(db: ClastDb, resolver: Resolver, target: SymbolRow): C
     edges.push({ caller, path: row.path, line: row.line, count: row.count, certain });
   }
 
+  // Call sites that use a local alias of the target: `import { X as Y }`, default imports, require bindings.
+  for (const use of resolver.aliasesOf(target)) {
+    const aliasId = db.nameId(use.alias, false);
+    if (aliasId === undefined) continue;
+    const aliasRows = db.all<CallRow>(
+      `SELECT c.file_id, c.caller_id, c.line, c.receiver, c.rtype, c.count, f.path, f.lang
+       FROM calls c JOIN files f ON f.id = c.file_id
+       WHERE c.name_id = ? AND c.file_id = ? AND c.receiver IS NULL`,
+      aliasId, use.fileId
+    );
+    for (const row of aliasRows) {
+      const caller = row.caller_id !== null ? db.symbolById(row.caller_id) ?? null : null;
+      edges.push({ caller, path: row.path, line: row.line, count: row.count, certain: true });
+    }
+  }
+  // Unattributed sites only matter when they are not already explained.
+  const known = new Set(edges.map(e => e.path + ':' + e.line));
+  for (const w of weak) if (!known.has(w.path + ':' + w.line)) edges.push(w);
+
   // Production code first, then resolved before name-only, then by location.
   edges.sort(
     (a, b) =>
       Number(isTestPath(a.path)) - Number(isTestPath(b.path)) ||
       Number(b.certain) - Number(a.certain) ||
+      Number(a.weak ?? false) - Number(b.weak ?? false) ||
       a.path.localeCompare(b.path) ||
       a.line - b.line
   );
@@ -131,7 +191,9 @@ export function calleesOf(db: ClastDb, resolver: Resolver, sym: SymbolRow): Call
       const res = resolver.resolve(row.name, {
         fileId: sym.file_id, path: sym.path, lang: sym.lang, receiver: row.receiver, rtype: row.rtype, caller,
       });
-      const top = res.candidates[0];
+      const first = res.candidates[0];
+      // Follow the call to the implementation, not to a prototype / in-class declaration.
+      const top = first ? { ...first, sym: representative(db, resolver, first.sym) } : undefined;
       const key = row.name + '\0' + (top ? top.sym.id : '');
       const existing = byName.get(key);
       if (existing) {
@@ -145,7 +207,14 @@ export function calleesOf(db: ClastDb, resolver: Resolver, sym: SymbolRow): Call
         receiver: row.receiver,
         target: top ? top.sym : null,
         certain: res.confident,
-        alternatives: Math.max(0, res.candidates.length - 1),
+        alternatives: top
+          ? Math.max(0, res.candidates.length - 1)
+          // Unresolved, but the project does define methods with this name: not "external".
+          : resolver.isOpaqueReceiver({
+              fileId: sym.file_id, path: sym.path, lang: sym.lang, receiver: row.receiver, rtype: row.rtype, caller,
+            })
+            ? resolver.candidates(row.name).filter(c => langFamily(c.lang) === langFamily(sym.lang)).length
+            : 0,
       });
     }
   }
@@ -161,6 +230,8 @@ export interface CallerGroup {
   /** Number of call sites in this caller. */
   sites: number;
   certain: boolean;
+  /** All call sites in this caller are unattributed (receiver type unknown). */
+  weak: boolean;
 }
 
 export function groupCallers(edges: CallerEdge[]): CallerGroup[] {
@@ -171,9 +242,12 @@ export function groupCallers(edges: CallerEdge[]): CallerGroup[] {
     if (g) {
       g.sites += e.count;
       if (e.certain) g.certain = true;
+      if (!e.weak) g.weak = false;
       if (e.line < g.line) g.line = e.line;
     } else {
-      groups.set(key, { caller: e.caller, path: e.path, line: e.line, sites: e.count, certain: e.certain });
+      groups.set(key, {
+        caller: e.caller, path: e.path, line: e.line, sites: e.count, certain: e.certain, weak: e.weak ?? false,
+      });
     }
   }
   return [...groups.values()];
@@ -209,6 +283,8 @@ export interface GraphNode {
   certain: boolean;
   /** Call sites merged into this node. */
   sites: number;
+  /** Unattributed call site (receiver type unknown). */
+  weak?: boolean;
   label?: string;
   children: GraphNode[];
   /** Set when this symbol was already expanded elsewhere in the tree. */
@@ -260,7 +336,7 @@ export function buildGraph(
         children = groupCallers(callersOf(db, resolver, node.sym))
           .filter(g => (opts.includeTests || !isTestPath(g.path)) && (!opts.path || opts.path(g.path)))
           .map(g => ({
-            sym: g.caller, path: g.path, line: g.line, certain: g.certain, sites: g.sites,
+            sym: g.caller, path: g.path, line: g.line, certain: g.certain, sites: g.sites, weak: g.weak,
             label: g.caller ? undefined : '<file level>', children: [],
           }));
       } else {
@@ -277,7 +353,8 @@ export function buildGraph(
       node.children = children.slice(0, take);
       remaining -= take;
       for (const child of node.children) {
-        if (!child.sym) continue;
+        // Only confirmed edges are worth following further.
+        if (!child.sym || child.weak || (direction === 'callers' && !child.certain)) continue;
         if (expanded.has(child.sym.id)) {
           child.repeated = true;
           continue;

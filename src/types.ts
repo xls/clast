@@ -68,6 +68,8 @@ export interface ExImport {
 export interface ExHeritage {
   symbol: number;
   name: string;
+  /** Module / namespace the supertype was written with (`forms` in `forms.CharField`), if any. */
+  qualifier: string | null;
   kind: 'extends' | 'implements';
 }
 
@@ -79,6 +81,8 @@ export interface Extraction {
   calls: ExCall[];
   imports: ExImport[];
   heritage: ExHeritage[];
+  /** Name of the symbol exported as the module default (`module.exports = X`), if any. */
+  defaultExport: string | null;
   /** Declared field types of class-like symbols: [container, field, type]. */
   fieldTypes: Array<[string, string, string]>;
   /** Identifier occurrences: [name, "12,40,41"] (1-based lines, capped per file). */

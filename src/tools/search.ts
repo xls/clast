@@ -43,7 +43,7 @@ export async function search(ctx: ToolContext, args: SearchArgs): Promise<string
       if (h.refs > 1 && h.unique) tags.push(`refs:${h.refs}`);
       if (h.match !== 'exact') tags.push(h.match);
       out.push(`${symLine(s)}${tags.length ? '  [' + tags.join(' ') + ']' : ''}`);
-      if (s.signature && s.signature !== s.name) out.push(`  ${s.signature}`);
+      if (s.signature && s.signature !== s.name) out.push(`  ${firstLine(s.signature, 180)}`);
       if (s.doc) out.push(`  // ${firstLine(s.doc, 140)}`);
     }
     out.push('');
@@ -108,36 +108,38 @@ function docLines(doc: string, max: number): string[] {
 
 function callerLines(ctx: ToolContext, sym: SymbolRow, edges: CallerEdge[], out: string[]): void {
   const groups = groupCallers(edges);
+  if (groups.length === 0) return;
   const prod = groups.filter(g => !isTestPath(g.path));
   const tests = groups.filter(g => isTestPath(g.path));
   const certain = prod.filter(g => g.certain);
-  const possible = prod.filter(g => !g.certain);
+  const possible = prod.filter(g => !g.certain && !g.weak);
+  const unknown = prod.filter(g => g.weak);
 
-  if (groups.length === 0) return;
   const parts: string[] = [];
   if (certain.length) parts.push(`${certain.length} resolved`);
   if (possible.length) parts.push(`${possible.length} name-only "?"`);
-  if (tests.length) parts.push(`${tests.length} in tests`);
+  if (unknown.length) parts.push(`${unknown.length} on receivers of unknown type`);
+  if (tests.length) parts.push(`${tests.length} in tests/examples`);
   out.push(`callers (${parts.join(', ')}):`);
 
-  // Resolved production callers are what matters; name-only matches fill in when there are few.
-  const primary = certain.length ? certain : possible;
-  const shown = primary.slice(0, 10);
-  for (const g of shown) {
-    out.push(
-      `  ${g.caller ? g.caller.qname : '<file level>'}  ${g.path}:${g.line}${g.sites > 1 ? ` (x${g.sites})` : ''}${g.certain ? '' : '  ?'}`
-    );
+  const line = (g: (typeof groups)[number], mark: string): string =>
+    `  ${g.caller ? g.caller.qname : '<file level>'}  ${g.path}:${g.line}${g.sites > 1 ? ` (x${g.sites})` : ''}${mark}`;
+
+  // Resolved production callers are what matters; weaker matches fill in when there are few.
+  for (const g of certain.slice(0, 10)) out.push(line(g, ''));
+  if (certain.length > 10) out.push(`  ... ${certain.length - 10} more resolved (clast_call_graph lists all)`);
+  let budget = Math.max(0, 6 - certain.length);
+  for (const g of possible.slice(0, budget)) out.push(line(g, '  ?'));
+  budget -= Math.min(budget, possible.length);
+  if (unknown.length) {
+    // These call a method with this name on an object whose type could not be determined.
+    for (const g of unknown.slice(0, budget)) out.push(line(g, '  ? (receiver type unknown)'));
   }
-  if (primary.length > shown.length) out.push(`  ... ${primary.length - shown.length} more (clast_call_graph lists all)`);
-  if (certain.length && certain.length < 4 && possible.length) {
-    for (const g of possible.slice(0, 4)) {
-      out.push(`  ${g.caller ? g.caller.qname : '<file level>'}  ${g.path}:${g.line}  ?`);
-    }
-    if (possible.length > 4) out.push(`  ... ${possible.length - 4} more name-only matches`);
-  }
+  const hidden = Math.max(0, possible.length - Math.max(0, 6 - certain.length)) + Math.max(0, unknown.length - budget);
+  if (hidden) out.push(`  ... ${hidden} more unconfirmed call sites (clast_call_graph with uncertain=true lists them)`);
   if (tests.length) {
     const files = [...new Set(tests.map(t => t.path))];
-    out.push(`  tests: ${files.slice(0, 5).join(', ')}${files.length > 5 ? `, +${files.length - 5} more files` : ''}`);
+    out.push(`  tests/examples: ${files.slice(0, 4).join(', ')}${files.length > 4 ? `, +${files.length - 4} more files` : ''}`);
   }
 }
 
@@ -149,7 +151,21 @@ function valueReferences(ctx: ToolContext, sym: SymbolRow, callers: CallerEdge[]
     `SELECT o.file_id, f.path, o.lines FROM occ o JOIN files f ON f.id = o.file_id WHERE o.name_id = ? LIMIT 41`,
     nameId
   );
-  if (rows.length > 40) return []; // a widely used name: clast_references is the right tool
+  if (rows.length > 40) {
+    // A widely used name: only the defining file and the files importing it can mean this symbol.
+    const visible = new Set<number>([sym.file_id]);
+    for (const r of ctx.db.all<{ file_id: number }>(
+      `SELECT DISTINCT file_id FROM imports WHERE resolved_id = ? LIMIT 200`, sym.file_id
+    )) {
+      visible.add(r.file_id);
+    }
+    const narrowed = ctx.db.all<{ file_id: number; path: string; lines: string }>(
+      `SELECT o.file_id, f.path, o.lines FROM occ o JOIN files f ON f.id = o.file_id WHERE o.name_id = ?`, nameId
+    ).filter(r => visible.has(r.file_id));
+    if (narrowed.length === 0 || narrowed.length > 40) return [];
+    rows.length = 0;
+    rows.push(...narrowed);
+  }
   // Every line that calls *something* with this name is a call, whichever definition it resolves to.
   const callSites = new Set(callers.map(c => c.path + ':' + c.line));
   for (const row of ctx.db.all<{ path: string; line: number }>(
@@ -161,6 +177,7 @@ function valueReferences(ctx: ToolContext, sym: SymbolRow, callers: CallerEdge[]
   const defLines = new Set(ctx.db.symbolsByName(sym.name).map(d => d.path + ':' + d.start_line));
   const out: string[] = [];
   const seen = new Set<string>();
+  const callPattern = new RegExp('\\b' + sym.name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '\\s*(<[^>]*>)?[!?]?\\(');
   rows.sort((a, b) => Number(isTestPath(a.path)) - Number(isTestPath(b.path)) || a.path.localeCompare(b.path));
   for (const r of rows) {
     for (const n of r.lines.split(',').map(Number)) {
@@ -172,6 +189,8 @@ function valueReferences(ctx: ToolContext, sym: SymbolRow, callers: CallerEdge[]
       const text = ctx.lines.line(r.path, n, 90);
       // Imports only say the name is in scope; they are not uses.
       if (!enclosing && IMPORT_LINE.test(text)) continue;
+      // The line calls the name (a repeat call inside a caller already listed, or a call on an untyped receiver).
+      if (callPattern.test(text)) continue;
       const who = enclosing ? enclosing.qname : '<file level>';
       if (seen.has(r.path + who)) continue;
       seen.add(r.path + who);
@@ -207,8 +226,15 @@ async function describe(ctx: ToolContext, sym: SymbolRow, args: ContextArgs, ove
   const codeLines = sym.end_line - sym.start_line + 1;
 
   if (args.includeBody === false) {
-    if (sym.signature) out.push(sym.signature);
+    if (sym.signature) out.push(firstLine(sym.signature, 200));
     if (sym.doc) out.push(...docLines(sym.doc, 6));
+    if (isContainer) {
+      const members = ctx.db.symbolsInFile(sym.file_id).filter(m => m.parent_id === sym.id);
+      const methods = [...new Set(members.filter(m => !MINOR_KINDS.has(m.kind)).map(m => m.name))];
+      const data = [...new Set(members.filter(m => MINOR_KINDS.has(m.kind)).map(m => m.name))];
+      if (methods.length) out.push(`methods (${methods.length}): ${methods.slice(0, 50).join(', ')}${methods.length > 50 ? ', ...' : ''}`);
+      if (data.length) out.push(`fields (${data.length}): ${data.slice(0, 30).join(', ')}${data.length > 30 ? ', ...' : ''}`);
+    }
   } else if (isContainer && codeLines > maxLines) {
     // Large container: signature + doc + member outline instead of a wall of code.
     if (sym.signature) out.push(sym.signature);
@@ -343,7 +369,7 @@ export async function getContext(ctx: ToolContext, args: ContextArgs): Promise<s
 
     const chosen = matches[0]!;
     const overloads = matches.filter(m => m.id !== chosen.id && m.file_id === chosen.file_id && m.qname === chosen.qname);
-    const { others } = otherDefinitions(chosen, matches);
+    const { others } = otherDefinitions(chosen, matches, ctx.resolver.familyOf(chosen));
     const ref = parseSymbolRef(name);
     const unqualified = ref.container.length === 0 && !ref.path && !args.path && ref.line === undefined;
 
@@ -388,6 +414,8 @@ export interface CallGraphArgs {
   includeTests?: boolean;
   /** Only callers / callees located under this path. */
   within?: string;
+  /** List every unconfirmed caller (name-only matches, unknown receivers) instead of a summary. */
+  uncertain?: boolean;
 }
 
 function renderGraph(node: GraphNode, indent: number, out: string[], direction: 'callers' | 'callees'): void {
@@ -397,30 +425,62 @@ function renderGraph(node: GraphNode, indent: number, out: string[], direction: 
     const where = direction === 'callers' ? `${child.path}:${child.line}` : child.sym ? loc(child.sym) : '';
     const tags =
       (child.sites > 1 ? ` (x${child.sites})` : '') +
-      (child.certain ? '' : '  ?') +
+      (child.weak ? '  ? (receiver type unknown)' : child.certain ? '' : '  ?') +
       (child.repeated ? '  (shown above)' : '') +
       (child.hub ? `  (${child.hub} ${direction}, not expanded: query it directly)` : '');
     out.push(`${pad}${name}  ${where}${tags}`);
     renderGraph(child, indent + 1, out, direction);
   }
-  if (node.omitted) out.push(`${'  '.repeat(indent)}... ${node.omitted} more (raise limit, or narrow with within / includeTests=false)`);
+  if (node.omitted) out.push(`${'  '.repeat(indent)}... ${node.omitted} more (raise limit, or narrow with within)`);
+}
+
+/**
+ * When a bare name has several unrelated definitions, say so before answering
+ * (and stop when there are too many to guess). Returns lines to print and
+ * whether the caller should continue with the first match.
+ */
+function disambiguate(
+  ctx: ToolContext,
+  name: string,
+  path: string | undefined,
+  matches: SymbolRow[]
+): { lines: string[]; stop: boolean } {
+  const chosen = matches[0]!;
+  const { others } = otherDefinitions(chosen, matches, ctx.resolver.familyOf(chosen));
+  if (others.length === 0) return { lines: [], stop: false };
+  const ref = parseSymbolRef(name);
+  const unqualified = ref.container.length === 0 && !ref.path && !path && ref.line === undefined;
+  if (unqualified && others.length >= 4) {
+    const lines = [`"${name}" has ${others.length + 1} definitions. Pick one with Container.name or path:name:`];
+    for (const m of [chosen, ...others].slice(0, 14)) {
+      lines.push(`  ${symLine(m)}${m.signature ? '  ' + firstLine(m.signature, 70) : ''}`);
+    }
+    if (others.length + 1 > 14) lines.push(`  ... ${others.length + 1 - 14} more (clast_search ${name} with kind/path filters)`);
+    return { lines, stop: true };
+  }
+  const lines = [`note: "${chosen.name}" has ${others.length} other definition(s); using the first. Others (select with Container.name or path:name):`];
+  for (const m of others.slice(0, 4)) lines.push(`  ${symLine(m)}`);
+  return { lines, stop: false };
 }
 
 export async function callGraph(ctx: ToolContext, args: CallGraphArgs): Promise<string> {
   const note = await ctx.ready();
+  if (!args.name || !args.name.trim()) return 'error: name is required';
   const matches = findSymbols(ctx.db, args.name, { path: args.path });
   const direction = args.direction ?? 'both';
   const depth = Math.max(1, Math.min(args.depth ?? 1, 6));
   const budget = Math.max(1, Math.min(args.limit ?? 50, 2000));
-  const includeTests = args.includeTests ?? true;
   const within = args.within;
   const pathFilter = within ? (p: string): boolean => pathMatches(p, within) : undefined;
+  // Tests: listed in full only on request; by default they are summarised per file.
+  const listTests = args.includeTests === true;
+  const dropTests = args.includeTests === false;
 
   if (matches.length === 0) {
     // Not defined here (library function, dynamic method): still answer "who calls it".
     const bare = parseSymbolRef(args.name).name || args.name;
     const sites = groupCallers(externalCallSites(ctx.db, bare)).filter(
-      g => (includeTests || !isTestPath(g.path)) && (!pathFilter || pathFilter(g.path))
+      g => (!dropTests || !isTestPath(g.path)) && (!pathFilter || pathFilter(g.path))
     );
     if (sites.length === 0 || direction === 'callees') return note + notFound(ctx, args.name, args.path).join('\n');
     const out = [
@@ -433,16 +493,38 @@ export async function callGraph(ctx: ToolContext, args: CallGraphArgs): Promise<
     return note + out.join('\n');
   }
 
+  const amb = disambiguate(ctx, args.name, args.path, matches);
+  if (amb.stop) return note + amb.lines.join('\n');
   const sym = matches[0]!;
   const out: string[] = [symLine(sym)];
-  if (sym.signature) out.push(`  ${sym.signature}`);
-  const opts = { depth, budget, includeTests, path: pathFilter };
+  if (sym.signature) out.push(`  ${firstLine(sym.signature, 160)}`);
+  out.push(...amb.lines);
+  const opts = { depth, budget: 100000, includeTests: !dropTests, path: pathFilter };
 
   if (direction !== 'callees') {
     const graph = buildGraph(ctx.db, ctx.resolver, sym, 'callers', opts);
-    const total = graph.children.length + (graph.omitted ?? 0);
-    out.push(`callers (${total}${depth > 1 ? `, depth ${depth}` : ''}; caller  call-site):`);
-    if (graph.children.length === 0) {
+    const all = graph.children;
+    const tests = all.filter(c => isTestPath(c.path));
+    const prod = all.filter(c => !isTestPath(c.path));
+    const certain = prod.filter(c => c.certain);
+    const possible = prod.filter(c => !c.certain && !c.weak);
+    const unknown = prod.filter(c => c.weak);
+
+    const parts: string[] = [];
+    if (certain.length) parts.push(`${certain.length} resolved`);
+    if (possible.length) parts.push(`${possible.length} name-only "?"`);
+    if (unknown.length) parts.push(`${unknown.length} on receivers of unknown type`);
+    if (tests.length) parts.push(`${tests.length} in tests/examples`);
+    out.push(`callers (${parts.length ? parts.join(', ') : '0'}${depth > 1 ? `; depth ${depth}` : ''}; caller  call-site):`);
+
+    let remaining = budget;
+    const emit = (nodes: GraphNode[], cap: number, more: string): void => {
+      const take = Math.min(nodes.length, cap, remaining);
+      renderGraph({ ...graph, children: nodes.slice(0, take), omitted: 0 }, 1, out, 'callers');
+      remaining -= take;
+      if (nodes.length > take) out.push(`  ... ${nodes.length - take} more ${more}`);
+    };
+    if (all.length === 0) {
       out.push('  none found');
       const refs = valueReferences(ctx, sym, [], 6);
       if (refs.length) {
@@ -450,25 +532,40 @@ export async function callGraph(ctx: ToolContext, args: CallGraphArgs): Promise<
         out.push(...refs);
       }
     }
-    renderGraph(graph, 1, out, 'callers');
+    emit(certain, budget, '(raise limit, or narrow with within)');
+    // Unconfirmed edges are summarised unless asked for, or unless they are all there is.
+    const showAll = args.uncertain === true || certain.length === 0;
+    if (possible.length) emit(possible, showAll ? budget : 5, 'name-only matches (uncertain=true lists them)');
+    if (unknown.length) emit(unknown, showAll ? budget : 3, 'call sites on receivers of unknown type (uncertain=true lists them)');
+    if (tests.length) {
+      if (listTests) {
+        out.push('in tests/examples:');
+        emit(tests, budget, '(raise limit)');
+      } else {
+        const files = [...new Set(tests.map(t => t.path))];
+        out.push(
+          `  tests/examples (${tests.length} callers in ${plural(files.length, 'file')}; includeTests=true lists them): ` +
+            `${files.slice(0, 5).join(', ')}${files.length > 5 ? ', ...' : ''}`
+        );
+      }
+    }
   }
   if (direction !== 'callers') {
-    const graph = buildGraph(ctx.db, ctx.resolver, sym, 'callees', opts);
+    const graph = buildGraph(ctx.db, ctx.resolver, sym, 'callees', { ...opts, budget });
     const total = graph.children.length + (graph.omitted ?? 0);
     out.push(`callees (${total}${depth > 1 ? `, depth ${depth}` : ''}; callee  definition):`);
     if (graph.children.length === 0) out.push('  none resolved inside this project');
     renderGraph(graph, 1, out, 'callees');
-    const external = calleesOf(ctx.db, ctx.resolver, sym).filter(c => !c.target);
-    const names = [...new Set(external.map(c => c.name))];
-    if (names.length) out.push(`  external: ${names.slice(0, 30).join(', ')}${names.length > 30 ? ', ...' : ''}`);
+    const rest = calleesOf(ctx.db, ctx.resolver, sym).filter(c => !c.target);
+    const unresolved = [...new Set(rest.filter(c => c.alternatives > 0).map(c => `${c.name} (${c.alternatives} defs)`))];
+    const external = [...new Set(rest.filter(c => c.alternatives === 0).map(c => c.name))];
+    if (unresolved.length) {
+      out.push(`  unresolved (receiver type unknown; project defines these names): ${unresolved.slice(0, 16).join(', ')}${unresolved.length > 16 ? ', ...' : ''}`);
+    }
+    if (external.length) out.push(`  external: ${external.slice(0, 30).join(', ')}${external.length > 30 ? ', ...' : ''}`);
   }
   if (out.some(l => /  \?(  |$)/.test(l))) {
     out.push('("?" = matched by name only; the receiver type is unknown and another definition could be the real target)');
-  }
-  const { others } = otherDefinitions(sym, matches);
-  if (others.length) {
-    out.push(`note: ${others.length} other definition(s) named "${sym.name}" exist; pass path or Container.name to pick one:`);
-    for (const m of others.slice(0, 4)) out.push(`  ${symLine(m)}`);
   }
   return note + out.join('\n');
 }
@@ -489,14 +586,21 @@ export interface HierarchyArgs {
 
 export async function hierarchy(ctx: ToolContext, args: HierarchyArgs): Promise<string> {
   const note = await ctx.ready();
-  const matches = findSymbols(ctx.db, args.name, { path: args.path });
+  if (!args.name || !args.name.trim()) return 'error: name is required';
+  let matches = findSymbols(ctx.db, args.name, { path: args.path });
   if (matches.length === 0) return note + notFound(ctx, args.name, args.path).join('\n');
+  // A bare type name means the type, not its constructors or same-named members.
+  const types = matches.filter(m => CONTAINER_KINDS.has(m.kind) || m.kind === 'type');
+  if (types.length && parseSymbolRef(args.name).container.length === 0) matches = types;
+  const amb = disambiguate(ctx, args.name, args.path, matches);
+  if (amb.stop) return note + amb.lines.join('\n');
   const sym = matches[0]!;
   const direction = args.direction ?? 'both';
   const depth = Math.max(1, Math.min(args.depth ?? 3, 8));
   const limit = Math.max(1, Math.min(args.limit ?? 80, 1000));
   const out: string[] = [symLine(sym)];
-  if (sym.signature) out.push(`  ${sym.signature}`);
+  if (sym.signature) out.push(`  ${firstLine(sym.signature, 160)}`);
+  out.push(...amb.lines);
 
   // A method: show the same method across the type hierarchy.
   if (!CONTAINER_KINDS.has(sym.kind) && sym.kind !== 'type') {
@@ -570,10 +674,6 @@ export async function hierarchy(ctx: ToolContext, args: HierarchyArgs): Promise<
       for (const s of structural.slice(0, limit)) out.push(`  ${s.kind} ${s.qname}  ${s.path}:${s.start_line}`);
       if (structural.length > limit) out.push(`  ... ${structural.length - limit} more (raise limit)`);
     }
-  }
-  const { others } = otherDefinitions(sym, matches);
-  if (others.length) {
-    out.push(`note: ${others.length} other definition(s) named "${sym.name}" exist; pass path or Container.name to pick one.`);
   }
   return note + out.join('\n');
 }
