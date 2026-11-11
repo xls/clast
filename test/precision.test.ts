@@ -872,3 +872,37 @@ export function handle(text: string): string { return getId(text); }
     assert.deepEqual(callees.map(c => c.target!.qname), ['parseId']);
   });
 });
+
+describe('receivers through assertions and getters', () => {
+  let q: Project;
+  before(async () => {
+    q = await createProject({
+      'src/grid.ts': `export class Grid {
+  layout(width: number): void {}
+}
+
+export class Sash {
+  layout(width: number): void {}
+}
+`,
+      'src/view.ts': `import { Grid } from './grid.js';
+
+export class View {
+  private other?: Grid;
+  private _grid: Grid | undefined;
+  get grid(): Grid | undefined { return this._grid; }
+
+  viaAssertion(): void { this.other!.layout(1); }
+  viaGetter(): void { this.grid?.layout(2); }
+}
+`,
+    });
+  });
+  after(() => q.dispose());
+
+  it('non-null assertions and typed getters give the receiver its type', () => {
+    const grid = callersOf(q.clast.db, q.ctx.resolver, findSymbols(q.clast.db, 'Grid.layout')[0]!);
+    assert.deepEqual(grid.map(e => [e.caller?.qname, e.certain]).sort(), [['View.viaAssertion', true], ['View.viaGetter', true]]);
+    assert.equal(callersOf(q.clast.db, q.ctx.resolver, findSymbols(q.clast.db, 'Sash.layout')[0]!).length, 0);
+  });
+});

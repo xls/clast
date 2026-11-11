@@ -287,7 +287,7 @@ Node v24.7.0, win32 x64. Query times are medians of 5 in-process runs on the mos
 ```bash
 npm install
 npm run build        # tsc
-npm test             # node:test, 230+ tests incl. an end-to-end MCP session
+npm test             # node:test, 240+ tests incl. an end-to-end MCP session
 npm run bench -- /path/to/dir-with-repos
 ```
 

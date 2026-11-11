@@ -1293,7 +1293,8 @@ export class Resolver {
       if (inCallerAncestors()) return 92 + (container ? this.typeVisibility(container, cand, site) : 0) + tie;
       // A mixin calls up the MRO of whatever class it is mixed into (`super().dispatch()` in a
       // Django mixin): the parent is not declared here, so any other definition is a candidate.
-      if (fam !== 'python' && fam !== 'ruby' && fam !== 'js' && fam !== 'php') return null;
+      // (Only where a method resolution order exists: in JS / PHP / Java `super` is the declared parent.)
+      if (fam !== 'python' && fam !== 'ruby') return null;
       if (callerC && container && this.relatedTo(callerC.name).desc.has(container)) return null;
       return 34 + tie;
     }
@@ -1406,6 +1407,20 @@ export class Resolver {
       );
       if (rows.length === 1) { t = rows[0]!.type; break; }
       if (rows.length > 1) break; // same class name with different field types: do not guess
+    }
+    if (t === null) {
+      // A getter / property with a declared type reads like a field: `get grid(): Grid`, `@property def conn(self) -> Connection`.
+      for (const owner of owners) {
+        const getters = this.db.symbolsByName(field).filter(
+          s =>
+            s.ret && this.containerName(s) === owner &&
+            (s.kind === 'property' || /^(?:[\w@.()]+\s+)*get\s/.test(s.signature) || /^@(?:cached_)?property\b/.test(s.signature))
+        );
+        if (getters.length === 0) continue;
+        const types = new Set(getters.map(g => g.ret));
+        if (types.size === 1) t = getters[0]!.ret;
+        break;
+      }
     }
     this.fieldTypeCache.set(key, t);
     return t;

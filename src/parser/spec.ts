@@ -199,8 +199,10 @@ export const COMPLEX_RECEIVER = '?';
 export function simpleReceiver(node: Node | null | undefined): string | null {
   if (!node) return null;
   if (node.endIndex - node.startIndex > 48) return COMPLEX_RECEIVER;
-  const t = node.text;
-  if (/[\s(\[{"'`]/.test(t) || /^\d/.test(t)) return COMPLEX_RECEIVER;
+  // `this.grid!.layout()`, `a?.b.run()`, Rust `x?.go()`: the assertion / optional-chain / try marks
+  // do not change which object it is.
+  const t = node.text.replace(/[!?]+$/, '').replace(/[!?]+(?=\.)/g, '');
+  if (!t || /[\s(\[{"'`]/.test(t) || /^\d/.test(t)) return COMPLEX_RECEIVER;
   return t;
 }
 
