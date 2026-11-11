@@ -555,7 +555,14 @@ export class Resolver {
     const from = this.importedNames(site.fileId).names.get(type);
     const home = from === undefined ? site.fileId : from;
     if (home === null || home === cand.file_id) return false;
-    return this.db.symbolsByName(type).some(s => s.file_id === home && (CONTAINER_KINDS.has(s.kind) || s.kind === 'type'));
+    const types = this.db.symbolsByName(type).filter(s => CONTAINER_KINDS.has(s.kind) || s.kind === 'type');
+    if (types.some(s => s.file_id === home)) return true;
+    // Java: a type of the same package needs no import and wins over anything else of that name.
+    if (from === undefined && site.lang === 'java') {
+      const dir = dirOf(site.path);
+      return dirOf(cand.path) !== dir && types.some(s => s.lang === 'java' && dirOf(s.path) === dir);
+    }
+    return false;
   }
 
   private arityCache = new Map<number, ParamRange | null>();
