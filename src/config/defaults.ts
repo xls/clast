@@ -9,6 +9,8 @@ export interface ClastConfig {
   dbPath: string;
   /** Files larger than this many bytes are skipped (generated / vendored blobs). */
   maxFileSize: number;
+  /** Safety cap on the number of source files indexed (e.g. when started in a home directory). */
+  maxFiles: number;
   /** Parser worker threads for bulk indexing. 0 = auto, 1 = no workers. */
   workers: number;
   llm: {
@@ -61,6 +63,7 @@ export const DEFAULT_CONFIG: ClastConfig = {
   respectGitignore: true,
   dbPath: '.clast/index.db',
   maxFileSize: 1_000_000,
+  maxFiles: 150_000,
   workers: 0,
   llm: {
     endpoint: 'http://localhost:11434/v1',

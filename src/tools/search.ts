@@ -106,7 +106,7 @@ function docLines(doc: string, max: number): string[] {
   return out;
 }
 
-function callerLines(ctx: ToolContext, sym: SymbolRow, edges: CallerEdge[], out: string[]): void {
+function callerLines(edges: CallerEdge[], out: string[]): void {
   const groups = groupCallers(edges);
   if (groups.length === 0) return;
   const prod = groups.filter(g => !isTestSite(g.path, g.caller?.qname));
@@ -305,7 +305,7 @@ async function describe(ctx: ToolContext, sym: SymbolRow, args: ContextArgs, ove
     // A summary: bounded work even for names with tens of thousands of call sites.
     const callerStats = { examined: 0, total: 0 };
     const callers = callersOf(ctx.db, ctx.resolver, sym, { quick: true }, callerStats);
-    callerLines(ctx, sym, callers, out);
+    callerLines(callers, out);
     if (callerStats.total > callerStats.examined) {
       out.push(
         `  ("${sym.name}" has ${callerStats.total} call sites; this summary examined ${callerStats.examined}. ` +

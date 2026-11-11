@@ -3,7 +3,7 @@ import { readFile } from 'node:fs/promises';
 import { basename, join } from 'node:path';
 import { CONTAINER_KINDS, type SymbolRow } from '../types.js';
 import { callersOf } from '../query/callgraph.js';
-import { firstLine, isTestPath, isVendoredPath, loc, plural, symLine } from '../query/format.js';
+import { firstLine, isTestPath, isVendoredPath, loc, plural } from '../query/format.js';
 import { findFiles, findSymbols, parseSymbolRef, pathMatches, type FileHit } from '../query/resolve.js';
 import { splitIdentifier } from '../query/words.js';
 import { ToolContext } from './context.js';
@@ -825,6 +825,12 @@ export async function status(ctx: ToolContext, watcher?: { isActive: boolean; pe
   if (s.lastIndexed) out.push(`last file indexed: ${new Date(s.lastIndexed).toISOString()}`);
   if (ctx.indexer.rules.skippedLarge) {
     out.push(`skipped: ${plural(ctx.indexer.rules.skippedLarge, 'file')} larger than ${ctx.clast.config.maxFileSize} bytes (maxFileSize)`);
+  }
+  if (ctx.indexer.rules.truncated) {
+    out.push(
+      `warning: stopped at ${ctx.clast.config.maxFiles} source files (maxFiles). Is the project root too broad? ` +
+        `Set CLAST_PROJECT_DIR or raise maxFiles in clast.config.json.`
+    );
   }
   if (watcher) out.push(`watcher: ${watcher.isActive ? 'active' : 'off'}${watcher.pendingCount ? `, ${watcher.pendingCount} pending` : ''}`);
   out.push(`database: ${ctx.db.path}`);

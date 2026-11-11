@@ -22,6 +22,7 @@ const ClastConfigSchema = z.object({
   respectGitignore: z.boolean().default(DEFAULT_CONFIG.respectGitignore),
   dbPath: z.string().default(DEFAULT_CONFIG.dbPath),
   maxFileSize: z.number().int().min(1000).max(100_000_000).default(DEFAULT_CONFIG.maxFileSize),
+  maxFiles: z.number().int().min(100).max(5_000_000).default(DEFAULT_CONFIG.maxFiles),
   workers: z.number().int().min(0).max(64).default(DEFAULT_CONFIG.workers),
   llm: LlmConfigSchema.default(DEFAULT_CONFIG.llm),
   watch: WatchConfigSchema.default(DEFAULT_CONFIG.watch),

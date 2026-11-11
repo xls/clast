@@ -43,7 +43,6 @@ export class Indexer {
   progress: IndexProgress = { phase: 'idle', done: 0, total: 0 };
   lastResult: IndexResult | null = null;
   private running: Promise<IndexResult> | null = null;
-  private importsDirty = new Set<number>();
   private structureChanged = false;
 
   constructor(
@@ -173,7 +172,6 @@ export class Indexer {
       const full = removed > 0 || this.structureChanged || parsed > 200;
       resolveImports(this.db, full ? undefined : touchedIds);
       this.structureChanged = false;
-      this.importsDirty.clear();
       try { this.db.db.exec('PRAGMA optimize'); } catch { /* ignore */ }
     }
 

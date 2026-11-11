@@ -6,7 +6,6 @@ import { childOfType, field, isConstName, simpleReceiver, stripQuotes } from '..
 
 const MAX_SIG_SOURCE = 400;
 const MAX_TYPE_TEXT = 100;
-const IDENT = /^[A-Za-z_$][\w$]*$/;
 
 /** struct/union/enum/class specifier node type -> symbol kind. */
 const CONTAINER_KIND: Record<string, SymbolKind> = {

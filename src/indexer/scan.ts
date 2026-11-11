@@ -53,6 +53,7 @@ export class IgnoreRules {
     this.rootRule = { base: '', ig: createIgnore().add(config.ignoredPaths) };
     this.extensions = supportedExtensions(config.languages);
     this.maxFileSize = config.maxFileSize;
+    this.maxFiles = config.maxFiles;
   }
 
   /** Forget cached .gitignore contents (call when a .gitignore changes). */
@@ -118,6 +119,9 @@ export class IgnoreRules {
 
   /** Files skipped by the last scan because they exceed maxFileSize. */
   skippedLarge = 0;
+  /** True when the last scan stopped at the maxFiles cap. */
+  truncated = false;
+  private readonly maxFiles: number;
 
   /**
    * Project-relative paths of text-like files that are NOT indexed (config,
@@ -161,6 +165,7 @@ export class IgnoreRules {
   async scan(): Promise<ScannedFile[]> {
     const candidates: string[] = [];
     this.skippedLarge = 0;
+    this.truncated = false;
     const rules: Rule[] = [this.rootRule];
     this.walk('', rules, candidates, 0);
 
@@ -188,6 +193,10 @@ export class IgnoreRules {
 
   private walk(dirRel: string, parentRules: Rule[], out: string[], depth: number): void {
     if (depth > 40) return;
+    if (out.length >= this.maxFiles) {
+      this.truncated = true;
+      return;
+    }
     const rule = this.ruleFor(dirRel);
     const rules = rule ? [...parentRules, rule] : parentRules;
 
