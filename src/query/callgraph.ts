@@ -44,6 +44,9 @@ interface CallRow {
 }
 
 const MAX_CALL_ROWS = 4000;
+const MAX_NEAR_ROWS = 20000;
+const QUICK_NEAR_ROWS = 5000;
+const QUICK_FAR_ROWS = 1500;
 const MAX_WEAK = 1500;
 
 /**
@@ -96,20 +99,63 @@ function bodyIds(db: ClastDb, sym: SymbolRow): number[] {
  * Who calls `target`? Call sites are matched by name and then filtered by
  * resolving each site back to its most plausible definition.
  */
-export function callersOf(db: ClastDb, resolver: Resolver, target: SymbolRow): CallerEdge[] {
+export interface CallerQuery {
+  /** Only call sites in files whose path contains this text (pushed down to SQL). */
+  pathContains?: string;
+  /** Examine fewer call sites (summaries that only show the first few callers). */
+  quick?: boolean;
+}
+
+/** Set by callersOf when a name has more call sites than were examined. */
+export interface CallerStats {
+  examined: number;
+  total: number;
+}
+
+export function callersOf(
+  db: ClastDb,
+  resolver: Resolver,
+  target: SymbolRow,
+  query: CallerQuery = {},
+  stats?: CallerStats
+): CallerEdge[] {
   const nameId = db.nameId(target.name, false);
   if (nameId === undefined) return [];
-  const rows = db.all<CallRow>(
-    `SELECT c.file_id, c.caller_id, c.line, c.receiver, c.rtype, c.via, c.count, f.path, f.lang
-     FROM calls c JOIN files f ON f.id = c.file_id
-     WHERE c.name_id = ? LIMIT ${MAX_CALL_ROWS}`,
-    nameId
+  const cols = `c.rowid AS id, c.file_id, c.caller_id, c.line, c.receiver, c.rtype, c.via, c.count, f.path, f.lang`;
+  const pathClause = query.pathContains ? ` AND f.path LIKE ? ESCAPE '\\'` : '';
+  const pathArg = query.pathContains ? ['%' + query.pathContains.replace(/[\\%_]/g, c => '\\' + c) + '%'] : [];
+
+  // Very common names (`dispose`, `push`, `get`) have more call sites than can be examined.
+  // Sites that can see the target - its own file and the files that import it - always go first.
+  const near = db.all<CallRow & { id: number }>(
+    `SELECT ${cols} FROM calls c JOIN files f ON f.id = c.file_id
+     WHERE c.name_id = ? AND (c.file_id = ? OR c.file_id IN (SELECT file_id FROM imports WHERE resolved_id = ?))${pathClause}
+     LIMIT ${query.quick ? QUICK_NEAR_ROWS : MAX_NEAR_ROWS}`,
+    nameId, target.file_id, target.file_id, ...pathArg
   );
+  const seenRows = new Set(near.map(r => r.id));
+  const far = db
+    .all<CallRow & { id: number }>(
+      `SELECT ${cols} FROM calls c JOIN files f ON f.id = c.file_id
+       WHERE c.name_id = ?${pathClause} LIMIT ${MAX_CALL_ROWS + MAX_NEAR_ROWS}`,
+      nameId, ...pathArg
+    )
+    .filter(r => !seenRows.has(r.id))
+    .slice(0, query.quick ? QUICK_FAR_ROWS : MAX_CALL_ROWS);
+  const rows: CallRow[] = [...near, ...far];
+  if (stats) {
+    stats.examined = rows.length;
+    stats.total = rows.length < (query.quick ? QUICK_FAR_ROWS : MAX_CALL_ROWS)
+      ? rows.length
+      : db.get<{ n: number }>(`SELECT COUNT(*) AS n FROM calls WHERE name_id = ?`, nameId)?.n ?? rows.length;
+  }
 
   const family = resolver.familyOf(target);
   const edges: CallerEdge[] = [];
   const weak: CallerEdge[] = [];
   const targetIsMember = target.kind === 'method' || target.qname.includes('.');
+  // `@property def count` / `get count()`: read as an attribute, so `.count(...)` calls elsewhere are something else.
+  const propertyLike = /^@(cached_)?property\b|^(public |private |protected |static |override )*get \w/.test(target.signature);
   const callerCache = new Map<number, SymbolRow | undefined>();
   for (const row of rows) {
     let caller: SymbolRow | null = null;
@@ -124,7 +170,7 @@ export function callersOf(db: ClastDb, resolver: Resolver, target: SymbolRow): C
     if (res.candidates.length === 0) {
       // Nothing could be attributed. If the receiver's type is simply unknown,
       // keep the site as a possible caller instead of silently dropping it.
-      if (targetIsMember && weak.length < MAX_WEAK && resolver.isOpaqueReceiver({
+      if (targetIsMember && !propertyLike && weak.length < MAX_WEAK && resolver.canSee(row.file_id, target) && resolver.isOpaqueReceiver({
         fileId: row.file_id, path: row.path, lang: row.lang, receiver: row.receiver, rtype: row.rtype, via: row.via, caller,
       }) && langFamily(row.lang) === langFamily(target.lang) && !(isTestPath(target.path) && !isTestPath(row.path))) {
         weak.push({ caller, path: row.path, line: row.line, count: row.count, certain: false, weak: true });
@@ -303,6 +349,10 @@ export interface GraphOptions {
   includeTests: boolean;
   /** Only edges whose file matches this path filter. */
   path?: (path: string) => boolean;
+  /** Text every call-site path must contain (lets the database do the first cut for `within`). */
+  pathContains?: string;
+  /** Filled in for the root symbol: how many call sites of the name exist vs were examined. */
+  stats?: CallerStats;
 }
 
 /** Symbols with more direct edges than this are not expanded below the first level. */
@@ -334,7 +384,9 @@ export function buildGraph(
       if (!node.sym || remaining <= 0) continue;
       let children: GraphNode[];
       if (direction === 'callers') {
-        children = groupCallers(callersOf(db, resolver, node.sym))
+        children = groupCallers(
+          callersOf(db, resolver, node.sym, { pathContains: opts.pathContains }, level === 0 ? opts.stats : undefined)
+        )
           .filter(g => (opts.includeTests || !isTestPath(g.path)) && (!opts.path || opts.path(g.path)))
           .map(g => ({
             sym: g.caller, path: g.path, line: g.line, certain: g.certain, sites: g.sites, weak: g.weak,

@@ -9,11 +9,22 @@ const WORD_RE = /[A-Z]+(?![a-z])|[A-Z]?[a-z]+|[0-9]+|[^\x00-\x7F]+/g;
  * `parseAndStore` -> [parse, and, store], `HTTPServer2` -> [http, server, 2],
  * `snake_case_name` -> [snake, case, name].
  */
+const splitCache = new Map<string, string[]>();
+
 export function splitIdentifier(text: string): string[] {
+  // Identifiers repeat endlessly during resolution and ranking; short ones are cached.
+  const cacheable = text.length <= 48;
+  if (cacheable) {
+    const hit = splitCache.get(text);
+    if (hit) return hit;
+  }
   const out: string[] = [];
   const matches = text.match(WORD_RE);
-  if (!matches) return out;
-  for (const m of matches) out.push(m.toLowerCase());
+  if (matches) for (const m of matches) out.push(m.toLowerCase());
+  if (cacheable) {
+    if (splitCache.size > 50_000) splitCache.clear();
+    splitCache.set(text, out);
+  }
   return out;
 }
 

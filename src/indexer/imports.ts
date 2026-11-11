@@ -110,7 +110,12 @@ function resolveOne(row: ImportRow, index: PathIndex): number | undefined {
 
   if (JS_LANGS.has(row.lang)) {
     src = src.replace(/[?#].*$/, '');
-    if (src.startsWith('.')) return index.lookup(posix.normalize(posix.join(dir, src)));
+    if (src.startsWith('.')) {
+      const target = posix.normalize(posix.join(dir, src)).replace(/\/$/, '');
+      // require('..') / import '.' name a directory: its index file.
+      if (target === '.' || target === '') return index.lookup('index');
+      return index.lookup(target);
+    }
     if (src.startsWith('/')) return index.lookup(src.slice(1));
     // tsconfig-style aliases: "@/x", "~/x", "src/x", bare "vs/base/common/x"
     const stripped = src.replace(/^(@|~)\//, '');

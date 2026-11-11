@@ -28,15 +28,31 @@ export function plural(n: number, word: string): string {
 
 const TEST_PATH_RE = /(^|\/)(tests?|__tests__|spec|specs|testing|testdata|fixtures|__mocks__|mocks?|e2e|benchmarks?|bench|examples?|samples?|demos?|docs?|docs_src|documentation|tutorials?|playground|stubs?)(\/|$)|(\.|_|-)(test|spec|tests|bench)\.[a-z0-9]+$|(^|\/)test_[^/]+\.py$|(^|\/)(testassets|test-assets|perf|benchmarkapps)(\/|$)|Tests?\.(java|cs|kt|swift)$/i;
 
+const testPathCache = new Map<string, boolean>();
+
 /** Tests, fixtures, examples and benchmarks rank below production code. */
 export function isTestPath(path: string): boolean {
-  return TEST_PATH_RE.test(path);
+  let hit = testPathCache.get(path);
+  if (hit === undefined) {
+    hit = TEST_PATH_RE.test(path);
+    if (testPathCache.size > 100_000) testPathCache.clear();
+    testPathCache.set(path, hit);
+  }
+  return hit;
 }
 
 const GENERATED_RE = /(^|\/)(generated|gen|third_party|thirdparty|external|deps|vendor)(\/|$)|\.(pb|gen|generated)\.[a-z]+$|\.d\.ts$/i;
 
+const vendoredPathCache = new Map<string, boolean>();
+
 export function isVendoredPath(path: string): boolean {
-  return GENERATED_RE.test(path);
+  let hit = vendoredPathCache.get(path);
+  if (hit === undefined) {
+    hit = GENERATED_RE.test(path);
+    if (vendoredPathCache.size > 100_000) vendoredPathCache.clear();
+    vendoredPathCache.set(path, hit);
+  }
+  return hit;
 }
 
 /**

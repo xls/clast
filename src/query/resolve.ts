@@ -343,6 +343,8 @@ interface NameIndex {
   /** Free functions, classes, variables: everything that is not a member. */
   free: SymbolRow[];
   containers: string[];
+  /** Pre-selected candidates per receiver spelling (for common method names). */
+  byReceiver: Map<string, SymbolRow[]>;
 }
 
 interface ImportedNames {
@@ -459,6 +461,13 @@ export class Resolver {
     return name;
   }
 
+  /** Can code in `fileId` plausibly refer to `target`: same file, imports its file, or names its class? */
+  canSee(fileId: number, target: SymbolRow): boolean {
+    if (fileId === target.file_id || this.importsOf(fileId).has(target.file_id)) return true;
+    const container = this.containerName(target);
+    return container !== null && !container.startsWith('(') && this.fileMentions(fileId, container);
+  }
+
   private aliasUseCache = new Map<string, Array<{ fileId: number; alias: string }>>();
 
   /**
@@ -472,10 +481,24 @@ export class Resolver {
     if (out) return out;
     out = [];
     const isDefault = this.defaultExportOf(sym.file_id) === sym.name;
-    const rows = this.db.all<{ file_id: number; names: string }>(
-      `SELECT file_id, names FROM imports INDEXED BY idx_imports_resolved WHERE resolved_id = ? AND names <> ''`,
-      sym.file_id
-    );
+    const sources = [sym.file_id];
+    if (isDefault) {
+      // Files that pass the default export on: `module.exports = require('./lib/express')`.
+      for (const r of this.db.all<{ id: number }>(
+        `SELECT f.id FROM files f JOIN imports i ON i.file_id = f.id
+         WHERE f.default_export = '*' AND i.resolved_id = ? LIMIT 20`,
+        sym.file_id
+      )) {
+        sources.push(r.id);
+      }
+    }
+    const rows: Array<{ file_id: number; names: string }> = [];
+    for (const source of sources) {
+      rows.push(...this.db.all<{ file_id: number; names: string }>(
+        `SELECT file_id, names FROM imports INDEXED BY idx_imports_resolved WHERE resolved_id = ? AND names <> ''`,
+        source
+      ));
+    }
     for (const r of rows) {
       const parts = r.names.split(',');
       for (const raw of parts) {
@@ -513,6 +536,14 @@ export class Resolver {
 
   /** Nearest enclosing class-like symbol of `sym` (lexical), or its container by qualified name. */
   private enclosingContainer(sym: SymbolRow): { name: string; id: number | null } | null {
+    const cached = this.containerCache.get(sym.id);
+    if (cached !== undefined) return cached;
+    const found = this.findEnclosingContainer(sym);
+    this.containerCache.set(sym.id, found);
+    return found;
+  }
+
+  private findEnclosingContainer(sym: SymbolRow): { name: string; id: number | null } | null {
     if (CONTAINER_KINDS.has(sym.kind)) return { name: sym.name, id: sym.id };
     let namespace: { name: string; id: number | null } | null = null;
     let cur: SymbolRow | null = sym;
@@ -635,12 +666,20 @@ export class Resolver {
     let fam = this.familyCache.get(sym.id);
     if (fam) return fam;
     fam = new Set<number>([sym.id]);
-    const same = this.candidates(sym.name);
+    let same = this.candidates(sym.name);
     const container = this.containerName(sym);
     let related: Set<string> | null = null;
-    if (container && same.length > 1 && same.length < 600) {
+    // Go has no overriding: `Engine.Use` shadows the embedded `RouterGroup.Use`, callers are not shared.
+    if (container && same.length > 1 && sym.lang !== 'go') {
       const rel = this.relatedTo(container);
       related = new Set([...rel.anc, ...rel.desc]);
+      if (same.length >= 600) {
+        // Crowded name (`run`, `get`): look only at same-named members of related types.
+        const idx = this.nameIndex(sym.name);
+        const narrowed: SymbolRow[] = [...(idx.byFile.get(sym.file_id) ?? [])];
+        for (const c of idx.containers) if (related.has(c)) narrowed.push(...(idx.byContainer.get(c) ?? []));
+        same = narrowed;
+      }
     }
     const cFamily = langFamily(sym.lang) === 'c';
     for (const other of same) {
@@ -687,7 +726,7 @@ export class Resolver {
    */
   private memberEvidence(name: string, cand: SymbolRow, container: string | null, site: CallSite, recv: string | null): number {
     let e = 0;
-    if (cand.file_id === site.fileId) e += 15;
+    if (cand.file_id === site.fileId) e += 24;
     else if (this.importsOf(site.fileId).has(cand.file_id)) e += 22;
     else if (dirOf(cand.path) === dirOf(site.path)) e += site.lang === 'go' || site.lang === 'java' ? 15 : 8;
     if (container && cand.file_id !== site.fileId && this.fileMentions(site.fileId, container)) e += 18;
@@ -706,7 +745,11 @@ export class Resolver {
       // .get(), .add(), .count(): only the receiver's name can tell a project method from a builtin.
       return receiverMatches ? e : 0;
     }
-    if (this.familyCount(name) === 1) e += 20;
+    if (this.familyCount(name) === 1) {
+      // Defined once in the whole project. A multi-word name (`complete_inflight`, `pollElapsed`)
+      // is then almost certainly this method; a single word (`changed`, `close`) may be a library's.
+      e += splitIdentifier(name).length >= 2 && name.length >= 8 ? 46 : 20;
+    }
     return e;
   }
 
@@ -753,7 +796,11 @@ export class Resolver {
     // A module-level variable is only callable by its bare name; never through an object.
     if (VALUE_KINDS.has(cand.kind) && !inContainer && site.receiver) return null;
     const callerC = site.caller ? this.enclosingContainer(site.caller) : null;
-    const tie = definitionScore(cand) * 0.5;
+    let tie = this.tieCache.get(cand.id);
+    if (tie === undefined) {
+      tie = definitionScore(cand) * 0.5;
+      this.tieCache.set(cand.id, tie);
+    }
     const recv = site.receiver;
 
     const inCallerClass = isMember && callerC !== null && container === callerC.name;
@@ -838,6 +885,8 @@ export class Resolver {
       }
       if (inCallerClass) return (sameFile ? 96 : 80) + tie;
       if (inCallerAncestors()) return 76 + tie;
+      // `function View() { this.lookup() }` with `View.prototype.lookup = ...` in the same file.
+      if (!callerC && site.caller && container === site.caller.name && sameFile) return 90 + tie;
       if (callerC && container && this.relatedTo(callerC.name).desc.has(container)) return 56 + tie; // abstract hook
       const e = this.memberEvidence(name, cand, container, site, null);
       return e >= 20 ? Math.min(46, 10 + e) + tie : null; // mixin-style
@@ -942,7 +991,20 @@ export class Resolver {
     let field: string | null = null;
     const m = /^(?:this|self|\$this|base|Self)(?:\.|->|::)([A-Za-z_]\w*)$/.exec(r) ?? /^@([A-Za-z_]\w*)$/.exec(r);
     if (m) field = m[1]!;
-    else if (IMPLICIT_THIS.has(site.lang) && /^[A-Za-z_]\w*$/.test(r) && !SELF_RECEIVERS.has(r)) field = r;
+    else {
+      // self.shared.inject.push(): follow the declared type of each field in turn.
+      const deep = /^(?:this|self|\$this)((?:(?:\.|->)[A-Za-z_]\w*){2,4})$/.exec(r);
+      if (deep) {
+        const container = this.enclosingContainer(site.caller);
+        let type: string | null = container ? container.name : null;
+        for (const f of deep[1]!.split(/\.|->/).filter(Boolean)) {
+          type = type ? this.fieldType(type, f) : null;
+          if (!type) break;
+        }
+        return type ? { ...site, rtype: type } : site;
+      }
+      if (IMPLICIT_THIS.has(site.lang) && /^[A-Za-z_]\w*$/.test(r) && !SELF_RECEIVERS.has(r)) field = r;
+    }
     if (!field) return site;
     const container = this.enclosingContainer(site.caller);
     if (!container) return site;
@@ -951,13 +1013,15 @@ export class Resolver {
   }
 
   private nameIndexCache = new Map<string, NameIndex>();
+  private tieCache = new Map<number, number>();
+  private containerCache = new Map<number, { name: string; id: number | null } | null>();
 
   /** Candidates of a name grouped for fast pre-selection (only built for crowded names). */
   private nameIndex(name: string): NameIndex {
     let idx = this.nameIndexCache.get(name);
     if (idx) return idx;
     const all = this.candidates(name);
-    idx = { all, byContainer: new Map(), byFile: new Map(), free: [], containers: [] };
+    idx = { all, byContainer: new Map(), byFile: new Map(), free: [], containers: [], byReceiver: new Map() };
     for (const c of all) {
       const f = idx.byFile.get(c.file_id);
       if (f) f.push(c);
@@ -1049,17 +1113,24 @@ export class Resolver {
     const lastLc = last.toLowerCase();
     const generic = GENERIC_RECEIVERS.has(lastLc);
     const typeAncestors = /^[A-Z]/.test(last) && this.isProjectType(last) ? this.relatedTo(last).anc : null;
-    for (const c of idx.containers) {
-      if (
-        c === last || bare === c ||
-        (typeAncestors !== null && typeAncestors.has(c)) ||
-        (!generic && (looselyNamed(last, c) || (last.length <= 2 && c.toLowerCase().startsWith(lastLc))))
-      ) {
-        add(idx.byContainer.get(c));
+    // The same receiver names recur at thousands of sites: match them against the containers once.
+    const key = bare + '\0' + last;
+    let matched = idx.byReceiver.get(key);
+    if (!matched) {
+      matched = [];
+      for (const c of idx.containers) {
+        if (
+          c === last || bare === c ||
+          (typeAncestors !== null && typeAncestors.has(c)) ||
+          (!generic && (looselyNamed(last, c) || (last.length <= 2 && c.toLowerCase().startsWith(lastLc))))
+        ) {
+          matched.push(...(idx.byContainer.get(c) ?? []));
+        }
       }
+      matched.push(...idx.free);
+      idx.byReceiver.set(key, matched);
     }
-    add(idx.free);
-    return [...out];
+    return matched;
   }
 
   /**
@@ -1108,6 +1179,7 @@ export class Resolver {
       const top = res.candidates[0];
       if (top) {
         if (TYPE_KINDS.has(top.sym.kind)) type = top.sym.name; // Foo(...) / new Foo(...)
+        else if (top.sym.kind === 'method' && this.containerName(top.sym) === top.sym.name) type = top.sym.name; // constructor
         else {
           // Prefer a declared return type from anywhere in the target's family
           // (the interface may declare it while the implementation infers it).
@@ -1125,7 +1197,7 @@ export class Resolver {
   }
 
   /** Rank the definitions a call to `name` at `site` may refer to. */
-  resolve(name: string, rawSite: CallSite, depth = 0): Resolution {
+  resolve(name: string, rawSite: CallSite, depth = 0, typesOnly = false): Resolution {
     // The calling file may know the definition under another name:
     // `import { X as Y }`, `import express from './express'`, `const express = require('./express')`.
     if (!rawSite.receiver) {
@@ -1134,7 +1206,17 @@ export class Resolver {
       if (from !== undefined && from !== null) {
         const original = imported.aliases.get(name);
         let real: string | null = original ?? null;
-        if (!real && !this.candidates(name).some(c => c.file_id === from)) real = this.defaultExportOf(from);
+        if (!real && !this.candidates(name).some(c => c.file_id === from)) {
+          real = this.defaultExportOf(from);
+          if (real === '*') {
+            // The imported file re-exports another module's default export.
+            real = null;
+            for (const f of this.importsOf(from)) {
+              const d = this.defaultExportOf(f);
+              if (d && d !== '*') { real = d; break; }
+            }
+          }
+        }
         if (real && real !== name) {
           const hits = this.candidates(real).filter(c => c.file_id === from || this.importsOf(from).has(c.file_id));
           if (hits.length) {
@@ -1147,10 +1229,12 @@ export class Resolver {
       }
     }
 
-    const all = this.candidates(name);
+    let all = this.candidates(name);
+    // Resolving a type name (a supertype in `extends X`): constructors and same-named members are not answers.
+    if (typesOnly) all = all.filter(c => TYPE_KINDS.has(c.kind));
     if (all.length === 0) return { candidates: [], confident: false };
     const site = this.withFieldType(rawSite, depth);
-    const cands = all.length > PRESELECT_THRESHOLD ? this.preselect(name, site) : all;
+    let cands = all.length > PRESELECT_THRESHOLD && !typesOnly ? this.preselect(name, site) : all;
     if (cands.length === 0) return { candidates: [], confident: false };
 
     // A bare name imported from outside the project cannot be a project symbol.
@@ -1173,19 +1257,48 @@ export class Resolver {
       if (score !== null) scored.push({ sym, score });
     }
     if (scored.length === 0) return { candidates: [], confident: false };
+    if (scored.length > 1) {
+      // `record.topic()` with both a `topic` field and a `topic()` accessor: the call means the method.
+      const callables = new Set<string>();
+      for (const c of scored) if (!VALUE_KINDS.has(c.sym.kind)) callables.add(c.sym.file_id + ':' + c.sym.qname);
+      if (callables.size) {
+        for (let i = scored.length - 1; i >= 0; i--) {
+          const s = scored[i]!.sym;
+          if (VALUE_KINDS.has(s.kind) && callables.has(s.file_id + ':' + s.qname)) scored.splice(i, 1);
+        }
+      }
+    }
     scored.sort((a, b) => b.score - a.score);
     const top = scored[0]!;
     // The runner-up that matters is the best candidate that is a genuinely
     // different target (not an overload / interface twin of the winner).
     const family = scored.length > 1 ? this.familyOf(top.sym) : null;
-    const second = scored.find((c, i) => i > 0 && !family!.has(c.sym.id));
+    const second = scored.find(
+      (c, i) =>
+        i > 0 && !family!.has(c.sym.id) &&
+        // Build variants of one definition (#[cfg], foo_linux.go / foo_windows.go, #ifdef) are the same answer.
+        !(c.sym.qname === top.sym.qname && c.sym.kind === top.sym.kind && top.score - c.score < 3)
+    );
     const confident = top.score >= CONFIDENT_SCORE && (!second || top.score - second.score >= CONFIDENT_GAP);
     return { candidates: scored, confident };
   }
 }
 
+const looseCache = new Map<string, boolean>();
+
 /** `db` ~ `Database`, `userRepo` ~ `UserRepository`, `parser` ~ `SourceParser`. */
 function looselyNamed(receiver: string, container: string): boolean {
+  const key = receiver + '\0' + container;
+  let hit = looseCache.get(key);
+  if (hit === undefined) {
+    hit = looselyNamedUncached(receiver, container);
+    if (looseCache.size > 200_000) looseCache.clear();
+    looseCache.set(key, hit);
+  }
+  return hit;
+}
+
+function looselyNamedUncached(receiver: string, container: string): boolean {
   const r = receiver.toLowerCase().replace(/^_+|_+$/g, '');
   const c = container.toLowerCase();
   if (r.length < 2) return false;

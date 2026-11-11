@@ -51,9 +51,12 @@ export function directSubtypes(db: ClastDb, resolver: Resolver, sym: SymbolRow):
       // Written as Outer::Name / Outer.Name: the qualifier must be our enclosing type or namespace.
       if (row.hqual !== symContainer) continue;
     } else if (sameName.length > 1 || row.hqual) {
-      const res = resolver.resolve(sym.name, {
-        fileId: row.file_id, path: row.path, lang: row.lang, receiver: row.hqual, caller: row,
-      });
+      const res = resolver.resolve(
+        sym.name,
+        { fileId: row.file_id, path: row.path, lang: row.lang, receiver: row.hqual, caller: row },
+        0,
+        true
+      );
       const top = res.candidates[0];
       if (!top) {
         certain = false;
@@ -91,9 +94,12 @@ export function directSupertypes(db: ClastDb, resolver: Resolver, sym: SymbolRow
     if (seen.has(row.name)) continue;
     seen.add(row.name);
     const isType = (s: SymbolRow): boolean => (CONTAINER_KINDS.has(s.kind) || s.kind === 'type') && s.id !== sym.id;
-    let res = resolver.resolve(row.name, {
-      fileId: sym.file_id, path: sym.path, lang: sym.lang, receiver: row.qualifier, caller: sym,
-    });
+    let res = resolver.resolve(
+      row.name,
+      { fileId: sym.file_id, path: sym.path, lang: sym.lang, receiver: row.qualifier, caller: sym },
+      0,
+      true
+    );
     let target = res.candidates.find(c => isType(c.sym));
     if (!target && row.qualifier) {
       // Qualified by an enclosing type / namespace that is part of the qualified name.
@@ -101,7 +107,9 @@ export function directSupertypes(db: ClastDb, resolver: Resolver, sym: SymbolRow
       const direct = db.symbolsByName(row.name).find(s => isType(s) && (s.qname === want || s.qname.endsWith('.' + want)));
       if (direct) target = { sym: direct, score: 90 };
       else {
-        res = resolver.resolve(row.name, { fileId: sym.file_id, path: sym.path, lang: sym.lang, receiver: null, caller: sym });
+        res = resolver.resolve(
+          row.name, { fileId: sym.file_id, path: sym.path, lang: sym.lang, receiver: null, caller: sym }, 0, true
+        );
         target = res.candidates.find(c => isType(c.sym));
       }
     }

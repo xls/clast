@@ -68,8 +68,8 @@ const functionDecl: Visitor = (node, ctx) => {
 const method: Visitor = (node, ctx) => {
   const name = field(node, 'name');
   if (!name) return;
-  const inType = ctx.parentKind() === 'class' || ctx.parentKind() === 'interface';
-  ctx.def(node, { name: name.text.replace(/^['"]|['"]$/g, ''), kind: inType ? 'method' : 'function' });
+  // Class members and object-literal members alike: called through an object.
+  ctx.def(node, { name: name.text.replace(/^['"]|['"]$/g, ''), kind: 'method' });
 };
 
 const fieldDef: Visitor = (node, ctx) => {
@@ -219,6 +219,11 @@ const assignment: Visitor = (node, ctx) => {
   // module.exports = createApplication / exports = module.exports = createApplication
   if (targets.some(t => /^(module\.)?exports$/.test(t.text))) {
     if (right.type === 'identifier') ctx.exportDefault(right.text);
+    else if (requireSource(right)) {
+      // module.exports = require('./lib/express'): pass that module's export through.
+      ctx.imp(requireSource(right), node, ['*']);
+      ctx.exportDefault('*');
+    }
     else if ((FUNCTION_VALUES.has(right.type) || right.type === 'class') && field(right, 'name')) {
       ctx.exportDefault(field(right, 'name')!.text);
     }
@@ -257,7 +262,8 @@ const pair: Visitor = (node, ctx) => {
   const key = field(node, 'key');
   if (!value || !key || !FUNCTION_VALUES.has(value.type)) return;
   if (key.type !== 'property_identifier' && key.type !== 'string') return;
-  ctx.def(node, { name: stripQuotes(key.text), kind: 'function', body: field(value, 'body') });
+  // A member of an object literal: reachable only through the object, never by its bare name.
+  ctx.def(node, { name: stripQuotes(key.text), kind: 'method', body: field(value, 'body') });
 };
 
 const callExpression: Visitor = (node, ctx) => {

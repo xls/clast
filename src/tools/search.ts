@@ -144,13 +144,20 @@ function callerLines(ctx: ToolContext, sym: SymbolRow, edges: CallerEdge[], out:
 }
 
 /** Places that mention the symbol without calling it (passed as a value, exported, decorated, typed). */
-function valueReferences(ctx: ToolContext, sym: SymbolRow, callers: CallerEdge[], max: number): string[] {
+function valueReferences(
+  ctx: ToolContext,
+  sym: SymbolRow,
+  callers: CallerEdge[],
+  max: number,
+  accept?: (path: string) => boolean
+): string[] {
   const nameId = ctx.db.nameId(sym.name, false);
   if (nameId === undefined) return [];
-  const rows = ctx.db.all<{ file_id: number; path: string; lines: string }>(
-    `SELECT o.file_id, f.path, o.lines FROM occ o JOIN files f ON f.id = o.file_id WHERE o.name_id = ? LIMIT 41`,
+  let rows = ctx.db.all<{ file_id: number; path: string; lines: string }>(
+    `SELECT o.file_id, f.path, o.lines FROM occ o JOIN files f ON f.id = o.file_id WHERE o.name_id = ? LIMIT 400`,
     nameId
   );
+  if (accept) rows = rows.filter(r => accept(r.path));
   if (rows.length > 40) {
     // A widely used name: only the defining file and the files importing it can mean this symbol.
     const visible = new Set<number>([sym.file_id]);
@@ -162,9 +169,10 @@ function valueReferences(ctx: ToolContext, sym: SymbolRow, callers: CallerEdge[]
     const narrowed = ctx.db.all<{ file_id: number; path: string; lines: string }>(
       `SELECT o.file_id, f.path, o.lines FROM occ o JOIN files f ON f.id = o.file_id WHERE o.name_id = ?`, nameId
     ).filter(r => visible.has(r.file_id));
-    if (narrowed.length === 0 || narrowed.length > 40) return [];
+    const kept = accept ? narrowed.filter(r => accept(r.path)) : narrowed;
+    if (kept.length === 0 || kept.length > 40) return [];
     rows.length = 0;
-    rows.push(...narrowed);
+    rows.push(...kept);
   }
   // Every line that calls *something* with this name is a call, whichever definition it resolves to.
   const callSites = new Set(callers.map(c => c.path + ':' + c.line));
@@ -294,8 +302,16 @@ async function describe(ctx: ToolContext, sym: SymbolRow, args: ContextArgs, ove
 
   const callable = CALLABLE_KINDS.has(sym.kind);
   if (callable || isContainer || MINOR_KINDS.has(sym.kind)) {
-    const callers = callersOf(ctx.db, ctx.resolver, sym);
+    // A summary: bounded work even for names with tens of thousands of call sites.
+    const callerStats = { examined: 0, total: 0 };
+    const callers = callersOf(ctx.db, ctx.resolver, sym, { quick: true }, callerStats);
     callerLines(ctx, sym, callers, out);
+    if (callerStats.total > callerStats.examined) {
+      out.push(
+        `  ("${sym.name}" has ${callerStats.total} call sites; this summary examined ${callerStats.examined}. ` +
+          `clast_call_graph with within=<path> covers an area completely.)`
+      );
+    }
     const resolved = callers.filter(c => c.certain && !isTestPath(c.path)).length;
     if (callable && callers.length === 0) out.push('callers: none found');
     if ((callable || MINOR_KINDS.has(sym.kind)) && resolved < 3) {
@@ -446,8 +462,18 @@ function disambiguate(
   matches: SymbolRow[]
 ): { lines: string[]; stop: boolean } {
   const chosen = matches[0]!;
-  const { others } = otherDefinitions(chosen, matches, ctx.resolver.familyOf(chosen));
-  if (others.length === 0) return { lines: [], stop: false };
+  const all = otherDefinitions(chosen, matches, ctx.resolver.familyOf(chosen)).others;
+  // Verbatim copies of the same definition (vendored forks, generated duplicates) are not real alternatives.
+  const copies = all.filter(o => o.qname === chosen.qname && o.kind === chosen.kind && o.signature === chosen.signature);
+  const others = all.filter(o => !copies.includes(o));
+  if (others.length === 0) {
+    return {
+      lines: copies.length
+        ? [`(identical cop${copies.length === 1 ? 'y' : 'ies'} elsewhere: ${copies.slice(0, 2).map(c => c.path + ':' + c.start_line).join(', ')}${copies.length > 2 ? ', ...' : ''})`]
+        : [],
+      stop: false,
+    };
+  }
   const ref = parseSymbolRef(name);
   const unqualified = ref.container.length === 0 && !ref.path && !path && ref.line === undefined;
   if (unqualified && others.length >= 4) {
@@ -472,8 +498,9 @@ export async function callGraph(ctx: ToolContext, args: CallGraphArgs): Promise<
   const budget = Math.max(1, Math.min(args.limit ?? 50, 2000));
   const within = args.within;
   const pathFilter = within ? (p: string): boolean => pathMatches(p, within) : undefined;
-  // Tests: listed in full only on request; by default they are summarised per file.
-  const listTests = args.includeTests === true;
+  // Tests: listed in full only on request (or when the scope itself is a test / example tree);
+  // by default they are summarised per file.
+  const listTests = args.includeTests === true || (within !== undefined && isTestPath(within.replace(/\/?$/, '/')));
   const dropTests = args.includeTests === false;
 
   if (matches.length === 0) {
@@ -499,7 +526,11 @@ export async function callGraph(ctx: ToolContext, args: CallGraphArgs): Promise<
   const out: string[] = [symLine(sym)];
   if (sym.signature) out.push(`  ${firstLine(sym.signature, 160)}`);
   out.push(...amb.lines);
-  const opts = { depth, budget: 100000, includeTests: !dropTests, path: pathFilter };
+  const stats = { examined: 0, total: 0 };
+  // A plain directory / file fragment can be pre-filtered by the database.
+  const pathContains = within && !/[*?]/.test(within) ? within.replace(/\\/g, '/').replace(/^\.\//, '') : undefined;
+  const opts = { depth, budget: 100000, includeTests: !dropTests, path: pathFilter, pathContains, stats };
+  const accept = (p: string): boolean => (!dropTests || !isTestPath(p)) && (!pathFilter || pathFilter(p));
 
   if (direction !== 'callees') {
     const graph = buildGraph(ctx.db, ctx.resolver, sym, 'callers', opts);
@@ -524,19 +555,26 @@ export async function callGraph(ctx: ToolContext, args: CallGraphArgs): Promise<
       remaining -= take;
       if (nodes.length > take) out.push(`  ... ${nodes.length - take} more ${more}`);
     };
-    if (all.length === 0) {
-      out.push('  none found');
-      const refs = valueReferences(ctx, sym, [], 6);
-      if (refs.length) {
-        out.push('referenced without a call (passed as a value, exported, used as a type):');
-        out.push(...refs);
-      }
-    }
+    if (all.length === 0) out.push('  none found');
     emit(certain, budget, '(raise limit, or narrow with within)');
     // Unconfirmed edges are summarised unless asked for, or unless they are all there is.
     const showAll = args.uncertain === true || certain.length === 0;
     if (possible.length) emit(possible, showAll ? budget : 5, 'name-only matches (uncertain=true lists them)');
     if (unknown.length) emit(unknown, showAll ? budget : 3, 'call sites on receivers of unknown type (uncertain=true lists them)');
+    if (certain.length === 0) {
+      // Nothing confirmed: the symbol may be used as a value (callback, property read, export) instead.
+      const refs = valueReferences(ctx, sym, [], 6, accept);
+      if (refs.length) {
+        out.push('referenced without a call (passed as a value, read as a property, exported):');
+        out.push(...refs);
+      }
+    }
+    if (stats.total > stats.examined) {
+      out.push(
+        `  note: "${sym.name}" is called in ${stats.total} places; ${stats.examined} were examined (files that import the definition first). ` +
+          `Narrow with within to cover a specific area completely.`
+      );
+    }
     if (tests.length) {
       if (listTests) {
         out.push('in tests/examples:');

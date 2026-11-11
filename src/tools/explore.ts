@@ -426,7 +426,9 @@ export async function overview(ctx: ToolContext, args: OverviewArgs = {}): Promi
   const hasImportGraph = resolvedImports > files.length / 2;
   const keyLines: string[] = [];
   for (const p of popular) {
-    if (keyLines.length >= 25) break;
+    // Inside a sub-tree only a handful of landmarks are worth the space.
+    if (keyLines.length >= (scope ? 10 : 25)) break;
+    if (scope && p.refs < 5) break;
     const defs = findSymbols(ctx.db, { name: p.name, container: [] }, { exact: true }).filter(
       s => KEY_KINDS.has(s.kind) && s.parent_id === null
     );
@@ -493,7 +495,17 @@ export async function overview(ctx: ToolContext, args: OverviewArgs = {}): Promi
 
   if (scope && files.length <= 40) {
     // Small enough to show whole: save the follow-up clast_file_summary call.
-    out.push(...outlineDirectory(ctx, scope, files.map(f => ({ ...f }))).slice(1));
+    out.push('files:');
+    for (const f of files) {
+      const topSymbols = ctx.db.all<{ name: string }>(
+        `SELECT name FROM symbols WHERE file_id = ? AND parent_id IS NULL
+         AND kind NOT IN ('variable', 'constant', 'property', 'field')
+         ORDER BY (kind IN ('class','interface','struct','trait','enum')) DESC, exported DESC, start_line LIMIT 7`,
+        f.id
+      );
+      const names = topSymbols.slice(0, 6).map(t => t.name).join(', ');
+      out.push(`  ${f.path.slice(prefix.length)}  (${f.line_count} lines)${names ? ': ' + names + (topSymbols.length > 6 ? ', ...' : '') : ''}`);
+    }
   }
   out.push('next: clast_file_summary <dir or file> for an outline, clast_search <words> to find symbols.');
   const text = out.join('\n');
@@ -558,6 +570,9 @@ export async function grep(ctx: ToolContext, args: GrepArgs): Promise<string> {
     others = otherTextFiles(ctx);
     if (args.path) others = others.filter(p => pathMatches(p, args.path!));
     if (args.includeTests === false) others = others.filter(p => !isTestPath(p));
+    // Shallow files (package.json, pyproject.toml, Makefile) before deep trees of docs and data.
+    const depthOf = (p: string): number => p.split('/').length;
+    others.sort((a, b) => Number(isTestPath(a)) - Number(isTestPath(b)) || depthOf(a) - depthOf(b));
   }
 
   const started = performance.now();

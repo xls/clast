@@ -320,7 +320,9 @@ export function extract(tree: Tree, source: string, compiled: CompiledSpec): Ext
     },
 
     exportDefault(name): void {
-      if (name && name.length <= MAX_NAME && /^[\p{L}_$][\p{L}\p{N}_$]*$/u.test(name)) defaultExport = name;
+      // '*' = "whatever the required module exports" (`module.exports = require('./lib/x')`).
+      if (name === '*') defaultExport ??= '*';
+      else if (name && name.length <= MAX_NAME && /^[\p{L}_$][\p{L}\p{N}_$]*$/u.test(name)) defaultExport = name;
     },
 
     ref(name, node): void {
