@@ -179,63 +179,167 @@ export function directSupertypes(db: ClastDb, resolver: Resolver, sym: SymbolRow
   return out;
 }
 
-function memberNames(db: ClastDb, containerId: number): string[] {
-  return db
-    .all<{ name: string }>(`SELECT DISTINCT name FROM symbols WHERE parent_id = ? AND kind = 'method'`, containerId)
-    .map(r => r.name);
+
+function dirOf(path: string): string {
+  const i = path.lastIndexOf('/');
+  return i === -1 ? '' : path.slice(0, i);
 }
 
-/** Method names of a type that are defined outside its body (Go receivers, Rust impl blocks). */
-function methodsByQname(db: ClastDb, typeName: string, lang: string): Set<string> {
-  const rows = db.all<{ name: string; qname: string }>(
-    `SELECT s.name, s.qname FROM symbols s JOIN files f ON f.id = s.file_id
-     WHERE s.kind = 'method' AND f.lang = ? AND s.qname LIKE ? ESCAPE '\\'`,
-    lang, '%' + typeName.replace(/[\\%_]/g, c => '\\' + c) + '.%'
-  );
-  const out = new Set<string>();
-  for (const r of rows) {
-    const parts = r.qname.split('.');
-    if (parts.length >= 2 && parts[parts.length - 2] === typeName) out.add(r.name);
+/** Top-level comma-separated items in a parameter / result list. */
+function countItems(list: string): number {
+  if (!list.trim()) return 0;
+  let depth = 0;
+  let n = 1;
+  for (const ch of list) {
+    if (ch === '(' || ch === '[' || ch === '{') depth++;
+    else if (ch === ')' || ch === ']' || ch === '}') depth--;
+    else if (ch === ',' && depth === 0) n++;
+  }
+  return n;
+}
+
+/**
+ * Shape of a Go method signature: number of parameters and of results
+ * (`Close() error` -> "0/1", `Close(n Node, r Reader)` -> "2/0"). Go matches
+ * interfaces on full signatures; counting is enough to reject look-alikes
+ * without parsing types. Null when the signature cannot be read.
+ */
+export function goShape(signature: string, name: string): string | null {
+  let sig = signature;
+  // func (r *T) Name(...) ...: skip the receiver.
+  const recv = /^func\s*\(/.exec(sig);
+  if (recv) {
+    let depth = 0;
+    let i = recv[0].length - 1;
+    for (; i < sig.length; i++) {
+      if (sig[i] === '(') depth++;
+      else if (sig[i] === ')' && --depth === 0) break;
+    }
+    sig = sig.slice(i + 1);
+  }
+  const at = sig.indexOf(name);
+  if (at === -1) return null;
+  let i = at + name.length;
+  while (i < sig.length && sig[i] === ' ') i++;
+  if (sig[i] === '[') {
+    // type parameters
+    let depth = 0;
+    for (; i < sig.length; i++) {
+      if (sig[i] === '[') depth++;
+      else if (sig[i] === ']' && --depth === 0) { i++; break; }
+    }
+  }
+  if (sig[i] !== '(') return null;
+  let depth = 0;
+  const open = i;
+  for (; i < sig.length; i++) {
+    if (sig[i] === '(') depth++;
+    else if (sig[i] === ')' && --depth === 0) break;
+  }
+  if (i >= sig.length) return null; // cut off
+  const params = countItems(sig.slice(open + 1, i));
+  const rest = sig.slice(i + 1).replace(/\{\s*$/, '').trim();
+  let results = 0;
+  if (rest.startsWith('(')) {
+    const close = rest.lastIndexOf(')');
+    if (close === -1) return null;
+    results = countItems(rest.slice(1, close));
+  } else if (rest) {
+    results = 1;
+  }
+  return params + '/' + results;
+}
+
+interface Member {
+  id: number;
+  name: string;
+  shape: string | null;
+}
+
+function membersOf(db: ClastDb, containerId: number): Member[] {
+  const seen = new Set<string>();
+  const out: Member[] = [];
+  for (const r of db.all<{ id: number; name: string; signature: string }>(
+    `SELECT id, name, signature FROM symbols WHERE parent_id = ? AND kind = 'method'`, containerId
+  )) {
+    if (seen.has(r.name)) continue;
+    seen.add(r.name);
+    out.push({ id: r.id, name: r.name, shape: goShape(r.signature, r.name) });
   }
   return out;
 }
 
 /**
+ * Methods of the type called `typeName` that are defined outside its body
+ * (Go receivers), with their shapes. `dir` limits this to one package.
+ */
+function methodsOfType(db: ClastDb, typeName: string, lang: string, dir?: string): Map<string, Set<string | null>> {
+  const rows = db.all<{ name: string; qname: string; signature: string; path: string }>(
+    `SELECT s.name, s.qname, s.signature, f.path FROM symbols s JOIN files f ON f.id = s.file_id
+     WHERE s.kind = 'method' AND f.lang = ? AND s.qname LIKE ? ESCAPE '\\'`,
+    lang, '%' + typeName.replace(/[\\%_]/g, c => '\\' + c) + '.%'
+  );
+  const out = new Map<string, Set<string | null>>();
+  for (const r of rows) {
+    const parts = r.qname.split('.');
+    if (parts.length < 2 || parts[parts.length - 2] !== typeName) continue;
+    if (dir !== undefined && dirOf(r.path) !== dir) continue;
+    let set = out.get(r.name);
+    if (!set) out.set(r.name, (set = new Set()));
+    set.add(goShape(r.signature, r.name));
+  }
+  return out;
+}
+
+/** Does a method set cover every required interface method (by name and, where readable, shape)? */
+function covers(methods: Map<string, Set<string | null>>, required: Member[]): boolean {
+  for (const m of required) {
+    const shapes = methods.get(m.name);
+    if (!shapes) return false;
+    if (m.shape !== null && !shapes.has(m.shape) && !shapes.has(null)) return false;
+  }
+  return true;
+}
+
+/**
  * Go has no `implements`: a type satisfies an interface when its method set
- * contains the interface's methods. Returns the types whose methods (by
- * name) cover every method of the interface.
+ * contains the interface's methods. Returns the types whose methods (name,
+ * parameter and result counts) cover every method of the interface.
  */
 export function structuralImplementers(db: ClastDb, iface: SymbolRow, limit = 200): SymbolRow[] {
   if (iface.lang !== 'go' || iface.kind !== 'interface') return [];
-  const required = memberNames(db, iface.id);
+  const required = membersOf(db, iface.id);
   if (required.length === 0) return [];
 
   // Start from the rarest method name to keep the candidate set small.
-  let rarest = required[0]!;
+  let rarest = required[0]!.name;
   let rarestCount = Infinity;
   for (const m of required) {
-    const n = db.get<{ n: number }>(`SELECT COUNT(*) AS n FROM symbols WHERE name = ? AND kind = 'method'`, m)?.n ?? 0;
-    if (n < rarestCount) { rarestCount = n; rarest = m; }
+    const n = db.get<{ n: number }>(`SELECT COUNT(*) AS n FROM symbols WHERE name = ? AND kind = 'method'`, m.name)?.n ?? 0;
+    if (n < rarestCount) { rarestCount = n; rarest = m.name; }
   }
   const holders = db.all<{ qname: string; path: string }>(
     `SELECT s.qname, f.path FROM symbols s JOIN files f ON f.id = s.file_id
      WHERE s.name = ? AND s.kind = 'method' AND f.lang = 'go' LIMIT 5000`,
     rarest
   );
-  const typeNames = new Set<string>();
+  // A type is identified by its package directory and name.
+  const types = new Map<string, { dir: string; name: string }>();
   for (const h of holders) {
     const parts = h.qname.split('.');
-    if (parts.length >= 2) typeNames.add(parts[parts.length - 2]!);
+    if (parts.length < 2) continue;
+    const name = parts[parts.length - 2]!;
+    const dir = dirOf(h.path);
+    if (name === iface.name && dir === dirOf(iface.path)) continue;
+    types.set(dir + '\0' + name, { dir, name });
   }
-  typeNames.delete(iface.name);
 
   const out: SymbolRow[] = [];
-  for (const typeName of typeNames) {
-    const methods = methodsByQname(db, typeName, 'go');
-    if (!required.every(m => methods.has(m))) continue;
+  for (const t of types.values()) {
+    if (!covers(methodsOfType(db, t.name, 'go', t.dir), required)) continue;
     const defs = db
-      .all<SymbolRow>(`SELECT ${SYMBOL_COLUMNS} FROM ${SYMBOL_FROM} WHERE s.name = ? AND f.lang = 'go'`, typeName)
-      .filter(s => s.kind === 'struct' || s.kind === 'type');
+      .all<SymbolRow>(`SELECT ${SYMBOL_COLUMNS} FROM ${SYMBOL_FROM} WHERE s.name = ? AND f.lang = 'go'`, t.name)
+      .filter(s => (s.kind === 'struct' || s.kind === 'type') && dirOf(s.path) === t.dir);
     for (const d of defs) out.push(d);
     if (out.length >= limit) break;
   }
@@ -246,18 +350,43 @@ export function structuralImplementers(db: ClastDb, iface: SymbolRow, limit = 20
 /** Go: interfaces whose method set is covered by the methods of `type`. */
 export function structuralInterfaces(db: ClastDb, type: SymbolRow, limit = 40): SymbolRow[] {
   if (type.lang !== 'go' || (type.kind !== 'struct' && type.kind !== 'type')) return [];
-  const methods = methodsByQname(db, type.name, 'go');
+  const methods = methodsOfType(db, type.name, 'go', dirOf(type.path));
   if (methods.size === 0) return [];
   const ifaces = db.all<SymbolRow>(
     `SELECT ${SYMBOL_COLUMNS} FROM ${SYMBOL_FROM} WHERE s.kind = 'interface' AND f.lang = 'go' LIMIT 20000`
   );
   const out: SymbolRow[] = [];
   for (const iface of ifaces) {
-    const required = memberNames(db, iface.id);
+    const required = membersOf(db, iface.id);
     if (required.length === 0 || required.length > methods.size) continue;
-    if (required.every(m => methods.has(m))) out.push(iface);
+    if (covers(methods, required)) out.push(iface);
     if (out.length >= limit) break;
   }
   out.sort((a, b) => Number(isTestPath(a.path)) - Number(isTestPath(b.path)) || a.path.localeCompare(b.path));
+  return out;
+}
+
+/**
+ * Go: ids of the interface methods that `method` implements (its type covers
+ * the whole interface). A call through such an interface may reach `method`.
+ */
+export function goInterfaceMethods(db: ClastDb, method: SymbolRow): number[] {
+  if (method.lang !== 'go' || method.kind !== 'method') return [];
+  const parts = method.qname.split('.');
+  if (parts.length < 2) return [];
+  const typeName = parts[parts.length - 2]!;
+  const decls = db.all<{ id: number; parent_id: number }>(
+    `SELECT s.id, s.parent_id FROM symbols s JOIN symbols p ON p.id = s.parent_id JOIN files f ON f.id = s.file_id
+     WHERE s.name = ? AND s.kind = 'method' AND p.kind = 'interface' AND f.lang = 'go' LIMIT 400`,
+    method.name
+  );
+  if (decls.length === 0) return [];
+  const methods = methodsOfType(db, typeName, 'go', dirOf(method.path));
+  const out: number[] = [];
+  for (const d of decls) {
+    if (d.id === method.id) continue;
+    const required = membersOf(db, d.parent_id);
+    if (required.length && covers(methods, required)) out.push(d.id);
+  }
   return out;
 }

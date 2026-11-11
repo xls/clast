@@ -1,6 +1,7 @@
 import type { ClastDb } from '../db/index.js';
 import { CONTAINER_KINDS, type SymbolRow } from '../types.js';
 import { isTestPath } from './format.js';
+import { goInterfaceMethods } from './hierarchy.js';
 import { langFamily, type Resolver } from './resolve.js';
 
 export interface CallerEdge {
@@ -152,7 +153,13 @@ export function callersOf(
       : db.get<{ n: number }>(`SELECT COUNT(*) AS n FROM calls WHERE name_id = ?`, nameId)?.n ?? rows.length;
   }
 
-  const family = resolver.familyOf(target);
+  let family = resolver.familyOf(target);
+  if (target.lang === 'go' && target.kind === 'method') {
+    // Go interfaces are satisfied structurally: a call through an interface this method's
+    // type implements may reach it.
+    const viaInterface = goInterfaceMethods(db, target);
+    if (viaInterface.length) family = new Set([...family, ...viaInterface]);
+  }
   const edges: CallerEdge[] = [];
   const weak: CallerEdge[] = [];
   const targetIsMember = target.kind === 'method' || target.qname.includes('.');
