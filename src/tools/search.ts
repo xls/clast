@@ -191,6 +191,9 @@ function callerLines(edges: CallerEdge[], out: string[]): void {
   }
 }
 
+/** Languages where a member can be named without an object in front (implicit this / self). */
+const IMPLICIT_MEMBER_LANGS = new Set(['java', 'csharp', 'cpp', 'swift', 'dart', 'kotlin', 'ruby']);
+
 /** Places that mention the symbol without calling it (passed as a value, exported, decorated, typed). */
 function valueReferences(
   ctx: ToolContext,
@@ -219,8 +222,12 @@ function valueReferences(
       `SELECT o.file_id, f.path, o.lines FROM occ o JOIN files f ON f.id = o.file_id WHERE o.name_id = ?`, nameId
     ).filter(r => visible.has(r.file_id));
     const kept = accept ? narrowed.filter(r => accept(r.path)) : narrowed;
-    if (kept.length > 40) return [];
-    if (!kept.some(r => r.file_id !== sym.file_id)) {
+    // Too many files can see it to list them all (a field of a central struct): show the nearest ones.
+    if (kept.length > 40) {
+      rows.length = 0;
+      rows.push(...kept);
+    }
+    if (kept.length > 40 || !kept.some(r => r.file_id !== sym.file_id)) {
       // No file-level imports to narrow by (C# / Java namespaces, Ruby autoload): show the nearest uses.
       const home = sym.path.split('/');
       const near = (p: string): number => {
@@ -248,7 +255,13 @@ function valueReferences(
   const defLines = new Set(ctx.db.symbolsByName(sym.name).map(d => d.path + ':' + d.start_line));
   const out: string[] = [];
   const seen = new Set<string>();
-  const callPattern = new RegExp('\\b' + sym.name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '\\s*(<[^>]*>)?[!?]?\\(');
+  const escaped = sym.name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const callPattern = new RegExp('\\b' + escaped + '\\s*(<[^>]*>)?[!?]?\\(');
+  // For a member (property, field, method): `ordered=True` as a keyword argument or `headers = {}` as a
+  // local are other things that happen to share the name. A use of the member has an object in front.
+  const isMember = sym.qname !== sym.name;
+  const memberUse = new RegExp('(\\.|->|::)\\s*' + escaped + '\\b');
+  const plainAssign = new RegExp('(^|[^.\\w>:$@])' + escaped + '\\s*=(?!=)');
   if (!nearest) rows.sort((a, b) => Number(isTestPath(a.path)) - Number(isTestPath(b.path)) || a.path.localeCompare(b.path));
   for (const r of rows) {
     for (const n of r.lines.split(',').map(Number)) {
@@ -262,6 +275,9 @@ function valueReferences(
       if (!enclosing && IMPORT_LINE.test(text)) continue;
       // The line calls the name (a repeat call inside a caller already listed, or a call on an untyped receiver).
       if (callPattern.test(text)) continue;
+      if (isMember && r.file_id !== sym.file_id && plainAssign.test(text) && !memberUse.test(text)) continue;
+      // Without an implicit `this`, a bare `ordered` is a local variable, not the member `qs.ordered`.
+      if (isMember && !IMPLICIT_MEMBER_LANGS.has(sym.lang) && !memberUse.test(text)) continue;
       const who = enclosing ? enclosing.qname : '<file level>';
       if (seen.has(r.path + who)) continue;
       seen.add(r.path + who);
@@ -438,6 +454,10 @@ function notFound(ctx: ToolContext, name: string, path?: string): string[] {
  */
 function containerNote(asked: string, sym: SymbolRow): string[] {
   const ref = parseSymbolRef(asked);
+  // `Stream` asked, only `stream` exists: say that the match is not exact.
+  if (ref.name && ref.name !== sym.name && ref.name.toLowerCase() === sym.name.toLowerCase()) {
+    return [`note: nothing is named exactly "${ref.name}"; this is ${sym.kind} "${sym.name}" (case-insensitive match).`];
+  }
   const want = ref.container[ref.container.length - 1];
   if (!want) return [];
   const parts = sym.qname.split('.');
