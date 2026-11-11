@@ -275,8 +275,13 @@ export function typeName(raw: string | null | undefined, allowLowercase = false,
   if (!/^[A-Za-z_$][\w$]*$/.test(name)) return null;
   if (name.length < 2) return null;
   // Go: `pkg.Type` keeps its package so that it is not confused with a same-named type elsewhere.
-  if (keepPackage && segs.length === 1 && /^[a-z_][a-z0-9_]*$/.test(segs[0]!) && /^[A-Z]/.test(name)) {
-    return segs[0] + '.' + name;
+  if (keepPackage && segs.length >= 1 && /^[A-Z]/.test(name)) {
+    // Rust `std::io::Error` / `io::Error`: anything under std / core / alloc is marked "std", otherwise
+    // the module the type is taken from (`io`, `crate`, `super`) is kept. Go: `pkg.Type`.
+    const rustPath = t.includes('::');
+    if (rustPath && segs.some(s => s === 'std' || s === 'core' || s === 'alloc')) return 'std.' + name;
+    const q = segs[segs.length - 1]!;
+    if ((rustPath || segs.length === 1) && /^[a-z_][a-z0-9_]*$/.test(q)) return q + '.' + name;
   }
   if (!/[A-Z]/.test(name[0]!)) {
     // Lowercase names are primitives / builtins in most languages (int, string, str, bool, ...).

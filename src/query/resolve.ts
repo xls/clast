@@ -506,11 +506,17 @@ export class Resolver {
    */
   private goQualified(site: CallSite): CallSite | null {
     const t = site.rtype;
-    if (!t || site.lang !== 'go') return site;
+    if (!t || (site.lang !== 'go' && site.lang !== 'rust')) return site;
     const dot = t.indexOf('.');
     if (dot === -1) return site;
     const pkg = t.slice(0, dot);
     const type = t.slice(dot + 1);
+    if (site.lang === 'rust') {
+      // `std::io::Error`, or `io::Error` after `use std::io;`: a standard-library type, whatever the
+      // project calls its own types. Any other module path keeps the old by-name behaviour.
+      if (pkg === 'std' || this.stdNames(site.fileId).has(pkg)) return null;
+      return { ...site, rtype: type };
+    }
     const dir = this.goImports(site.fileId).get(pkg);
     if (dir === null) return null;
     if (dir !== undefined) return { ...site, rtype: type, rtypeDir: dir };
@@ -1002,7 +1008,10 @@ export class Resolver {
           // a contract called Repository) are related only if one of them is that interface.
           const po = this.parentOf(other);
           const ps = this.parentOf(sym);
-          if (po && ps && po.kind !== 'interface' && ps.kind !== 'interface' && po.kind !== 'trait' && ps.kind !== 'trait') continue;
+          // (Methods written outside the type body - Rust impl blocks, Go receivers - have no parent symbol:
+          // the same method name on a same-named type in another file is then simply another type.)
+          if (!po || !ps) continue;
+          if (po.kind !== 'interface' && ps.kind !== 'interface' && po.kind !== 'trait' && ps.kind !== 'trait') continue;
           // ... and, where files import what they use, only if one of the two files imports the other
           // (`use Contracts\Events\Dispatcher as DispatcherContract`): Bus\Dispatcher is someone else's contract.
           if (
@@ -1778,7 +1787,11 @@ export class Resolver {
         // Copies of one definition are the same answer: build variants (#[cfg], foo_linux.go /
         // foo_windows.go, #ifdef) score alike, and for vendored forks the winner is simply the copy
         // this file can see. Neither makes the call ambiguous.
-        !(c.sym.qname === top.sym.qname && c.sym.kind === top.sym.kind && c.sym.signature === top.sym.signature)
+        // (Only those: two crates that each define `Error::kind(&self) -> &ErrorKind` are different targets.)
+        !(
+          c.sym.qname === top.sym.qname && c.sym.kind === top.sym.kind && c.sym.signature === top.sym.signature &&
+          (dirOf(c.sym.path) === dirOf(top.sym.path) || isVendoredPath(c.sym.path) !== isVendoredPath(top.sym.path))
+        )
     );
     // Two same-named members of same-named types (a forked `URI.toString`, a re-declared `ILogger.warn`)
     // differ only in which type the calling file can see: its import / proximity bonus decides.

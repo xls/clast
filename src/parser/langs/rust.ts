@@ -873,6 +873,7 @@ export const rust: LangSpec = {
   id: 'rust',
   grammar: 'rust',
   extensions: ['.rs'],
+  packageTypes: true,
   identifiers: ['identifier', 'type_identifier', 'field_identifier'],
   comments: ['line_comment', 'block_comment'],
   visit: {

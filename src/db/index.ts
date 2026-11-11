@@ -9,7 +9,7 @@ import { ftsWords, initials, splitIdentifier } from '../query/words.js';
  * Bump whenever the schema or the extraction output changes shape. The index
  * is a cache: a version mismatch simply drops and rebuilds it.
  */
-export const SCHEMA_VERSION = 20;
+export const SCHEMA_VERSION = 21;
 
 /** Kinds that get a full-text row (concept search). Others are found by name. */
 const FTS_KINDS = new Set(['function', 'method', 'class', 'interface', 'struct', 'trait', 'enum', 'type', 'namespace', 'macro']);
