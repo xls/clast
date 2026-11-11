@@ -1471,7 +1471,10 @@ export class Resolver {
         // this file can see. Neither makes the call ambiguous.
         !(c.sym.qname === top.sym.qname && c.sym.kind === top.sym.kind && c.sym.signature === top.sym.signature)
     );
-    let confident = top.score >= CONFIDENT_SCORE && (!second || top.score - second.score >= CONFIDENT_GAP);
+    // Two same-named members of same-named types (a forked `URI.toString`, a re-declared `ILogger.warn`)
+    // differ only in which type the calling file can see: its import / proximity bonus decides.
+    const sameNamed = second !== undefined && second.sym.qname === top.sym.qname && second.sym.kind === top.sym.kind;
+    let confident = top.score >= CONFIDENT_SCORE && (!second || top.score - second.score >= (sameNamed ? 4 : CONFIDENT_GAP));
     // A bare call to a distinctively named function or class that the project defines exactly once
     // (`new AntiforgeryTokenSet()`, `lookupKeyReadOrReply()`): proximity is irrelevant, there is nothing else it can be.
     if (
