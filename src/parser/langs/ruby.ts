@@ -415,11 +415,32 @@ const SIMPLE_RECEIVERS = new Set([
   'identifier', 'self', 'instance_variable', 'class_variable', 'global_variable',
 ]);
 
+/** Name of the method a node is written in, or null at class / file level. */
+function enclosingMethodName(node: Node): string | null {
+  for (let p = node.parent, i = 0; p && i < 40; p = p.parent, i++) {
+    if (p.type === 'method' || p.type === 'singleton_method') return field(p, 'name')?.text ?? null;
+  }
+  return null;
+}
+
+/** Bare `super` (arguments passed on implicitly): a call of the same method further up the ancestor chain. */
+const superCall: Visitor = (node, ctx) => {
+  const p = node.parent;
+  if (p && p.type === 'call' && p.childForFieldName('method')?.id === node.id) return; // `super(args)`: handled as a call
+  const name = enclosingMethodName(node);
+  if (name) ctx.call(name, node, 'super');
+};
+
 const call: Visitor = (node, ctx) => {
   const m = node.childForFieldName('method');
   if (!m) return;
   const name = m.text;
   const recv = node.childForFieldName('receiver');
+  if (!recv && (m.type === 'super' || name === 'super')) {
+    const method = enclosingMethodName(node);
+    if (method) ctx.call(method, node, 'super');
+    return;
+  }
   if (!recv) {
     const dsl = DSL.get(name);
     if (dsl && dsl(node, ctx, name)) return;
@@ -460,5 +481,6 @@ export const ruby: LangSpec = {
     assignment,
     operator_assignment: assignment,
     call,
+    super: superCall,
   },
 };

@@ -1013,3 +1013,47 @@ void VersionEdit::EncodeTo(int* dst) const {
     assert.deepEqual(edges.map(e => [e.caller?.qname, e.certain]), [['db.VersionEdit.EncodeTo', true]]);
   });
 });
+
+describe('Ruby super and top-level constants', () => {
+  let q: Project;
+  before(async () => {
+    q = await createProject({
+      'lib/persistence.rb': `module Persistence
+  def create_or_update(**)
+    true
+  end
+end
+`,
+      'lib/callbacks.rb': `module Callbacks
+  def create_or_update(**)
+    run_callbacks { super }
+  end
+end
+`,
+      'lib/adapters/redis.rb': `module Cable
+  module Adapters
+    class Redis
+    end
+  end
+end
+`,
+      'test/slow_redis.rb': `class SlowRedis < Redis
+end
+`,
+    });
+  });
+  after(() => q.dispose());
+
+  it('bare super in a mixin is a possible call of the same method elsewhere', () => {
+    const s = findSymbols(q.clast.db, 'Callbacks.create_or_update')[0]!;
+    const callees = calleesOf(q.clast.db, q.ctx.resolver, s).filter(c => c.target);
+    assert.deepEqual(callees.map(c => [c.target!.qname, c.certain]), [['Persistence.create_or_update', false]]);
+  });
+
+  it('a top-level class extending an unqualified constant does not extend a nested class of that name', () => {
+    const redis = findSymbols(q.clast.db, 'Cable.Adapters.Redis')[0]!;
+    assert.equal(directSubtypes(q.clast.db, q.ctx.resolver, redis).length, 0);
+    const sup = directSupertypes(q.clast.db, q.ctx.resolver, findSymbols(q.clast.db, 'SlowRedis')[0]!);
+    assert.equal(sup[0]!.sym, null);
+  });
+});

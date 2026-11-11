@@ -113,6 +113,8 @@ export function directSubtypes(db: ClastDb, resolver: Resolver, sym: SymbolRow):
     if (lex) {
       // Ruby constant lookup is lexical: the name means the nearest enclosing definition.
       if (lex.id !== sym.id && lex.qname !== sym.qname) continue;
+    } else if (row.lang === 'ruby' && !row.hqual && sym.qname.includes('.')) {
+      continue; // the unqualified name does not reach this nested constant from there
     } else if (row.hqual && !qualifierFits(row.hqual, sym, row.lang)) {
       continue; // Go / Rust: qualified by another package or module
     } else if (row.hqual && symContainer) {
@@ -194,6 +196,9 @@ export function directSupertypes(db: ClastDb, resolver: Resolver, sym: SymbolRow
     if (sym.lang === 'ruby' || !res.confident) {
       const lex = lexicalType(db, sym, row.qualifier, row.name);
       if (lex) target = { sym: lex, score: 95 };
+      // Ruby: an unqualified constant that no enclosing scope defines is not some class of that name
+      // nested elsewhere (`class SlowRedis < Redis` at top level means the gem's Redis).
+      else if (sym.lang === 'ruby' && !row.qualifier) target = undefined;
     }
     if (!target && row.qualifier) {
       // Qualified by an enclosing type / namespace that is part of the qualified name.
