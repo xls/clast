@@ -37,7 +37,8 @@ claude mcp add -s user clast clast-ai
 
 `-s user` registers the server for all projects. Restart Claude Code (or "Developer: Reload Window" in
 VS Code) and run `/mcp`: `clast` should be listed with 12 tools. The first start indexes the project in
-the background; the tools are usable immediately and report progress while the index is being built.
+the background (seconds, about half a minute for 15k files); until that first index is ready the tools
+answer with the build progress and ask to be called again. Later starts are ready immediately.
 
 Other ways to install:
 
