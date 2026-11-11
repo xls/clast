@@ -36,6 +36,12 @@ export interface DefOpts {
    * visited (e.g. enum members registered from the enum visitor). Default true.
    */
   scope?: boolean;
+  /**
+   * Define the symbol as a member of the nearest enclosing container (class,
+   * struct, ...) instead of the innermost scope. Used for instance attributes
+   * assigned inside methods (`self.x = ...` in Python `__init__`).
+   */
+  inContainer?: boolean;
 }
 
 /**
@@ -55,6 +61,21 @@ export interface Ctx {
   imp(source: string | null | undefined, node: Node, names?: string[]): void;
   /** Record that symbol `sym` extends/implements `name`. */
   inherit(sym: number, name: string | null | undefined, kind?: 'extends' | 'implements'): void;
+  /**
+   * Record an identifier occurrence under a different name than the source
+   * text (e.g. C# `[Authorize]` also references `AuthorizeAttribute`).
+   */
+  ref(name: string | null | undefined, node: Node): void;
+  /**
+   * Record the declared type of a parameter, local, or field so that member
+   * calls on it (`record.topic()`, `this.repo.find()`) can be resolved to
+   * the right class. `type` is raw type text; it is normalised with
+   * typeName(). The hint is attached to the nearest enclosing function (or
+   * class, for field declarations). Pass `onContainer` = true to attach it
+   * to the enclosing class even from inside a method: constructor parameter
+   * properties, `self.x = Foo()` assignments.
+   */
+  typeHint(name: string | null | undefined, type: string | null | undefined, onContainer?: boolean): void;
   /** Kind of the innermost enclosing symbol, or null at file level. */
   parentKind(): SymbolKind | null;
   /** True if any enclosing symbol is a function or method. */
@@ -141,12 +162,71 @@ export function lastSegment(s: string): string {
   return m ? m[1]! : s;
 }
 
-/** Receiver text if it is short and simple enough to be a useful hint. */
+/** Receiver marker for member calls whose receiver is a complex expression. */
+export const COMPLEX_RECEIVER = '?';
+
+/**
+ * Receiver text of a member call. Short simple receivers (`this`, `db`,
+ * `Foo`, `this.repo`) are returned as text; anything else (call chains,
+ * literals, indexing) becomes COMPLEX_RECEIVER so the resolver still knows
+ * the call HAD a receiver and is not a bare `foo()` call. Returns null only
+ * when there is no receiver node at all.
+ */
 export function simpleReceiver(node: Node | null | undefined): string | null {
   if (!node) return null;
+  if (node.endIndex - node.startIndex > 48) return COMPLEX_RECEIVER;
   const t = node.text;
-  if (t.length > 40 || /[\s(]/.test(t)) return null;
+  if (/[\s(\[{"'`]/.test(t) || /^\d/.test(t)) return COMPLEX_RECEIVER;
   return t;
+}
+
+const TYPE_WRAPPERS = new Set([
+  'Option', 'Optional', 'Arc', 'Rc', 'Box', 'RefCell', 'Mutex', 'RwLock', 'Cell', 'Pin', 'Weak',
+  'Promise', 'Readonly', 'Partial', 'Required', 'NonNullable', 'Awaited', 'Lazy', 'Task', 'ValueTask',
+  'Nullable', 'Future', 'CompletableFuture', 'Supplier', 'Provider', 'Ref', 'Ptr', 'unique_ptr',
+  'shared_ptr', 'weak_ptr', 'Type', 'ClassVar', 'Final', 'Annotated',
+]);
+
+/**
+ * Reduce raw type text to the bare name of the class it denotes, or null:
+ * `*Site` -> Site, `ProducerRecord<K, V>` -> ProducerRecord,
+ * `Option<Arc<Handle>>` -> Handle, `pkg.Foo` / `ns::Foo` -> Foo,
+ * `Foo | null` -> Foo, `const Foo&` -> Foo. Collections and primitives
+ * are not class types and yield null.
+ */
+export function typeName(raw: string | null | undefined): string | null {
+  if (!raw) return null;
+  let t = raw.trim();
+  for (let i = 0; i < 4; i++) {
+    t = t
+      .replace(/^(const|readonly|mut|final|volatile|static|ref|out|in|params|dyn|impl|struct|class|enum|typename|unsigned|signed)\s+/, '')
+      .replace(/^[&*?\s:]+/, '')
+      .replace(/^'[a-z_]+\s+/, '')
+      .replace(/[&*?!\s]+$/, '')
+      .replace(/\s*\|\s*(null|undefined|None)\b/g, '')
+      .replace(/^(null|undefined|None)\s*\|\s*/, '')
+      .trim();
+    const m = /^([\w.:\\]+)\s*[<\[](.*)[>\]]$/s.exec(t);
+    if (!m) break;
+    const outer = m[1]!.split(/\.|::|\\/).pop()!;
+    if (!TYPE_WRAPPERS.has(outer)) { t = m[1]!; break; }
+    // Unwrap: first type argument at nesting depth 0.
+    let depth = 0;
+    let end = m[2]!.length;
+    for (let k = 0; k < m[2]!.length; k++) {
+      const ch = m[2]![k];
+      if (ch === '<' || ch === '[' || ch === '(') depth++;
+      else if (ch === '>' || ch === ']' || ch === ')') depth--;
+      else if (ch === ',' && depth === 0) { end = k; break; }
+    }
+    t = m[2]!.slice(0, end).trim();
+  }
+  if (/[|&(){}\[\],<>=\s]/.test(t)) return null;
+  const name = t.split(/\.|::|\\/).pop() ?? '';
+  if (!/^[A-Za-z_$][\w$]*$/.test(name)) return null;
+  // Lowercase names are primitives / builtins in every supported language (int, string, str, bool, ...).
+  if (!/[A-Z]/.test(name[0]!) || name.length < 2) return null;
+  return name;
 }
 
 /** UPPER_SNAKE names are treated as constants. */

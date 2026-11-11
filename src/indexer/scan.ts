@@ -1,5 +1,6 @@
 import ignoreFactory, { type Ignore } from 'ignore';
-import { readdirSync, readFileSync, statSync, existsSync } from 'node:fs';
+import { readdirSync, readFileSync, existsSync } from 'node:fs';
+import { stat } from 'node:fs/promises';
 import { extname, join } from 'node:path';
 import type { ClastConfig } from '../config/index.js';
 import { supportedExtensions } from '../parser/registry.js';
@@ -104,14 +105,33 @@ export class IgnoreRules {
   }
 
   /** Walk the project and return every indexable file. */
-  scan(): ScannedFile[] {
-    const out: ScannedFile[] = [];
+  async scan(): Promise<ScannedFile[]> {
+    const candidates: string[] = [];
     const rules: Rule[] = [this.rootRule];
-    this.walk('', rules, out, 0);
-    return out;
+    this.walk('', rules, candidates, 0);
+
+    // stat() dominates a warm start (especially on Windows); run it on the
+    // libuv thread pool instead of serially on the main thread.
+    const out: ScannedFile[] = new Array(candidates.length);
+    let next = 0;
+    const worker = async (): Promise<void> => {
+      while (next < candidates.length) {
+        const i = next++;
+        const rel = candidates[i]!;
+        const abs = join(this.root, rel);
+        try {
+          const st = await stat(abs);
+          if (st.size <= this.maxFileSize) out[i] = { abs, rel, mtime: st.mtimeMs, size: st.size };
+        } catch {
+          // vanished between readdir and stat
+        }
+      }
+    };
+    await Promise.all(Array.from({ length: Math.min(32, candidates.length) }, worker));
+    return out.filter(Boolean);
   }
 
-  private walk(dirRel: string, parentRules: Rule[], out: ScannedFile[], depth: number): void {
+  private walk(dirRel: string, parentRules: Rule[], out: string[], depth: number): void {
     if (depth > 40) return;
     const rule = this.ruleFor(dirRel);
     const rules = rule ? [...parentRules, rule] : parentRules;
@@ -134,15 +154,7 @@ export class IgnoreRules {
         if (!this.extensions.has(extname(name).toLowerCase())) continue;
         const rel = dirRel + name;
         if (IgnoreRules.test(rules, rel, false)) continue;
-        const abs = join(this.root, rel);
-        let st;
-        try {
-          st = statSync(abs);
-        } catch {
-          continue;
-        }
-        if (st.size > this.maxFileSize) continue;
-        out.push({ abs, rel, mtime: st.mtimeMs, size: st.size });
+        out.push(rel);
       }
       // Symlinks are skipped: they cause cycles and duplicate symbols.
     }

@@ -71,13 +71,44 @@ const classDef: Visitor = (node, ctx) => {
   }
 };
 
+/** Type of an assignment: its annotation, or the class being instantiated (`x = Foo(...)`). */
+function assignedType(node: Node): string | null {
+  const annotation = field(node, 'type');
+  if (annotation) return annotation.text;
+  const right = field(node, 'right');
+  if (right && right.type === 'call') {
+    const fn = field(right, 'function');
+    const callee = fn?.type === 'attribute' ? field(fn, 'attribute') : fn;
+    if (callee && callee.type === 'identifier' && /^[A-Z]/.test(callee.text)) return callee.text;
+  }
+  return null;
+}
+
 /** Module-level and class-level assignments become variables / fields. */
 const assignment: Visitor = (node, ctx) => {
-  if (ctx.inCallable()) return;
-  const stmt = node.parent;
-  if (!stmt || stmt.type !== 'expression_statement') return;
   const left = field(node, 'left');
-  if (!left || left.type !== 'identifier') return;
+  if (!left) return;
+  const stmt = node.parent;
+
+  // self.attr = ... inside a method: an instance attribute of the enclosing class.
+  if (left.type === 'attribute') {
+    const obj = field(left, 'object');
+    const attr = field(left, 'attribute');
+    if (!obj || !attr || obj.text !== 'self' || !ctx.inCallable()) return;
+    ctx.typeHint(attr.text, assignedType(node), true);
+    if (stmt && stmt.type === 'expression_statement') {
+      ctx.def(node, {
+        name: attr.text, kind: 'field', range: stmt, body: null, scope: false, inContainer: true,
+        exported: !attr.text.startsWith('_'),
+      });
+    }
+    return;
+  }
+  if (left.type !== 'identifier') return;
+  ctx.typeHint(left.text, assignedType(node));
+
+  if (ctx.inCallable()) return;
+  if (!stmt || stmt.type !== 'expression_statement') return;
   const name = left.text;
   const pk = ctx.parentKind();
   if (pk !== null && pk !== 'class') return;
@@ -96,6 +127,23 @@ const call: Visitor = (node, ctx) => {
   if (fn.type === 'identifier') ctx.call(fn.text, node);
   else if (fn.type === 'attribute') {
     ctx.call(field(fn, 'attribute')?.text, node, simpleReceiver(field(fn, 'object')));
+  }
+};
+
+/** `def f(x: Foo, y: Bar = ...)` */
+const typedParameter: Visitor = (node, ctx) => {
+  const type = field(node, 'type');
+  const name = field(node, 'name') ?? node.namedChildren[0];
+  if (type && name && name.type === 'identifier') ctx.typeHint(name.text, type.text);
+};
+
+/** Applying a decorator calls it: `@register.filter` / `@cached_property`. (`@foo(...)` is a call already.) */
+const decorator: Visitor = (node, ctx) => {
+  const expr = node.namedChildren[0];
+  if (!expr) return;
+  if (expr.type === 'identifier') ctx.call(expr.text, node);
+  else if (expr.type === 'attribute') {
+    ctx.call(field(expr, 'attribute')?.text, node, simpleReceiver(field(expr, 'object')));
   }
 };
 
@@ -131,6 +179,9 @@ export const python: LangSpec = {
     function_definition: functionDef,
     class_definition: classDef,
     assignment,
+    typed_parameter: typedParameter,
+    typed_default_parameter: typedParameter,
+    decorator,
     call,
     import_statement: importStatement,
     import_from_statement: importFrom,

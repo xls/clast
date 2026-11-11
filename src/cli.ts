@@ -1,4 +1,8 @@
 #!/usr/bin/env node
+// More I/O threads: the startup scan stats every source file, which is the
+// dominant warm-start cost. Must be set before the first async fs call.
+process.env.UV_THREADPOOL_SIZE ??= '16';
+
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { Clast } from './engine.js';

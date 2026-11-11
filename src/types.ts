@@ -54,6 +54,8 @@ export interface ExCall {
   line: number;
   /** Receiver text for member calls ("this", "self", "Foo", "db"), if simple. */
   receiver: string | null;
+  /** Declared type of the receiver when a type hint was in scope (`Foo` for `x: Foo; x.bar()`). */
+  rtype: string | null;
   count: number;
 }
 

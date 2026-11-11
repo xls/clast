@@ -93,8 +93,10 @@ export class Indexer {
     const start = performance.now();
     this.progress = { phase: 'scanning', done: 0, total: 0 };
     this.rules.invalidate();
-    const scanned = this.rules.scan();
+    const scanned = await this.rules.scan();
 
+    // A forced rebuild starts from an empty index so it can use the cold bulk path.
+    if (opts.force) this.db.clearIndex();
     const known = new Map<string, FileRow>();
     for (const row of this.db.allFiles()) known.set(row.path, row);
 
@@ -339,7 +341,7 @@ export class Indexer {
     return updated;
   }
 
-  scan(): ScannedFile[] {
+  scan(): Promise<ScannedFile[]> {
     return this.rules.scan();
   }
 }

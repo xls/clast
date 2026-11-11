@@ -82,6 +82,48 @@ const fieldDef: Visitor = (node, ctx) => {
     kind: isFn ? 'method' : 'property',
     body: isFn ? field(value, 'body') : null,
   });
+  ctx.typeHint(name.text, declaredType(node, value));
+};
+
+/** Type text of a declaration: its annotation, or the class of a `new X()` initializer. */
+function declaredType(node: Node, value: Node | null): string | null {
+  const annotation = field(node, 'type');
+  if (annotation) return annotation.text;
+  if (value && value.type === 'new_expression') return field(value, 'constructor')?.text ?? null;
+  return null;
+}
+
+/** Parameters with type annotations; constructor parameter properties also declare a field. */
+const parameter: Visitor = (node, ctx) => {
+  const pattern = field(node, 'pattern');
+  const type = field(node, 'type');
+  if (!pattern || pattern.type !== 'identifier' || !type) return;
+  ctx.typeHint(pattern.text, type.text);
+  const first = node.child(0);
+  if (first && (first.type === 'accessibility_modifier' || first.type === 'readonly' || first.type === 'override_modifier')) {
+    ctx.typeHint(pattern.text, type.text, true);
+  }
+};
+
+/** `@memoize` / `@ns.decorator`: applying a decorator calls it. (`@foo()` is a call_expression already.) */
+const decorator: Visitor = (node, ctx) => {
+  const expr = node.namedChildren[0];
+  if (!expr) return;
+  if (expr.type === 'identifier') ctx.call(expr.text, node);
+  else if (expr.type === 'member_expression') {
+    ctx.call(field(expr, 'property')?.text, node, simpleReceiver(field(expr, 'object')));
+  }
+};
+
+const HANDLED_FUNCTION_PARENTS = new Set([
+  'variable_declarator', 'assignment_expression', 'pair', 'public_field_definition', 'field_definition',
+]);
+
+/** Named function expressions used as values: `defineGetter(req, 'ip', function ip() {})`. */
+const functionExpression: Visitor = (node, ctx) => {
+  const name = field(node, 'name');
+  if (!name || (node.parent && HANDLED_FUNCTION_PARENTS.has(node.parent.type))) return;
+  ctx.def(node, { name: name.text, kind: 'function' });
 };
 
 const variableDeclarator: Visitor = (node, ctx) => {
@@ -92,6 +134,7 @@ const variableDeclarator: Visitor = (node, ctx) => {
   const exp = decl ? isExported(decl) : null;
   const range = exp ?? (decl && decl.namedChildCount === 1 ? decl : node);
   const name = nameNode.text;
+  ctx.typeHint(name, declaredType(node, value));
 
   if (value && FUNCTION_VALUES.has(value.type)) {
     ctx.def(node, { name, kind: 'function', range, body: field(value, 'body'), exported: !!exp });
@@ -129,27 +172,42 @@ const variableDeclarator: Visitor = (node, ctx) => {
 
 /** `foo.bar = function() {}`, `exports.x = () => {}`, `Foo.prototype.bar = function() {}` */
 const assignment: Visitor = (node, ctx) => {
-  const left = field(node, 'left');
-  const right = field(node, 'right');
-  if (!left || !right || left.type !== 'member_expression') return;
+  // Inner links of a chain (a = b = function) are handled from the head.
+  if (node.parent && node.parent.type === 'assignment_expression') return;
+  const targets: Node[] = [];
+  let right: Node | null = node;
+  while (right && right.type === 'assignment_expression') {
+    const left = field(right, 'left');
+    if (left) targets.push(left);
+    right = field(right, 'right');
+  }
+  if (!right) return;
   const isFn = FUNCTION_VALUES.has(right.type);
   const isClass = right.type === 'class';
   if (!isFn && !isClass) return;
-  const prop = field(left, 'property');
-  const obj = field(left, 'object');
-  if (!prop || !obj) return;
-  let qualifier = obj.text.replace(/\.prototype$/, '');
-  const exported = /^(module\.)?exports$/.test(qualifier);
-  if (exported || qualifier === 'this' || qualifier.length > 60 || /[^\w.$]/.test(qualifier)) qualifier = '';
   const stmt = node.parent && node.parent.type === 'expression_statement' ? node.parent : node;
-  ctx.def(node, {
-    name: prop.text,
-    kind: isClass ? 'class' : qualifier ? 'method' : 'function',
-    range: stmt,
-    body: field(right, 'body'),
-    qualifier,
-    exported,
-  });
+
+  // `res.set = res.header = function header() {}`: every target names the same function.
+  // Aliases are leaf symbols; the first target owns the body scope.
+  for (let i = targets.length - 1; i >= 0; i--) {
+    const left = targets[i]!;
+    if (left.type !== 'member_expression') continue;
+    const prop = field(left, 'property');
+    const obj = field(left, 'object');
+    if (!prop || !obj) continue;
+    let qualifier = obj.text.replace(/\.prototype$/, '');
+    const exported = /^(module\.)?exports$/.test(qualifier);
+    if (exported || qualifier === 'this' || qualifier.length > 60 || /[^\w.$]/.test(qualifier)) qualifier = '';
+    ctx.def(node, {
+      name: prop.text,
+      kind: isClass ? 'class' : qualifier ? 'method' : 'function',
+      range: stmt,
+      body: field(right, 'body'),
+      qualifier,
+      exported,
+      scope: i === 0,
+    });
+  }
 };
 
 /** Object literal members with function values: `{ foo: () => {} }` */
@@ -244,6 +302,7 @@ const propertySignature: Visitor = (node, ctx) => {
   const name = field(node, 'name');
   if (!name || ctx.parentKind() !== 'interface') return;
   ctx.def(node, { name: stripQuotes(name.text), kind: 'property', body: null, scope: false });
+  ctx.typeHint(name.text, field(node, 'type')?.text);
 };
 
 const jsVisitors: Record<string, Visitor> = {
@@ -261,6 +320,8 @@ const jsVisitors: Record<string, Visitor> = {
   jsx_self_closing_element: jsxElement,
   import_statement: importStatement,
   export_statement: exportStatement,
+  decorator,
+  function_expression: functionExpression,
 };
 
 const tsVisitors: Record<string, Visitor> = {
@@ -276,6 +337,8 @@ const tsVisitors: Record<string, Visitor> = {
   enum_declaration: enumDecl,
   internal_module: namespaceDecl,
   module: namespaceDecl,
+  required_parameter: parameter,
+  optional_parameter: parameter,
 };
 delete tsVisitors.field_definition;
 delete tsVisitors.jsx_opening_element;

@@ -1,6 +1,6 @@
 import type { Language, Node, Tree } from 'web-tree-sitter';
-import type { ExCall, ExHeritage, ExImport, ExSymbol, Extraction, SymbolKind } from '../types.js';
-import type { Ctx, DefOpts, LangSpec, Visitor } from './spec.js';
+import { CONTAINER_KINDS, type ExCall, type ExHeritage, type ExImport, type ExSymbol, type Extraction, type SymbolKind } from '../types.js';
+import { typeName, type Ctx, type DefOpts, type LangSpec, type Visitor } from './spec.js';
 
 const MAX_SIGNATURE = 240;
 const MAX_DOC = 600;
@@ -103,6 +103,15 @@ export function extract(tree: Tree, source: string, compiled: CompiledSpec): Ext
   const callMap = new Map<string, ExCall>();
   const occ = new Map<string, number[]>();
   const scopes: Scope[] = [];
+  const containerDefs = new Map<string, number>();
+  /** Declared types: owner symbol index (-1 = file) -> variable/field name -> type name. */
+  const hints = new Map<number, Map<string, string>>();
+
+  function addOcc(name: string, line: number): void {
+    const lines = occ.get(name);
+    if (!lines) occ.set(name, [line]);
+    else if (lines.length < MAX_OCC_LINES && lines[lines.length - 1] !== line) lines.push(line);
+  }
 
   function currentCaller(): number {
     for (let i = scopes.length - 1; i >= 0; i--) {
@@ -161,10 +170,19 @@ export function extract(tree: Tree, source: string, compiled: CompiledSpec): Ext
 
       const prefix: string[] = [];
       let parent = -1;
-      for (const s of scopes) {
-        prefix.push(s.name);
+      let depth = scopes.length;
+      if (o.inContainer) {
+        // Attach to the nearest enclosing class-like scope instead of the method we are in.
+        depth = 0;
+        for (let i = scopes.length - 1; i >= 0; i--) {
+          const k = scopes[i]!.kind;
+          if (k !== null && CONTAINER_KINDS.has(k)) { depth = i + 1; break; }
+        }
       }
-      for (let i = scopes.length - 1; i >= 0; i--) {
+      for (let i = 0; i < depth; i++) {
+        prefix.push(scopes[i]!.name);
+      }
+      for (let i = depth - 1; i >= 0; i--) {
         if (scopes[i]!.sym >= 0) { parent = scopes[i]!.sym; break; }
       }
       if (o.qualifier) prefix.push(...o.qualifier.split(/::|\./).filter(Boolean));
@@ -202,6 +220,14 @@ export function extract(tree: Tree, source: string, compiled: CompiledSpec): Ext
         if (!doc) doc = lead.doc;
       }
 
+      if (o.inContainer) {
+        // Instance attributes are assigned many times; keep the first.
+        const key = o.kind + ' ' + qname;
+        const seen = containerDefs.get(key);
+        if (seen !== undefined) return seen;
+        containerDefs.set(key, symbols.length);
+      }
+
       const index = symbols.length;
       symbols.push({
         name,
@@ -233,6 +259,28 @@ export function extract(tree: Tree, source: string, compiled: CompiledSpec): Ext
       scopes.push({ sym: -1, name, kind: null, callScope: false });
     },
 
+    ref(name, node): void {
+      if (!name || name.length < 2 || name.length > MAX_NAME) return;
+      addOcc(name, node.startPosition.row + 1);
+    },
+
+    typeHint(name, type, onContainer = false): void {
+      if (!name || name.length > MAX_NAME) return;
+      const t = typeName(type);
+      if (!t) return;
+      // Owner: nearest enclosing function/method, else nearest container, else the file.
+      let owner = -1;
+      for (let i = scopes.length - 1; i >= 0; i--) {
+        const s = scopes[i]!;
+        if (s.sym < 0 || s.kind === null) continue;
+        const isContainer = CONTAINER_KINDS.has(s.kind);
+        if (isContainer || (!onContainer && (s.kind === 'function' || s.kind === 'method'))) { owner = s.sym; break; }
+      }
+      let map = hints.get(owner);
+      if (!map) hints.set(owner, (map = new Map()));
+      if (!map.has(name)) map.set(name, t);
+    },
+
     call(name, node, receiver = null): void {
       if (!name || name.length > MAX_NAME) return;
       if (!/^[\p{L}_$~][\p{L}\p{N}_$!?]*$/u.test(name)) return;
@@ -243,7 +291,7 @@ export function extract(tree: Tree, source: string, compiled: CompiledSpec): Ext
         existing.count++;
         return;
       }
-      callMap.set(key, { caller, name, line: node.startPosition.row + 1, receiver, count: 1 });
+      callMap.set(key, { caller, name, line: node.startPosition.row + 1, receiver, rtype: null, count: 1 });
     },
 
     imp(src, node, names = []): void {
@@ -287,10 +335,7 @@ export function extract(tree: Tree, source: string, compiled: CompiledSpec): Ext
     if (isIdent[typeId]) {
       const name = source.slice(cursor.startIndex, cursor.endIndex);
       if (name.length >= 2 && name.length <= MAX_NAME) {
-        const line = cursor.startPosition.row + 1;
-        const lines = occ.get(name);
-        if (!lines) occ.set(name, [line]);
-        else if (lines.length < MAX_OCC_LINES && lines[lines.length - 1] !== line) lines.push(line);
+        addOcc(name, cursor.startPosition.row + 1);
       }
       // Identifiers are leaves in every supported grammar, but a few grammars
       // wrap them (e.g. PHP `name`); fall through to children only if any.
@@ -327,6 +372,74 @@ export function extract(tree: Tree, source: string, compiled: CompiledSpec): Ext
     cursor.delete();
   }
 
+  // Resolve receivers to declared types: `x.foo()` with `x: Foo` in scope,
+  // `this.repo.find()` with a typed `repo` field on the enclosing class,
+  // `s.pool.Get()` where `s` is a typed receiver/parameter whose class is in this file.
+  if (hints.size) {
+    const SELF = new Set(['this', 'self', '$this', 'base', 'Self', 'super']);
+    let containerByName: Map<string, number> | null = null;
+    const containerNamed = (name: string): number | undefined => {
+      if (!containerByName) {
+        containerByName = new Map();
+        for (let i = 0; i < symbols.length; i++) {
+          const s = symbols[i]!;
+          if (CONTAINER_KINDS.has(s.kind) && !containerByName.has(s.name)) containerByName.set(s.name, i);
+        }
+      }
+      return containerByName.get(name);
+    };
+    /** Declared type of `name` visible from symbol `owner` (walks enclosing symbols, then the file). */
+    const lookup = (owner: number, name: string): string | undefined => {
+      for (let cur = owner, guard = 0; guard < 12; guard++) {
+        const hit = hints.get(cur)?.get(name);
+        if (hit) return hit;
+        if (cur < 0) return undefined;
+        cur = symbols[cur]!.parent;
+      }
+      return undefined;
+    };
+    /** Class-like symbol a method belongs to: lexical parent, or by qualified name (Go receivers, Rust impl, C++ out-of-line). */
+    const containerOf = (sym: number): number | undefined => {
+      for (let cur = sym; cur >= 0; cur = symbols[cur]!.parent) {
+        if (CONTAINER_KINDS.has(symbols[cur]!.kind)) return cur;
+      }
+      if (sym < 0) return undefined;
+      const parts = symbols[sym]!.qname.split('.');
+      for (let i = parts.length - 2; i >= 0; i--) {
+        const hit = containerNamed(parts[i]!);
+        if (hit !== undefined) return hit;
+      }
+      return undefined;
+    };
+    const fieldType = (container: number | undefined, name: string): string | undefined =>
+      container === undefined ? undefined : hints.get(container)?.get(name);
+
+    for (const call of callMap.values()) {
+      const r = call.receiver;
+      if (!r || r === '?') continue;
+      const parts = r.replace(/->|::/g, '.').split('.');
+      if (parts.length > 2 || parts.some(p => !/^[$@]?[A-Za-z_]\w*$/.test(p))) continue;
+      let t: string | undefined;
+      if (parts.length === 1) {
+        const p = parts[0]!;
+        if (SELF.has(p)) continue;
+        // Ruby @ivar is a field of the enclosing class; anything else is a local / parameter.
+        t = p.startsWith('@')
+          ? fieldType(containerOf(call.caller), p.slice(1))
+          : lookup(call.caller, p.replace(/^\$/, ''));
+      } else {
+        const [a, b] = parts as [string, string];
+        const field = b.replace(/^[$@]/, '');
+        if (SELF.has(a)) {
+          t = fieldType(containerOf(call.caller), field);
+        } else {
+          const ta = lookup(call.caller, a.replace(/^[$@]/, ''));
+          if (ta) t = fieldType(containerNamed(ta), field);
+        }
+      }
+      if (t) call.rtype = t;
+    }
+  }
   let lineCount = 1;
   for (let i = source.indexOf('\n'); i !== -1; i = source.indexOf('\n', i + 1)) lineCount++;
 

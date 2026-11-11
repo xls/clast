@@ -9,7 +9,7 @@ import { ftsWords, splitIdentifier } from '../query/words.js';
  * Bump whenever the schema or the extraction output changes shape. The index
  * is a cache: a version mismatch simply drops and rebuilds it.
  */
-export const SCHEMA_VERSION = 5;
+export const SCHEMA_VERSION = 6;
 
 /** Kinds that get a full-text row (concept search). Others are found by name. */
 const FTS_KINDS = new Set(['function', 'method', 'class', 'interface', 'struct', 'trait', 'enum', 'type', 'namespace', 'macro']);
@@ -90,6 +90,7 @@ const SCHEMA = `
     name_id INTEGER NOT NULL,
     line INTEGER NOT NULL,
     receiver TEXT,
+    rtype TEXT,
     count INTEGER NOT NULL DEFAULT 1
   );
 
@@ -234,12 +235,24 @@ export class ClastDb {
     }
   }
 
+  /** Drop all indexed data (generated docs are kept). Used by forced rebuilds. */
+  clearIndex(): void {
+    this.transaction(() => {
+      for (const table of ['symbols', 'occ', 'calls', 'imports', 'heritage', 'names', 'files']) {
+        this.db.exec(`DELETE FROM ${table}`);
+      }
+      this.db.exec(`INSERT INTO symbols_fts(symbols_fts) VALUES('delete-all')`);
+    });
+    this.nameIds.clear();
+  }
+
   endBulk(): void {
     this.db.exec(INDEXES);
-    try { this.db.exec(`INSERT INTO symbols_fts(symbols_fts) VALUES('optimize')`); } catch { /* ignore */ }
     this.db.exec('PRAGMA wal_checkpoint(TRUNCATE)');
     this.db.exec('PRAGMA wal_autocheckpoint = 1000');
     this.db.exec('PRAGMA synchronous = NORMAL');
+    // Sampled statistics are enough for the planner and far cheaper than a full ANALYZE.
+    this.db.exec('PRAGMA analysis_limit = 400');
     this.db.exec('ANALYZE');
     this.stmts.clear();
   }
@@ -390,11 +403,11 @@ export class ClastDb {
     }
 
     const insertCall = this.stmt(
-      `INSERT INTO calls (file_id, caller_id, name_id, line, receiver, count) VALUES (?, ?, ?, ?, ?, ?)`
+      `INSERT INTO calls (file_id, caller_id, name_id, line, receiver, rtype, count) VALUES (?, ?, ?, ?, ?, ?, ?)`
     );
     for (const c of ex.calls) {
       insertCall.run(
-        fileId, c.caller >= 0 ? ids[c.caller] ?? null : null, this.nameId(c.name, true)!, c.line, c.receiver, c.count
+        fileId, c.caller >= 0 ? ids[c.caller] ?? null : null, this.nameId(c.name, true)!, c.line, c.receiver, c.rtype, c.count
       );
     }
 
