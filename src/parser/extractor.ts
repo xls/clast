@@ -14,6 +14,8 @@ export interface CompiledSpec {
   visitors: Array<Visitor | undefined>;
   isIdent: Uint8Array;
   isComment: Uint8Array;
+  /** Node types skipped between a doc comment and its item (attributes). */
+  isDocSkip: Uint8Array;
   /** Visitor / identifier node types that do not exist in the grammar. */
   unknownTypes: string[];
 }
@@ -50,7 +52,14 @@ export function compileSpec(spec: LangSpec, language: Language): CompiledSpec {
     for (const id of idsByName.get(type) ?? []) isComment[id] = 1;
   }
 
-  return { spec, language, visitors, isIdent, isComment, unknownTypes };
+  const isDocSkip = new Uint8Array(count);
+  for (const type of spec.docSkip ?? []) {
+    const ids = idsByName.get(type);
+    if (!ids) { unknownTypes.push(type); continue; }
+    for (const id of ids) isDocSkip[id] = 1;
+  }
+
+  return { spec, language, visitors, isIdent, isComment, isDocSkip, unknownTypes };
 }
 
 interface Scope {
@@ -86,7 +95,7 @@ function squash(s: string, max: number): string {
  * identifier occurrences according to the language spec.
  */
 export function extract(tree: Tree, source: string, compiled: CompiledSpec): Extraction {
-  const { visitors, isIdent, isComment } = compiled;
+  const { visitors, isIdent, isComment, isDocSkip } = compiled;
 
   const symbols: ExSymbol[] = [];
   const imports: ExImport[] = [];
@@ -108,15 +117,31 @@ export function extract(tree: Tree, source: string, compiled: CompiledSpec): Ext
     let line = 0;
     let nextRow = range.startPosition.row;
     let prev = range.previousSibling;
-    while (prev && isComment[prev.typeId]) {
+    if (!prev) {
+      // First node of a wrapper (e.g. Ruby body_statement): the comment sits before the wrapper.
+      const p = range.parent;
+      if (p && p.startIndex === range.startIndex) prev = p.previousSibling;
+    }
+    while (prev) {
+      if (isDocSkip[prev.typeId]) {
+        // Attributes / annotations between the doc comment and the item.
+        nextRow = prev.startPosition.row;
+        prev = prev.previousSibling;
+        continue;
+      }
+      if (!isComment[prev.typeId]) break;
       if (prev.endPosition.row < nextRow - 1) break;
       // A comment trailing a statement on the same line documents that statement.
+      // (Preprocessor nodes end at column 0 of the next line: not trailing.)
       const before = prev.previousSibling;
-      if (before && before.endPosition.row === prev.startPosition.row && !isComment[before.typeId]) break;
+      if (
+        before && !isComment[before.typeId] &&
+        before.endPosition.row === prev.startPosition.row && before.endPosition.column > 0
+      ) break;
       parts.unshift(prev.text);
       nextRow = prev.startPosition.row;
       line = nextRow + 1;
-      if (parts.length >= 60) break;
+      if (parts.length >= 200) break;
       prev = prev.previousSibling;
     }
     if (parts.length === 0) return { doc: '', line: 0 };
@@ -147,7 +172,7 @@ export function extract(tree: Tree, source: string, compiled: CompiledSpec): Ext
 
       let signature: string;
       if (o.sig !== undefined) {
-        signature = squash(o.sig, MAX_SIGNATURE);
+        signature = squash(o.sig, MAX_SIGNATURE).replace(/\s*\{$/, '');
       } else {
         const body = o.body === undefined ? node.childForFieldName('body') : o.body;
         const start = range.startIndex;
@@ -156,9 +181,12 @@ export function extract(tree: Tree, source: string, compiled: CompiledSpec): Ext
           end = body.startIndex;
         } else {
           end = range.endIndex;
-          const nl = source.indexOf('\n', start);
-          // Without a body, keep at most a few lines.
-          if (nl !== -1 && end - start > 400) end = Math.min(end, start + 400);
+          // Without a body: short declarations in full, long ones (object
+          // literals, tables) only up to the end of their first line.
+          if (end - start > 200) {
+            const nl = source.indexOf('\n', start);
+            end = nl !== -1 && nl < end ? nl : Math.min(end, start + 200);
+          }
         }
         signature = squash(source.slice(start, end), MAX_SIGNATURE).replace(/\s*[{=]$/, '');
       }
@@ -182,13 +210,21 @@ export function extract(tree: Tree, source: string, compiled: CompiledSpec): Ext
         signature,
         doc,
         startLine: range.startPosition.row + 1,
-        endLine: range.endPosition.row + 1,
+        // Nodes that swallow the trailing newline (preprocessor) end at column 0 of the next row.
+        endLine:
+          range.endPosition.column === 0 && range.endPosition.row > range.startPosition.row
+            ? range.endPosition.row
+            : range.endPosition.row + 1,
         startCol: range.startPosition.column,
         docLine,
         parent,
         exported: o.exported ?? false,
       });
-      if (o.scope !== false) scopes.push({ sym: index, name, kind: o.kind, callScope: true });
+      if (o.scope !== false) {
+        // The qualifier is part of the scope so nested definitions inherit it.
+        const scopeName = o.qualifier ? o.qualifier.split(/::|\./).filter(Boolean).concat(name).join('.') : name;
+        scopes.push({ sym: index, name: scopeName, kind: o.kind, callScope: true });
+      }
       return index;
     },
 
@@ -201,11 +237,10 @@ export function extract(tree: Tree, source: string, compiled: CompiledSpec): Ext
       if (!name || name.length > MAX_NAME) return;
       if (!/^[\p{L}_$~][\p{L}\p{N}_$!?]*$/u.test(name)) return;
       const caller = currentCaller();
-      const key = caller + '\0' + name;
+      const key = caller + '\0' + name + '\0' + (receiver ?? '');
       const existing = callMap.get(key);
       if (existing) {
         existing.count++;
-        if (!existing.receiver && receiver) existing.receiver = receiver;
         return;
       }
       callMap.set(key, { caller, name, line: node.startPosition.row + 1, receiver, count: 1 });

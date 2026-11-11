@@ -20,6 +20,19 @@ function docstring(node: Node): string | null {
     .trim();
 }
 
+/** Signature: decorators + header up to and including the colon (no trailing comments). */
+function header(node: Node, ctx: { src: string }): string | undefined {
+  const start = outer(node).startIndex;
+  const body = field(node, 'body');
+  if (!body) return undefined;
+  let end = body.startIndex;
+  for (let i = node.childCount - 1; i >= 0; i--) {
+    const c = node.child(i);
+    if (c && c.type === ':' && c.endIndex <= body.startIndex) { end = c.endIndex; break; }
+  }
+  return ctx.src.slice(start, end);
+}
+
 function outer(node: Node): Node {
   return node.parent && node.parent.type === 'decorated_definition' ? node.parent : node;
 }
@@ -32,6 +45,7 @@ const functionDef: Visitor = (node, ctx) => {
     name: name.text,
     kind: pk === 'class' ? 'method' : 'function',
     range: outer(node),
+    sig: header(node, ctx),
     doc: docstring(node),
     exported: !name.text.startsWith('_') && ctx.depth() <= 1,
   });
@@ -44,6 +58,7 @@ const classDef: Visitor = (node, ctx) => {
     name: name.text,
     kind: 'class',
     range: outer(node),
+    sig: header(node, ctx),
     doc: docstring(node),
     exported: !name.text.startsWith('_') && ctx.depth() === 0,
   });

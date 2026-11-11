@@ -76,6 +76,12 @@ export interface LangSpec {
   identifiers: string[];
   /** Node types whose text is a comment (for doc extraction). */
   comments?: string[];
+  /**
+   * Node types that may sit between a doc comment and the item it documents
+   * (Rust attributes, PHP attributes, ...). They are skipped when looking for
+   * the leading comment.
+   */
+  docSkip?: string[];
   /** Visitors keyed by tree-sitter node type. */
   visit: Record<string, Visitor>;
   /**

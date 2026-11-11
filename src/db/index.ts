@@ -9,7 +9,7 @@ import { ftsWords, splitIdentifier } from '../query/words.js';
  * Bump whenever the schema or the extraction output changes shape. The index
  * is a cache: a version mismatch simply drops and rebuilds it.
  */
-export const SCHEMA_VERSION = 4;
+export const SCHEMA_VERSION = 5;
 
 /** Kinds that get a full-text row (concept search). Others are found by name. */
 const FTS_KINDS = new Set(['function', 'method', 'class', 'interface', 'struct', 'trait', 'enum', 'type', 'namespace', 'macro']);
@@ -127,8 +127,8 @@ const INDEXES = `
   CREATE INDEX IF NOT EXISTS idx_calls_name ON calls(name_id);
   CREATE INDEX IF NOT EXISTS idx_calls_caller ON calls(caller_id);
   CREATE INDEX IF NOT EXISTS idx_calls_file ON calls(file_id);
-  CREATE INDEX IF NOT EXISTS idx_imports_file ON imports(file_id);
-  CREATE INDEX IF NOT EXISTS idx_imports_resolved ON imports(resolved_id) WHERE resolved_id IS NOT NULL;
+  CREATE INDEX IF NOT EXISTS idx_imports_file ON imports(file_id, resolved_id);
+  CREATE INDEX IF NOT EXISTS idx_imports_resolved ON imports(resolved_id, file_id);
   CREATE INDEX IF NOT EXISTS idx_heritage_name ON heritage(name);
   CREATE INDEX IF NOT EXISTS idx_heritage_symbol ON heritage(symbol_id);
   CREATE INDEX IF NOT EXISTS idx_heritage_file ON heritage(file_id);

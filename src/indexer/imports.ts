@@ -127,7 +127,12 @@ function resolveOne(row: ImportRow, index: PathIndex): number | undefined {
       return index.lookup(posix.normalize(posix.join(base, rest || '.')));
     }
     const p = src.replace(/\./g, '/');
-    return index.lookup(p) ?? index.lookup(posix.join(dir, p)) ?? index.suffix(p, row.path);
+    const direct = index.lookup(p) ?? index.lookup('src/' + p) ?? index.lookup('lib/' + p);
+    if (direct !== undefined) return direct;
+    // A bare top-level module (`import datetime`) that is not at a source
+    // root is almost always the standard library or a dependency.
+    if (!p.includes('/')) return undefined;
+    return index.suffix(p, row.path);
   }
 
   if (row.lang === 'c' || row.lang === 'cpp' || row.lang === 'objc') {

@@ -1,18 +1,18 @@
 {
   "name": "clast-ai",
-  "version": "0.1.2",
+  "version": "0.2.0",
   "description": "AST-based code intelligence plugin for Claude Code: search symbols, trace call graphs, generate comments, and provide structured context for any repository",
-  "main": "dist/server/index.js",
+  "main": "dist/engine.js",
   "bin": {
-    "clast-ai": "dist/server/index.js"
+    "clast-ai": "dist/cli.js"
   },
   "type": "module",
   "scripts": {
     "build": "tsc -p tsconfig.json",
-    "start": "node dist/server/index.js",
-    "dev": "tsx src/server/index.ts",
+    "start": "node dist/cli.js",
+    "dev": "tsx src/cli.ts",
     "test": "node --import tsx --test \"test/**/*.test.ts\"",
-    "clean": "rm -rf dist",
+    "clean": "node -e \"require('node:fs').rmSync('dist',{recursive:true,force:true})\"",
     "prepare": "npm run build",
     "prepublishOnly": "npm run build"
   },
@@ -43,7 +43,7 @@
     "LICENSE"
   ],
   "engines": {
-    "node": ">=18.0.0"
+    "node": ">=22.22.0"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.32.2",
