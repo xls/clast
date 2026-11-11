@@ -938,6 +938,12 @@ export class Resolver {
           const po = this.parentOf(other);
           const ps = this.parentOf(sym);
           if (po && ps && po.kind !== 'interface' && ps.kind !== 'interface' && po.kind !== 'trait' && ps.kind !== 'trait') continue;
+          // ... and, where files import what they use, only if one of the two files imports the other
+          // (`use Contracts\Events\Dispatcher as DispatcherContract`): Bus\Dispatcher is someone else's contract.
+          if (
+            SINGLE_FILE_CLASS.has(langFamily(sym.lang)) &&
+            !this.importsOf(sym.file_id).has(other.file_id) && !this.importsOf(other.file_id).has(sym.file_id)
+          ) continue;
         }
         fam.add(other.id);
       }

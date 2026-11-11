@@ -171,6 +171,7 @@ export function searchSymbols(db: ClastDb, query: string, opts: SearchOptions = 
   const ref = parseSymbolRef(q);
   const name = isMultiWord ? q : ref.name;
   const nameLc = name.toLowerCase();
+  const qLc = q.toLowerCase().replace(/[.?!]+$/, '');
   const wantTests = /test|spec|mock|fixture|bench|example/i.test(q) || (opts.path ? isTestPath(opts.path) : false);
 
   if (!isMultiWord && name) {
@@ -273,7 +274,10 @@ export function searchSymbols(db: ClastDb, query: string, opts: SearchOptions = 
         else if (hay.some(w => wordMatches(w, t))) anywhere++;
       }
       const rank = (s as SymbolRow & { rank: number }).rank;
+      // The description is (nearly) the doc comment itself: "convert a string to snake case".
+      const phrase = isMultiWord && s.doc && s.doc.toLowerCase().includes(qLc) ? 16 : 0;
       return (
+        phrase +
         (inName / terms.length) * 28 +
         (inContainer / terms.length) * 9 +
         (anywhere / terms.length) * 14 +

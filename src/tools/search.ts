@@ -702,7 +702,9 @@ export async function hierarchy(ctx: ToolContext, args: HierarchyArgs): Promise<
   const types = matches.filter(m => CONTAINER_KINDS.has(m.kind) || m.kind === 'type');
   if (types.length && parseSymbolRef(args.name).container.length === 0) matches = types;
   // A C# static class has no place in a hierarchy: prefer a same-named class that can.
-  const isStatic = (s: SymbolRow): boolean => s.lang === 'csharp' && /\bstatic\s+(partial\s+)?class\b/.test(s.signature);
+  // (Likewise a sealed class cannot have subtypes: `ActionResult<T>` vs the base class `ActionResult`.)
+  const isStatic = (s: SymbolRow): boolean =>
+    s.lang === 'csharp' && /\b(static|sealed)\s+(partial\s+)?class\b/.test(s.signature);
   if (matches.length > 1 && isStatic(matches[0]!)) {
     const other = matches.findIndex(m => !isStatic(m));
     if (other > 0) matches = [matches[other]!, ...matches.filter((_, i) => i !== other)];

@@ -138,7 +138,8 @@ export function directSubtypes(db: ClastDb, resolver: Resolver, sym: SymbolRow):
         if (!mine || top.score - mine.score > 10) continue;
         certain = false;
       } else {
-        certain = res.confident;
+        // C#: the arity already singled out one of the same-named types.
+        certain = res.confident || (symArity !== -1 && cands.length === 1);
       }
     }
     seen.add(row.id);
@@ -176,7 +177,9 @@ export function directSupertypes(db: ClastDb, resolver: Resolver, sym: SymbolRow
     if (seen.has(row.name)) continue;
     seen.add(row.name);
     const isType = (s: SymbolRow): boolean =>
-      (CONTAINER_KINDS.has(s.kind) || s.kind === 'type') && s.id !== sym.id && !isStaticClass(s);
+      (CONTAINER_KINDS.has(s.kind) || s.kind === 'type') && s.id !== sym.id && !isStaticClass(s) &&
+      // Rust associated types (`type Future = ...` inside an impl) are not the trait `Future`.
+      !(s.lang === 'rust' && s.kind === 'type' && s.qname !== s.name);
     if (resolver.externalSupertype(row.name, row.qualifier, row.file_id, sym.lang)) {
       out.push({ name: row.name, kind: row.kind, sym: null });
       continue;
