@@ -42,6 +42,7 @@ export async function search(ctx: ToolContext, args: SearchArgs): Promise<string
       const tags: string[] = [];
       if (h.refs > 1 && h.unique) tags.push(`refs:${h.refs}`);
       if (h.match !== 'exact') tags.push(h.match);
+      if (h.overloads) tags.push(`+${plural(h.overloads, 'overload')}`);
       out.push(`${symLine(s)}${tags.length ? '  [' + tags.join(' ') + ']' : ''}`);
       if (s.signature && s.signature !== s.name) out.push(`  ${firstLine(s.signature, 180)}`);
       if (s.doc) out.push(`  // ${firstLine(s.doc, 140)}`);

@@ -54,12 +54,23 @@ const STOP = new Set([
   'with', 'as', 'by', 'at', 'from', 'how', 'what', 'where', 'which', 'does', 'do', 'be', 'when',
 ]);
 
+/** Irregular verb forms people use in descriptions, mapped to the form code is named with. */
+const IRREGULAR: Record<string, string> = {
+  written: 'write', wrote: 'write', sent: 'send', built: 'build', ran: 'run', made: 'make', took: 'take',
+  taken: 'take', thrown: 'throw', threw: 'throw', chosen: 'choose', chose: 'choose', held: 'hold', kept: 'keep',
+  began: 'begin', begun: 'begin', broken: 'break', broke: 'break', drawn: 'draw', drew: 'draw', hidden: 'hide',
+  shown: 'show', read: 'read', sought: 'seek', caught: 'catch', bought: 'buy', paid: 'pay', said: 'say',
+};
+
 export function queryTerms(query: string): string[] {
   const terms: string[] = [];
   const seen = new Set<string>();
+  const multi = /\s/.test(query.trim());
   for (const raw of query.split(/[\s,;:(){}\[\]<>"'`=+*/\\|&!?#@^~%-]+/)) {
     if (!raw) continue;
-    for (const w of splitIdentifier(raw)) {
+    for (let w of splitIdentifier(raw)) {
+      // Only in free text: `sent` inside an identifier (`bytesSent`) is a name, not a tense.
+      if (multi && raw.toLowerCase() === w && IRREGULAR[w]) w = IRREGULAR[w]!;
       if (w.length < 2 || STOP.has(w) || seen.has(w)) continue;
       seen.add(w);
       terms.push(w);
