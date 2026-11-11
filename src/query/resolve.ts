@@ -1313,8 +1313,10 @@ export class Resolver {
     const second = scored.find(
       (c, i) =>
         i > 0 && !family!.has(c.sym.id) &&
-        // Build variants of one definition (#[cfg], foo_linux.go / foo_windows.go, #ifdef) are the same answer.
-        !(c.sym.qname === top.sym.qname && c.sym.kind === top.sym.kind && top.score - c.score < 3)
+        // Copies of one definition are the same answer: build variants (#[cfg], foo_linux.go /
+        // foo_windows.go, #ifdef) score alike, and for vendored forks the winner is simply the copy
+        // this file can see. Neither makes the call ambiguous.
+        !(c.sym.qname === top.sym.qname && c.sym.kind === top.sym.kind)
     );
     let confident = top.score >= CONFIDENT_SCORE && (!second || top.score - second.score >= CONFIDENT_GAP);
     // A bare call to a distinctively named function or class that the project defines exactly once

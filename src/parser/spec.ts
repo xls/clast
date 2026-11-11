@@ -90,6 +90,12 @@ export interface Ctx {
    * another local name are then linked to X.
    */
   exportDefault(name: string | null | undefined): void;
+  /**
+   * Declared type of a variable / parameter visible at the current node
+   * (as recorded by typeHint), or null. Lets a spec propagate types through
+   * simple assignments such as `this.repo = repo`.
+   */
+  typeOf(name: string | null | undefined): string | null;
   /** Kind of the innermost enclosing symbol, or null at file level. */
   parentKind(): SymbolKind | null;
   /** True if any enclosing symbol is a function or method. */

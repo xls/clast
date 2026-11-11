@@ -178,19 +178,24 @@ function createdClass(node: Node): string | null {
   return null;
 }
 
-/** `$x = new Foo(...)` -> local hint; `$this->x = new Foo(...)` -> field hint. */
+/**
+ * `$x = new Foo(...)` -> local hint; `$this->x = new Foo(...)` -> field hint;
+ * `$this->x = $x` -> the field takes the declared type of the parameter `$x`.
+ */
 const assignmentExpr: Visitor = (node, ctx) => {
   const right = field(node, 'right');
-  if (!right || right.type !== 'object_creation_expression') return;
+  if (!right) return;
+  const isNew = right.type === 'object_creation_expression';
+  if (!isNew && right.type !== 'variable_name') return;
   const left = field(node, 'left');
   if (!left) return;
   if (left.type === 'variable_name') {
-    ctx.typeHint(varName(left), createdClass(right));
+    if (isNew) ctx.typeHint(varName(left), createdClass(right));
   } else if (left.type === 'member_access_expression') {
     const obj = field(left, 'object');
     const name = field(left, 'name');
     if (obj && name && obj.type === 'variable_name' && name.type === 'name' && obj.text === '$this') {
-      ctx.typeHint(name.text, createdClass(right), true);
+      ctx.typeHint(name.text, isNew ? createdClass(right) : ctx.typeOf(varName(right)), true);
     }
   }
 };

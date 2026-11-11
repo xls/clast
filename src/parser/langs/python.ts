@@ -102,7 +102,9 @@ const assignment: Visitor = (node, ctx) => {
     const obj = field(left, 'object');
     const attr = field(left, 'attribute');
     if (!obj || !attr || obj.text !== 'self' || !ctx.inCallable()) return;
-    ctx.typeHint(attr.text, assignedType(node), true);
+    // self.repo = Repo(...) or self.repo = repo (a typed parameter)
+    const right = field(node, 'right');
+    ctx.typeHint(attr.text, assignedType(node) ?? (right?.type === 'identifier' ? ctx.typeOf(right.text) : null), true);
     if (stmt && stmt.type === 'expression_statement') {
       ctx.def(node, {
         name: attr.text, kind: 'field', range: stmt, body: null, scope: false, inContainer: true,

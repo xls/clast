@@ -347,6 +347,18 @@ export function extract(tree: Tree, source: string, compiled: CompiledSpec): Ext
       if (!map.has(name)) map.set(name, t);
     },
 
+    typeOf(name): string | null {
+      if (!name) return null;
+      for (let i = scopes.length - 1; i >= 0; i--) {
+        const s = scopes[i]!;
+        // Class-level hints are fields (reached through this / self), not variables in scope.
+        if (s.sym < 0 || (s.kind !== 'function' && s.kind !== 'method')) continue;
+        const hit = hints.get(s.sym)?.get(name);
+        if (hit) return hit;
+      }
+      return hints.get(-1)?.get(name) ?? null;
+    },
+
     call(name, node, receiver = null, receiverType = null): void {
       if (!name || name.length > MAX_NAME) return;
       if (!/^[\p{L}_$~][\p{L}\p{N}_$!?]*$/u.test(name)) return;

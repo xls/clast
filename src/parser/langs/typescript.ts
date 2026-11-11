@@ -206,6 +206,16 @@ const variableDeclarator: Visitor = (node, ctx) => {
 
 /** `foo.bar = function() {}`, `exports.x = () => {}`, `Foo.prototype.bar = function() {}` */
 const assignment: Visitor = (node, ctx) => {
+  // `this.repo = repo` / `this.cache = new Cache()`: the field takes the type of what is assigned.
+  const target = field(node, 'left');
+  if (target && target.type === 'member_expression' && field(target, 'object')?.type === 'this') {
+    const prop = field(target, 'property');
+    const value = field(node, 'right');
+    if (prop && value) {
+      if (value.type === 'new_expression') ctx.typeHint(prop.text, field(value, 'constructor')?.text, true);
+      else if (value.type === 'identifier') ctx.typeHint(prop.text, ctx.typeOf(value.text), true);
+    }
+  }
   // Inner links of a chain (a = b = function) are handled from the head.
   if (node.parent && node.parent.type === 'assignment_expression') return;
   const targets: Node[] = [];
