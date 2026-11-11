@@ -1338,7 +1338,10 @@ export class Resolver {
     if (recv === '?') {
       if (!isMember) return null;
       const e = this.memberEvidence(name, cand, container, site, null);
-      return e >= 15 ? 10 + e + tie : null;
+      // Nothing is known about the receiver: with several definitions of the name, being in the same
+      // file (or imported) makes one of them likely, not certain.
+      const cap = this.familyCount(name) === 1 ? 90 : 50;
+      return e >= 15 ? Math.min(cap, 10 + e) + tie : null;
     }
 
     // --- named receiver: obj.foo(), Foo.bar(), pkg.Func(), ns::func() ---------
