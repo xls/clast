@@ -1247,6 +1247,10 @@ export class Resolver {
       add(idx.byContainer.get(type));
       const rel = this.relatedTo(type);
       for (const a of rel.anc) add(idx.byContainer.get(a));
+      // The type (or a supertype) declares the member: overrides further down are the same
+      // family and always score lower, so a hub interface (`IDisposable.dispose` with thousands
+      // of implementers) does not need them scored at every call site.
+      if (out.size > 0 && rel.desc.size > 50) return;
       if (rel.desc.size < idx.containers.length) {
         for (const d of rel.desc) add(idx.byContainer.get(d));
       } else {
@@ -1488,34 +1492,50 @@ export class Resolver {
   }
 }
 
-const looseCache = new Map<string, boolean>();
+interface LooseName {
+  /** Lowercase, without leading / trailing underscores. */
+  lc: string;
+  words: string[];
+  initials: string;
+}
+
+const looseNames = new Map<string, LooseName>();
+
+/** Per-name preparation for looselyNamed (the pair test itself runs millions of times on crowded names). */
+function looseName(name: string): LooseName {
+  let info = looseNames.get(name);
+  if (!info) {
+    const words = splitIdentifier(name);
+    info = { lc: name.toLowerCase().replace(/^_+|_+$/g, ''), words, initials: words.map(w => w[0]).join('') };
+    if (looseNames.size > 300_000) looseNames.clear();
+    looseNames.set(name, info);
+  }
+  return info;
+}
 
 /** `db` ~ `Database`, `userRepo` ~ `UserRepository`, `parser` ~ `SourceParser`. */
 function looselyNamed(receiver: string, container: string): boolean {
-  const key = receiver + '\0' + container;
-  let hit = looseCache.get(key);
-  if (hit === undefined) {
-    hit = looselyNamedUncached(receiver, container);
-    if (looseCache.size > 200_000) looseCache.clear();
-    looseCache.set(key, hit);
-  }
-  return hit;
-}
-
-function looselyNamedUncached(receiver: string, container: string): boolean {
-  const r = receiver.toLowerCase().replace(/^_+|_+$/g, '');
-  const c = container.toLowerCase();
+  const ri = looseName(receiver);
+  const r = ri.lc;
   if (r.length < 2) return false;
+  const ci = looseName(container);
+  const c = container.length === ci.lc.length ? ci.lc : container.toLowerCase();
   if (r === c) return true;
   if (r.length >= 3 && (c.includes(r) || r.includes(c))) return true;
-  const rw = splitIdentifier(receiver);
-  const cw = splitIdentifier(container);
+  const rw = ri.words;
+  const cw = ci.words;
   if (rw.length === 0 || cw.length === 0) return false;
   // Every receiver word is a prefix of some container word (repo -> repository).
-  if (rw.every(w => w.length >= 2 && cw.some(x => x.startsWith(w)))) return true;
+  let all = true;
+  for (const w of rw) {
+    if (w.length < 2) { all = false; break; }
+    let found = false;
+    for (const x of cw) if (x.startsWith(w)) { found = true; break; }
+    if (!found) { all = false; break; }
+  }
+  if (all) return true;
   // Initialism: `sp` -> SourceParser.
-  if (r.length >= 2 && r === cw.map(w => w[0]).join('')) return true;
-  return false;
+  return r === ci.initials;
 }
 
 /** Points for sharing leading namespace segments: `A.B.x` and `A.B.y` -> 12, `A.x` and `A.y` -> 6. */
