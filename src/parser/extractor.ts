@@ -333,7 +333,7 @@ export function extract(tree: Tree, source: string, compiled: CompiledSpec): Ext
 
     typeHint(name, type, onContainer = false): void {
       if (!name || name.length > MAX_NAME) return;
-      const t = typeName(type, compiled.spec.lowercaseTypes === true);
+      const t = typeName(type, compiled.spec.lowercaseTypes === true, compiled.spec.packageTypes === true);
       if (!t) return;
       // Owner: nearest enclosing function/method, else nearest container, else the file.
       let owner = -1;
@@ -372,7 +372,9 @@ export function extract(tree: Tree, source: string, compiled: CompiledSpec): Ext
       if (rec) {
         rec.count++;
       } else {
-        const rtype = receiverType ? typeName(receiverType, compiled.spec.lowercaseTypes === true) : null;
+        const rtype = receiverType
+          ? typeName(receiverType, compiled.spec.lowercaseTypes === true, compiled.spec.packageTypes === true)
+          : null;
         // A chained call spanning several lines starts at the head of the chain; report the
         // line where this call's own argument list opens (`->then(`), which is where a reader looks.
         let row = node.startPosition.row;

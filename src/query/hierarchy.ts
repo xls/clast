@@ -19,6 +19,29 @@ export interface SuperEdge {
   sym: SymbolRow | null;
 }
 
+const RUST_RELATIVE = new Set(['crate', 'self', 'super', 'Self']);
+
+/**
+ * Can `qualifier.Name` / `qualifier::Name` written in Go or Rust mean the type `cand`?
+ * The qualifier is a package or module, which shows in the path of the defining file
+ * (directory or file name). Other languages: always true. `strict` rejects relative paths too.
+ */
+function qualifierFits(qualifier: string, cand: SymbolRow, lang: string, strict = false): boolean {
+  if (lang !== 'go' && lang !== 'rust') return true;
+  const q = qualifier.split(/::|\./).filter(Boolean);
+  const last = q[q.length - 1];
+  if (!last) return true;
+  if (lang === 'rust' && RUST_RELATIVE.has(last)) return !strict;
+  const segs = cand.path.toLowerCase().split('/');
+  const want = last.toLowerCase().replace(/_/g, '-');
+  for (let i = 0; i < segs.length; i++) {
+    const seg = (i === segs.length - 1 ? segs[i]!.replace(/\.[a-z]+$/, '') : segs[i]!).replace(/_/g, '-');
+    if (seg === want) return true;
+  }
+  // An enclosing module / type of the same name inside the file.
+  return cand.qname.split('.').slice(0, -1).some(p => p.toLowerCase() === last.toLowerCase());
+}
+
 /**
  * Lexical scope lookup of a type name written inside `from`: `Enum` inside
  * `ActiveRecord.Base` is `ActiveRecord.Base.Enum`, else `ActiveRecord.Enum`,
@@ -71,6 +94,8 @@ export function directSubtypes(db: ClastDb, resolver: Resolver, sym: SymbolRow):
     if (lex) {
       // Ruby constant lookup is lexical: the name means the nearest enclosing definition.
       if (lex.id !== sym.id && lex.qname !== sym.qname) continue;
+    } else if (row.hqual && !qualifierFits(row.hqual, sym, row.lang)) {
+      continue; // Go / Rust: qualified by another package or module
     } else if (row.hqual && symContainer) {
       // Written as Outer::Name / Outer.Name: the qualifier must be our enclosing type or namespace.
       if (row.hqual !== symContainer) continue;
@@ -138,8 +163,14 @@ export function directSupertypes(db: ClastDb, resolver: Resolver, sym: SymbolRow
         res = resolver.resolve(
           row.name, { fileId: sym.file_id, path: sym.path, lang: sym.lang, receiver: null, caller: sym }, 0, true
         );
-        target = res.candidates.find(c => isType(c.sym));
+        target = res.candidates.find(c => isType(c.sym) && qualifierFits(row.qualifier!, c.sym, sym.lang));
       }
+    }
+    // Go / Rust: `page.Provider`, `futures_io::AsyncRead` name a package / module. A same-named type
+    // that lives somewhere else is a different type.
+    if (target && row.qualifier && !qualifierFits(row.qualifier, target.sym, sym.lang)) {
+      const better = db.symbolsByName(row.name).find(s => isType(s) && s.lang === sym.lang && qualifierFits(row.qualifier!, s, sym.lang, true));
+      target = better ? { sym: better, score: 90 } : undefined;
     }
     // PHP traits are recorded as 'implements'; say what they are.
     const kind = target && target.sym.kind === 'trait' && sym.lang === 'php' ? 'uses' : row.kind;

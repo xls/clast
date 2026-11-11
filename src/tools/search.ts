@@ -464,7 +464,10 @@ function disambiguate(
   const chosen = matches[0]!;
   const all = otherDefinitions(chosen, matches, ctx.resolver.familyOf(chosen)).others;
   // Verbatim copies of the same definition (vendored forks, generated duplicates) are not real alternatives.
-  const copies = all.filter(o => o.qname === chosen.qname && o.kind === chosen.kind && o.signature === chosen.signature);
+  const span = chosen.end_line - chosen.start_line;
+  const copies = all.filter(
+    o => o.qname === chosen.qname && o.kind === chosen.kind && o.signature === chosen.signature && o.end_line - o.start_line === span
+  );
   const others = all.filter(o => !copies.includes(o));
   if (others.length === 0) {
     return {

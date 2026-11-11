@@ -314,11 +314,11 @@ func use() { global.Serve() }
       assert.ok(c, `call ${name} not found`);
       return c.rtype;
     };
-    assert.equal(rtype('Get'), 'Pool');
+    assert.equal(rtype('Get'), 'sync.Pool', 'package-qualified types keep their package');
     assert.equal(rtype('find'), 'MethodTrees');
     assert.equal(rtype('Use'), 'RouterGroup');
     assert.equal(rtype('String'), null);
-    assert.equal(rtype('Write'), 'ResponseWriter');
+    assert.equal(rtype('Write'), 'http.ResponseWriter');
     assert.equal(rtype('Parse'), 'Request');
     assert.equal(rtype('Done'), 'Result');
     assert.equal(rtype('each'), null, 'variadic parameters are slices');
@@ -327,7 +327,7 @@ func use() { global.Serve() }
     assert.equal(rtype('Title'), 'Page');
     assert.equal(rtype('Next'), 'Node');
     assert.equal(rtype('Do'), 'Client');
-    assert.equal(rtype('Dial'), 'Dialer');
+    assert.equal(rtype('Dial'), 'pkg.Dialer');
     assert.equal(rtype('Go'), null, 'arbitrary calls are not guessed');
     assert.equal(rtype('Run'), 'Query');
     assert.equal(rtype('x'), null, 'interface method parameters are not hints');

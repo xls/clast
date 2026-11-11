@@ -319,6 +319,8 @@ export interface CallSite {
   via?: number | null;
   /** Symbol the call is made from, if known. */
   caller?: SymbolRow | null;
+  /** Go: directory of the package the receiver type is qualified with (set by the resolver). */
+  rtypeDir?: string;
 }
 
 export interface Resolution {
@@ -398,6 +400,89 @@ function dirOf(path: string): string {
  * instance whenever the index changes.
  */
 export class Resolver {
+  private goPackages: { dirs: Set<string>; prefixes: Set<string>; bySource: Map<string, string | null> } | null = null;
+  private goImportCache = new Map<number, Map<string, string | null>>();
+
+  /** Go: project directory an import path names, or null when it is outside the project. */
+  private goPackageDir(source: string): string | null {
+    let g = this.goPackages;
+    if (!g) {
+      g = this.goPackages = { dirs: new Set(), prefixes: new Set(), bySource: new Map() };
+      for (const f of this.db.all<{ path: string }>(`SELECT path FROM files WHERE lang = 'go'`)) g.dirs.add(dirOf(f.path));
+      // The module path is not stored: learn it as the prefix that most imports of project
+      // directories share (`github.com/gohugoio/hugo` + `/deps`).
+      const counts = new Map<string, number>();
+      const sources = this.db.all<{ source: string; n: number }>(
+        `SELECT i.source, COUNT(*) AS n FROM imports i JOIN files f ON f.id = i.file_id WHERE f.lang = 'go' GROUP BY i.source`
+      );
+      for (const s of sources) {
+        const parts = s.source.split('/');
+        for (let k = 1; k < parts.length; k++) {
+          if (g.dirs.has(parts.slice(k).join('/'))) {
+            const prefix = parts.slice(0, k).join('/');
+            counts.set(prefix, (counts.get(prefix) ?? 0) + s.n);
+            break;
+          }
+        }
+      }
+      let top = 0;
+      for (const n of counts.values()) top = Math.max(top, n);
+      for (const [prefix, n] of counts) if (n >= Math.max(2, top * 0.05)) g.prefixes.add(prefix);
+    }
+    let hit = g.bySource.get(source);
+    if (hit !== undefined) return hit;
+    hit = null;
+    if (g.prefixes.has(source) && g.dirs.has('')) hit = '';
+    else {
+      const parts = source.split('/');
+      for (let k = 1; k < parts.length; k++) {
+        if (g.prefixes.has(parts.slice(0, k).join('/')) && g.dirs.has(parts.slice(k).join('/'))) {
+          hit = parts.slice(k).join('/');
+          break;
+        }
+      }
+    }
+    g.bySource.set(source, hit);
+    return hit;
+  }
+
+  /** Go: package names a file imports -> project directory (null = external package). */
+  private goImports(fileId: number): Map<string, string | null> {
+    let map = this.goImportCache.get(fileId);
+    if (!map) {
+      map = new Map();
+      for (const r of this.db.all<{ source: string; names: string }>(
+        `SELECT source, names FROM imports INDEXED BY idx_imports_file WHERE file_id = ?`, fileId
+      )) {
+        const name = r.names.split(',')[0]?.trim();
+        if (name && name !== '_' && name !== '.') map.set(name, this.goPackageDir(r.source));
+      }
+      this.goImportCache.set(fileId, map);
+    }
+    return map;
+  }
+
+  /**
+   * Go: a receiver type written `pkg.Type`. Returns the site with the bare type name and
+   * the package directory, or null when the package is not part of this project.
+   */
+  private goQualified(site: CallSite): CallSite | null {
+    const t = site.rtype;
+    if (!t || site.lang !== 'go') return site;
+    const dot = t.indexOf('.');
+    if (dot === -1) return site;
+    const pkg = t.slice(0, dot);
+    const type = t.slice(dot + 1);
+    const dir = this.goImports(site.fileId).get(pkg);
+    if (dir === null) return null;
+    if (dir !== undefined) return { ...site, rtype: type, rtypeDir: dir };
+    // Declared in a file with other imports (a field of a struct defined elsewhere): go by the directory name.
+    const named = this.db.symbolsByName(type).find(
+      s => (CONTAINER_KINDS.has(s.kind) || s.kind === 'type') && s.lang === 'go' && dirOf(s.path).split('/').pop() === pkg
+    );
+    return named ? { ...site, rtype: type, rtypeDir: dirOf(named.path) } : { ...site, rtype: type };
+  }
+
   private importCache = new Map<number, Set<number>>();
   private importNameCache = new Map<number, ImportedNames>();
   private candidateCache = new Map<string, SymbolRow[]>();
@@ -424,6 +509,12 @@ export class Resolver {
       this.importCache.set(fileId, set);
     }
     return set;
+  }
+
+  /** Go: does the file import the package in directory `dir`? */
+  private importsGoDir(fileId: number, dir: string): boolean {
+    for (const d of this.goImports(fileId).values()) if (d === dir) return true;
+    return false;
   }
 
   /** Names a file imports, mapped to the file they come from (null = not in this project). */
@@ -806,7 +897,8 @@ export class Resolver {
     // ... nor into vendored / third-party trees it does not import.
     if (
       isVendoredPath(cand.path) && !isVendoredPath(site.path) && cand.file_id !== site.fileId &&
-      !this.importsOf(site.fileId).has(cand.file_id)
+      !this.importsOf(site.fileId).has(cand.file_id) &&
+      !(site.lang === 'go' && (dirOf(cand.path) === dirOf(site.path) || this.importsGoDir(site.fileId, dirOf(cand.path))))
     ) {
       return null;
     }
@@ -837,6 +929,12 @@ export class Resolver {
       (inContainer && (cand.kind === 'function' || cand.kind === 'declaration' || VALUE_KINDS.has(cand.kind)));
     // A module-level variable is only callable by its bare name; never through an object.
     if (VALUE_KINDS.has(cand.kind) && !inContainer && site.receiver) return null;
+    // A field is only callable when it holds a function: `s.Conf.Watching()` is not the bool field `Watching`.
+    if (VALUE_KINDS.has(cand.kind) && inContainer) {
+      if (cand.lang === 'java') return null;
+      if (cand.lang === 'go' && !cand.signature.includes('func')) return null;
+      if (cand.lang === 'rust' && !/\bfn\b|\bFn(Mut|Once)?\b/.test(cand.signature)) return null;
+    }
     const callerC = site.caller ? this.enclosingContainer(site.caller) : null;
     let tie = this.tieCache.get(cand.id);
     if (tie === undefined) {
@@ -855,7 +953,11 @@ export class Resolver {
       const T = site.rtype;
       if (isMember && container) {
         const vis = this.typeVisibility(T, cand, site);
-        if (container === T) return 100 + vis + tie;
+        if (container === T) {
+          // Go `pkg.Type`: methods live in the package that defines the type.
+          if (site.rtypeDir !== undefined && dirOf(cand.path) !== site.rtypeDir) return null;
+          return 100 + vis + tie;
+        }
         const rel = this.relatedTo(T);
         if (rel.anc.has(container)) return 86 + vis + tie; // inherited from a supertype
         if (rel.desc.has(container)) {
@@ -955,6 +1057,15 @@ export class Resolver {
     if (BUILTIN_RECEIVERS[fam]?.has(first) && !this.isProjectType(first)) return null;
     const names = this.importedNames(site.fileId).names;
     if (EXTERNAL_IF_UNRESOLVED.has(fam) && names.get(first) === null) return null;
+    if (site.lang === 'go') {
+      // `pkg.Func()`, `pkg.Type{}`: the receiver is an imported package, which is a directory.
+      const dir = this.goImports(site.fileId).get(first);
+      if (dir === null) return null; // a package outside the project
+      if (dir !== undefined) {
+        if (dirOf(cand.path) !== dir) return null;
+        if (bare === first) return isMember ? null : 94 + tie;
+      }
+    }
     if (container && (last === container || bare === container)) {
       return 92 + this.typeVisibility(container, cand, site) + tie; // static / qualified call
     }
@@ -1001,6 +1112,9 @@ export class Resolver {
 
   /** Declared type of `container.field` (also looking at supertypes), or null if unknown / ambiguous. */
   private fieldType(container: string, field: string): string | null {
+    // Go field types may be written `pkg.Type`.
+    const dot = container.lastIndexOf('.');
+    if (dot !== -1) container = container.slice(dot + 1);
     const key = container + '.' + field;
     let t = this.fieldTypeCache.get(key);
     if (t !== undefined) return t;
@@ -1283,7 +1397,9 @@ export class Resolver {
     // (Ruby modules are mixins: `include Foo` names a module.)
     if (typesOnly) all = all.filter(c => TYPE_KINDS.has(c.kind) || (c.kind === 'namespace' && c.lang === 'ruby'));
     if (all.length === 0) return { candidates: [], confident: false };
-    const site = this.withFieldType(rawSite, depth);
+    const typed = this.goQualified(this.withFieldType(rawSite, depth));
+    if (!typed) return { candidates: [], confident: false }; // receiver of a type from an external Go package
+    const site = typed;
     let cands = all.length > PRESELECT_THRESHOLD && !typesOnly ? this.preselect(name, site) : all;
     if (cands.length === 0) return { candidates: [], confident: false };
 
@@ -1329,7 +1445,7 @@ export class Resolver {
         // Copies of one definition are the same answer: build variants (#[cfg], foo_linux.go /
         // foo_windows.go, #ifdef) score alike, and for vendored forks the winner is simply the copy
         // this file can see. Neither makes the call ambiguous.
-        !(c.sym.qname === top.sym.qname && c.sym.kind === top.sym.kind)
+        !(c.sym.qname === top.sym.qname && c.sym.kind === top.sym.kind && c.sym.signature === top.sym.signature)
     );
     let confident = top.score >= CONFIDENT_SCORE && (!second || top.score - second.score >= CONFIDENT_GAP);
     // A bare call to a distinctively named function or class that the project defines exactly once

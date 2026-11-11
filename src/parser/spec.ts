@@ -117,6 +117,8 @@ export interface LangSpec {
   identifiers: string[];
   /** Type names may be lowercase (Go unexported types, C structs); see typeName(). */
   lowercaseTypes?: boolean;
+  /** Type hints keep a package qualifier (`pkg.Type`, Go); resolved against the file's imports at query time. */
+  packageTypes?: boolean;
   /** Node types whose text is a comment (for doc extraction). */
   comments?: string[];
   /**
@@ -216,7 +218,7 @@ const TYPE_WRAPPERS = new Set([
  * `Foo | null` -> Foo, `const Foo&` -> Foo. Collections and primitives
  * are not class types and yield null.
  */
-export function typeName(raw: string | null | undefined, allowLowercase = false): string | null {
+export function typeName(raw: string | null | undefined, allowLowercase = false, keepPackage = false): string | null {
   if (!raw) return null;
   let t = raw.trim();
   for (let i = 0; i < 4; i++) {
@@ -250,9 +252,14 @@ export function typeName(raw: string | null | undefined, allowLowercase = false)
     t = m[2]!.slice(0, end).trim();
   }
   if (/[|&(){}\[\],<>=\s]/.test(t)) return null;
-  const name = t.split(/\.|::|\\/).pop() ?? '';
+  const segs = t.split(/\.|::|\\/);
+  const name = segs.pop() ?? '';
   if (!/^[A-Za-z_$][\w$]*$/.test(name)) return null;
   if (name.length < 2) return null;
+  // Go: `pkg.Type` keeps its package so that it is not confused with a same-named type elsewhere.
+  if (keepPackage && segs.length === 1 && /^[a-z_][a-z0-9_]*$/.test(segs[0]!) && /^[A-Z]/.test(name)) {
+    return segs[0] + '.' + name;
+  }
   if (!/[A-Z]/.test(name[0]!)) {
     // Lowercase names are primitives / builtins in most languages (int, string, str, bool, ...).
     // Go and C name real types in lowercase too, so those specs opt in, minus the builtins.

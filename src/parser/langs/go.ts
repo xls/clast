@@ -41,6 +41,27 @@ function typeName(node: Node | null | undefined): string | null {
   return null;
 }
 
+/** Like typeName, but a package-qualified type keeps its package: `*deps.Deps` -> `deps.Deps`. */
+function hintType(node: Node | null | undefined): string | null {
+  for (let i = 0; node && i < 6; i++) {
+    switch (node.type) {
+      case 'qualified_type':
+        return node.text.replace(/\s+/g, '');
+      case 'generic_type':
+        node = field(node, 'type');
+        break;
+      case 'pointer_type':
+      case 'parenthesized_type':
+      case 'type_elem':
+        node = node.namedChildren[0];
+        break;
+      default:
+        return typeName(node);
+    }
+  }
+  return null;
+}
+
 /**
  * Outermost node of a spec: the surrounding declaration when it holds only
  * this spec (`type X struct{}`, `const A = 1`), so that the doc comment in
@@ -99,29 +120,35 @@ function state(ctx: Ctx): FileState {
  * `new(Foo)`, and the constructor convention `NewFoo(..)` / `pkg.NewFoo(..)`.
  * Other calls are not guessed.
  */
-function valueType(value: Node | null | undefined): string | null {
+function valueType(value: Node | null | undefined, qualified = false): string | null {
   if (!value) return null;
+  const nameOf = qualified ? hintType : typeName;
   if (value.type === 'unary_expression') {
     value = field(value, 'operand');
     if (!value || value.type !== 'composite_literal') return null;
   }
-  if (value.type === 'composite_literal') return typeName(field(value, 'type'));
+  if (value.type === 'composite_literal') return nameOf(field(value, 'type'));
   if (value.type !== 'call_expression') return null;
   let fn = field(value, 'function');
   if (!fn) return null;
-  if (fn.type === 'selector_expression') fn = field(fn, 'field');
+  let pkg = '';
+  if (fn.type === 'selector_expression') {
+    const operand = field(fn, 'operand');
+    if (qualified && operand && operand.type === 'identifier') pkg = operand.text + '.';
+    fn = field(fn, 'field');
+  }
   if (!fn || (fn.type !== 'identifier' && fn.type !== 'field_identifier')) return null;
   const name = fn.text;
-  if (name === 'new') return typeName(field(value, 'arguments')?.namedChildren[0]);
+  if (name === 'new') return nameOf(field(value, 'arguments')?.namedChildren[0]);
   const m = /^New([A-Z]\w*)$/.exec(name);
-  return m ? m[1]! : null;
+  return m ? pkg + m[1]! : null;
 }
 
 /** Parameters, method receivers and named results: `a, b Foo`, `s *Site`. */
 const parameterDecl: Visitor = (node, ctx) => {
   const owner = node.parent?.parent?.type;
   if (owner !== 'function_declaration' && owner !== 'method_declaration' && owner !== 'func_literal') return;
-  const type = typeName(field(node, 'type'));
+  const type = hintType(field(node, 'type'));
   if (!type) return;
   for (const n of node.childrenForFieldName('name')) {
     if (n) ctx.typeHint(n.text, type);
@@ -134,7 +161,7 @@ const shortVarDecl: Visitor = (node, ctx) => {
   const right = field(node, 'right');
   if (!left || !right || left.namedChildCount !== right.namedChildCount) return;
   for (let i = 0; i < left.namedChildCount; i++) {
-    const type = valueType(right.namedChildren[i]);
+    const type = valueType(right.namedChildren[i], true);
     if (!type) continue;
     const name = left.namedChildren[i];
     if (name && name.type === 'identifier') ctx.typeHint(name.text, type);
@@ -145,14 +172,14 @@ const shortVarDecl: Visitor = (node, ctx) => {
 function varHints(node: Node, names: Node[], ctx: Ctx): void {
   const declared = field(node, 'type');
   if (declared) {
-    const type = typeName(declared);
+    const type = hintType(declared);
     if (type) for (const n of names) ctx.typeHint(n.text, type);
     return;
   }
   const values = field(node, 'value');
   if (!values || values.namedChildCount !== names.length) return;
   for (let i = 0; i < names.length; i++) {
-    const type = valueType(values.namedChildren[i]);
+    const type = valueType(values.namedChildren[i], true);
     if (type) ctx.typeHint(names[i]!.text, type);
   }
 }
@@ -219,12 +246,12 @@ function structFields(struct: Node, sym: number, own: string, ctx: Ctx): void {
       const name = typeName(type);
       if (!name) continue;
       ctx.def(fd, { name, kind: 'field', body: null, scope: false, exported: isExported(name) });
-      ctx.typeHint(name, name);
+      ctx.typeHint(name, hintType(type) ?? name);
       // `type ResponseWriter struct { http.ResponseWriter }` does not extend itself.
       if (name !== own || !isQualified(type)) ctx.inherit(sym, name, 'extends');
       continue;
     }
-    const type = typeName(field(fd, 'type'));
+    const type = hintType(field(fd, 'type'));
     for (const n of names) {
       if (!n) continue;
       ctx.def(fd, { name: n.text, kind: 'field', body: null, scope: false, exported: isExported(n.text) });
@@ -387,6 +414,7 @@ const importSpec: Visitor = (node, ctx) => {
 export const go: LangSpec = {
   id: 'go',
   lowercaseTypes: true,
+  packageTypes: true,
   grammar: 'go',
   extensions: ['.go'],
   identifiers: ['identifier', 'type_identifier', 'field_identifier', 'package_identifier'],

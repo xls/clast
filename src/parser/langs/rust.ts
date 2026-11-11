@@ -305,13 +305,52 @@ const traitItem: Visitor = (node, ctx) => {
   const sym = define(node, ctx, { name: name.text, kind: 'trait', exported: isPub(node) });
   for (const b of field(node, 'bounds')?.namedChildren ?? []) {
     if (!b || b.type === 'lifetime') continue;
-    ctx.inherit(sym, typeName(b), 'extends');
+    ctx.inherit(sym, heritageName(b), 'extends');
   }
 };
 
+const SMART_POINTERS = new Set(['Arc', 'Rc', 'Box', 'Pin']);
+
+/** Supertype name with its module path (`futures_io::AsyncRead`), so that it is not taken for a local trait. */
+function heritageName(node: Node | null | undefined): string | null {
+  for (let i = 0; node && i < 3 && (node.type === 'generic_type' || node.type === 'higher_ranked_trait_bound'); i++) {
+    node = field(node, 'type');
+  }
+  if (node && node.type === 'scoped_type_identifier') return node.text.replace(/\s+/g, '');
+  return typeName(node);
+}
+
+/**
+ * The type an impl block is for. `impl Schedule for Arc<Handle>` adds methods
+ * that are called on handles, so the wrapper is looked through; a blanket
+ * `impl<T: Read> Read for Box<T>` stays with the wrapper.
+ */
+function implTarget(node: Node): string | null {
+  let type = field(node, 'type');
+  const params = new Set<string>();
+  for (const p of field(node, 'type_parameters')?.namedChildren ?? []) {
+    const n = p ? (field(p, 'name') ?? (p.type === 'type_identifier' ? p : p.namedChildren[0])) : null;
+    if (n) params.add(n.text);
+  }
+  for (let i = 0; type && i < 4; i++) {
+    if (type.type === 'reference_type') {
+      type = field(type, 'type');
+      continue;
+    }
+    if (type.type !== 'generic_type') break;
+    const base = typeName(field(type, 'type'));
+    if (!base || !SMART_POINTERS.has(base)) break;
+    const inner = field(type, 'type_arguments')?.namedChildren.find(c => c && c.type !== 'lifetime') ?? null;
+    const innerName = typeName(inner);
+    if (!inner || !innerName || params.has(innerName) || innerName === 'Self') break;
+    type = inner;
+  }
+  return typeName(type);
+}
+
 /** `impl Type` / `impl Trait for Type`: naming scope only, never a symbol. */
 const implItem: Visitor = (node, ctx) => {
-  const name = typeName(field(node, 'type'));
+  const name = implTarget(node);
   if (!name) return;
   ctx.scope(name);
   const st = state(ctx);
@@ -322,7 +361,7 @@ const implItem: Visitor = (node, ctx) => {
   // Heritage needs the symbol of the implementing type: only known when the
   // type is defined earlier in the same file.
   const sym = st.types.get(name);
-  if (sym !== undefined) ctx.inherit(sym, typeName(trait), 'implements');
+  if (sym !== undefined) ctx.inherit(sym, heritageName(trait), 'implements');
 };
 
 const modItem: Visitor = (node, ctx) => {
