@@ -76,7 +76,8 @@ function rawReturnType(sig: string, name: string, lang: string): string | null {
       const m = /->\s*([^:]+?)\s*:?\s*$/.exec(sig);
       return m ? m[1]!.replace(/^["']|["']$/g, '') : null;
     }
-    case 'rust': {
+    case 'rust':
+    case 'swift': {
       const end = afterParams(sig, name);
       if (end === -1) return null;
       const m = /^\s*->\s*(.+?)(?:\s+where\b.*)?$/s.exec(sig.slice(end));
@@ -85,7 +86,6 @@ function rawReturnType(sig: string, name: string, lang: string): string | null {
     case 'typescript':
     case 'tsx':
     case 'php':
-    case 'swift':
     case 'kotlin': {
       const end = afterParams(sig, name);
       const tail = end !== -1 ? sig.slice(end) : (/\)\s*(:.*)$/s.exec(sig)?.[1] ?? '');
@@ -100,6 +100,7 @@ function rawReturnType(sig: string, name: string, lang: string): string | null {
     }
     case 'java':
     case 'csharp':
+    case 'dart':
     case 'c':
     case 'cpp': {
       // <modifiers> <ReturnType> [Class::]name(...)

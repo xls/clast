@@ -232,10 +232,29 @@ The index lives in `.clast/index.db` and is a pure cache: delete it at any time.
 
 ### Performance
 
-Measured with `npm run bench` (Node 24, Windows 11, 8 parser workers). Cold index is a first run on an
+Measured with `npm run bench` (Node 24, Windows 11, Ryzen 9950X3D, up to 12 parser workers). Cold index is a first run on an
 empty index; warm rescan is a restart with nothing changed.
 
 <!-- BENCH:START -->
+| repo | files | symbols | cold index | warm rescan | db size | search (name) | search (words) | symbol + callers/callees | callers depth 2 | references |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| vscode | 15724 | 461358 | 26.1 s | 1936 ms | 354 MB | 214 ms | 14 ms | 26 ms | 36 ms | 11 ms |
+| aspnetcore | 11461 | 145242 | 10.8 s | 1489 ms | 134 MB | 7.9 ms | 27 ms | 28 ms | 34 ms | 6.7 ms |
+| kafka | 6481 | 126393 | 10.1 s | 832 ms | 142 MB | 33 ms | 29 ms | 29 ms | 28 ms | 5.0 ms |
+| rails | 3580 | 61549 | 3.3 s | 471 ms | 50 MB | 34 ms | 18 ms | 15 ms | 24 ms | 2.3 ms |
+| framework | 3180 | 44124 | 2.8 s | 332 ms | 38 MB | 1.5 ms | 17 ms | 23 ms | 20 ms | 2.5 ms |
+| django | 2987 | 60131 | 3.1 s | 631 ms | 42 MB | 37 ms | 16 ms | 28 ms | 46 ms | 3.7 ms |
+| fastapi | 1224 | 10049 | 0.9 s | 147 ms | 7 MB | 3.7 ms | 10 ms | 6.5 ms | 42 ms | 2.9 ms |
+| hugo | 939 | 16896 | 1.1 s | 115 ms | 11 MB | 6.9 ms | 12 ms | 12 ms | 18 ms | 2.5 ms |
+| redis | 918 | 33678 | 1.7 s | 124 ms | 22 MB | 7.3 ms | 13 ms | 7.0 ms | 28 ms | 1.8 ms |
+| tokio | 816 | 12341 | 1.1 s | 91 ms | 11 MB | 4.3 ms | 14 ms | 2.6 ms | 4.9 ms | 1.9 ms |
+| express | 142 | 439 | 0.4 s | 25 ms | 1 MB | 0.5 ms | 0.4 ms | 0.9 ms | 0.5 ms | 1.5 ms |
+| leveldb | 133 | 3456 | 0.5 s | 15 ms | 2 MB | 1.8 ms | 8.5 ms | 2.7 ms | 2.4 ms | 2.2 ms |
+| ripgrep | 103 | 4496 | 0.5 s | 13 ms | 3 MB | 1.3 ms | 11 ms | 2.1 ms | 2.2 ms | 0.8 ms |
+| gin | 99 | 2157 | 0.3 s | 10 ms | 2 MB | 1.6 ms | 3.0 ms | 2.0 ms | 3.0 ms | 0.6 ms |
+| spring-petclinic | 50 | 323 | 0.2 s | 10 ms | 1 MB | 0.5 ms | 0.3 ms | 0.7 ms | 0.4 ms | 1.6 ms |
+
+Node v24.7.0, win32 x64. Query times are medians of 5 in-process runs on the most-called function of each repo.
 <!-- BENCH:END -->
 
 ---

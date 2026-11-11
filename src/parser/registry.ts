@@ -8,6 +8,8 @@ import { csharp } from './langs/csharp.js';
 import { c, cpp } from './langs/c.js';
 import { ruby } from './langs/ruby.js';
 import { php } from './langs/php.js';
+import { swift } from './langs/swift.js';
+import { dart } from './langs/dart.js';
 
 /**
  * All language specs. To add a language: create `langs/<name>.ts` exporting a
@@ -26,6 +28,8 @@ export const SPECS: LangSpec[] = [
   cpp,
   ruby,
   php,
+  swift,
+  dart,
 ];
 
 const BY_ID = new Map<string, LangSpec>();
