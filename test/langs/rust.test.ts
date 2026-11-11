@@ -228,7 +228,7 @@ describe('rust extraction', () => {
     assert.deepEqual(ex.imports[0]!.names, ['HashMap']);
     assert.deepEqual(ex.imports[2]!.names, ['io']);
     assert.deepEqual(ex.imports[3]!.names, ['R=Read']); // alias=original
-    assert.deepEqual(ex.imports[5]!.names, ['c']);
+    assert.deepEqual(ex.imports[5]!.names, ['c=b']);
     assert.equal(ex.imports[3]!.line, 3);
   });
 
