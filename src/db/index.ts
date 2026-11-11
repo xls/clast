@@ -9,7 +9,7 @@ import { ftsWords, initials, splitIdentifier } from '../query/words.js';
  * Bump whenever the schema or the extraction output changes shape. The index
  * is a cache: a version mismatch simply drops and rebuilds it.
  */
-export const SCHEMA_VERSION = 9;
+export const SCHEMA_VERSION = 10;
 
 /** Kinds that get a full-text row (concept search). Others are found by name. */
 const FTS_KINDS = new Set(['function', 'method', 'class', 'interface', 'struct', 'trait', 'enum', 'type', 'namespace', 'macro']);
@@ -68,7 +68,8 @@ const SCHEMA = `
     start_col INTEGER NOT NULL DEFAULT 0,
     doc_line INTEGER NOT NULL DEFAULT 0,
     parent_id INTEGER,
-    exported INTEGER NOT NULL DEFAULT 0
+    exported INTEGER NOT NULL DEFAULT 0,
+    ret TEXT
   );
 
   CREATE VIRTUAL TABLE symbols_fts USING fts5(
@@ -93,7 +94,8 @@ const SCHEMA = `
     line INTEGER NOT NULL,
     receiver TEXT,
     rtype TEXT,
-    count INTEGER NOT NULL DEFAULT 1
+    count INTEGER NOT NULL DEFAULT 1,
+    via INTEGER
   );
 
   CREATE TABLE imports (
@@ -152,7 +154,7 @@ const INDEX_NAMES = ['idx_symbols_name', 'idx_symbols_name_lc', 'idx_symbols_abb
 
 export const SYMBOL_COLUMNS =
   's.id, s.file_id, s.name, s.name_lc, s.qname, s.kind, s.signature, s.doc, s.start_line, s.end_line, ' +
-  's.start_col, s.doc_line, s.parent_id, s.exported, f.path, f.lang';
+  's.start_col, s.doc_line, s.parent_id, s.exported, s.ret, f.path, f.lang';
 export const SYMBOL_FROM = 'symbols s JOIN files f ON f.id = s.file_id';
 
 export interface FileMeta {
@@ -391,8 +393,8 @@ export class ClastDb {
     }
 
     const insertSymbol = this.stmt(
-      `INSERT INTO symbols (file_id, name, name_lc, abbr, qname, kind, signature, doc, start_line, end_line, start_col, doc_line, parent_id, exported)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+      `INSERT INTO symbols (file_id, name, name_lc, abbr, qname, kind, signature, doc, start_line, end_line, start_col, doc_line, parent_id, exported, ret)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
     );
     const insertFts = this.stmt(`INSERT INTO symbols_fts (rowid, words, sig, doc, path) VALUES (?, ?, ?, ?, ?)`);
     const pathWords = splitIdentifier(meta.path).join(' ');
@@ -402,7 +404,7 @@ export class ClastDb {
       const parentId = s.parent >= 0 ? ids[s.parent] ?? null : null;
       const r = insertSymbol.run(
         fileId, s.name, s.name.toLowerCase(), initials(s.name), s.qname, s.kind, s.signature, s.doc,
-        s.startLine, s.endLine, s.startCol, s.docLine, parentId, s.exported ? 1 : 0
+        s.startLine, s.endLine, s.startCol, s.docLine, parentId, s.exported ? 1 : 0, s.ret
       );
       const id = Number(r.lastInsertRowid);
       ids[i] = id;
@@ -419,10 +421,19 @@ export class ClastDb {
     const insertCall = this.stmt(
       `INSERT INTO calls (file_id, caller_id, name_id, line, receiver, rtype, count) VALUES (?, ?, ?, ?, ?, ?, ?)`
     );
-    for (const c of ex.calls) {
-      insertCall.run(
+    const callIds: number[] = new Array(ex.calls.length);
+    for (let i = 0; i < ex.calls.length; i++) {
+      const c = ex.calls[i]!;
+      const r = insertCall.run(
         fileId, c.caller >= 0 ? ids[c.caller] ?? null : null, this.nameId(c.name, true)!, c.line, c.receiver, c.rtype, c.count
       );
+      callIds[i] = Number(r.lastInsertRowid);
+    }
+    // Chain links point at other calls of the same file: set once all rows have ids.
+    const linkCall = this.stmt(`UPDATE calls SET via = ? WHERE rowid = ?`);
+    for (let i = 0; i < ex.calls.length; i++) {
+      const via = ex.calls[i]!.via;
+      if (via >= 0 && callIds[via] !== undefined) linkCall.run(callIds[via]!, callIds[i]!);
     }
 
     const insertImport = this.stmt(`INSERT INTO imports (file_id, source, names, line) VALUES (?, ?, ?, ?)`);

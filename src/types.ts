@@ -34,6 +34,8 @@ export interface ExSymbol {
   /** Dotted qualified name, e.g. "ParserManager.parseAndStore". */
   qname: string;
   kind: SymbolKind;
+  /** Declared return type (bare class name) of a function / method, when it could be read off the signature. */
+  ret: string | null;
   signature: string;
   doc: string;
   /** 1-based line of the definition. */
@@ -57,6 +59,12 @@ export interface ExCall {
   /** Declared type of the receiver when a type hint was in scope (`Foo` for `x: Foo; x.bar()`). */
   rtype: string | null;
   count: number;
+  /**
+   * For calls on an expression receiver that is itself a call
+   * (`a.b().c()`): index of that receiver-producing call in the same
+   * extraction, else -1. The receiver type is then that call's return type.
+   */
+  via: number;
 }
 
 export interface ExImport {
@@ -105,6 +113,8 @@ export interface SymbolRow {
   doc_line: number;
   parent_id: number | null;
   exported: number;
+  /** Declared return type name, if known. */
+  ret: string | null;
   /** Joined from files. */
   path: string;
   lang: string;

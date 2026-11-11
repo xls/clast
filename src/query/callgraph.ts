@@ -37,6 +37,7 @@ interface CallRow {
   line: number;
   receiver: string | null;
   rtype: string | null;
+  via: number | null;
   count: number;
   path: string;
   lang: string;
@@ -99,7 +100,7 @@ export function callersOf(db: ClastDb, resolver: Resolver, target: SymbolRow): C
   const nameId = db.nameId(target.name, false);
   if (nameId === undefined) return [];
   const rows = db.all<CallRow>(
-    `SELECT c.file_id, c.caller_id, c.line, c.receiver, c.rtype, c.count, f.path, f.lang
+    `SELECT c.file_id, c.caller_id, c.line, c.receiver, c.rtype, c.via, c.count, f.path, f.lang
      FROM calls c JOIN files f ON f.id = c.file_id
      WHERE c.name_id = ? LIMIT ${MAX_CALL_ROWS}`,
     nameId
@@ -118,13 +119,13 @@ export function callersOf(db: ClastDb, resolver: Resolver, target: SymbolRow): C
     }
     // A symbol "calling itself" by name from inside its own definition line is recursion: keep it.
     const res = resolver.resolve(target.name, {
-      fileId: row.file_id, path: row.path, lang: row.lang, receiver: row.receiver, rtype: row.rtype, caller,
+      fileId: row.file_id, path: row.path, lang: row.lang, receiver: row.receiver, rtype: row.rtype, via: row.via, caller,
     });
     if (res.candidates.length === 0) {
       // Nothing could be attributed. If the receiver's type is simply unknown,
       // keep the site as a possible caller instead of silently dropping it.
       if (targetIsMember && weak.length < MAX_WEAK && resolver.isOpaqueReceiver({
-        fileId: row.file_id, path: row.path, lang: row.lang, receiver: row.receiver, rtype: row.rtype, caller,
+        fileId: row.file_id, path: row.path, lang: row.lang, receiver: row.receiver, rtype: row.rtype, via: row.via, caller,
       }) && langFamily(row.lang) === langFamily(target.lang) && !(isTestPath(target.path) && !isTestPath(row.path))) {
         weak.push({ caller, path: row.path, line: row.line, count: row.count, certain: false, weak: true });
       }
@@ -149,7 +150,7 @@ export function callersOf(db: ClastDb, resolver: Resolver, target: SymbolRow): C
     const aliasId = db.nameId(use.alias, false);
     if (aliasId === undefined) continue;
     const aliasRows = db.all<CallRow>(
-      `SELECT c.file_id, c.caller_id, c.line, c.receiver, c.rtype, c.count, f.path, f.lang
+      `SELECT c.file_id, c.caller_id, c.line, c.receiver, c.rtype, c.via, c.count, f.path, f.lang
        FROM calls c JOIN files f ON f.id = c.file_id
        WHERE c.name_id = ? AND c.file_id = ? AND c.receiver IS NULL`,
       aliasId, use.fileId
@@ -181,15 +182,15 @@ export function calleesOf(db: ClastDb, resolver: Resolver, sym: SymbolRow): Call
   const byName = new Map<string, CalleeEdge>();
   for (const id of ids) {
     const caller = id === sym.id ? sym : db.symbolById(id) ?? sym;
-    const rows = db.all<{ name: string; line: number; receiver: string | null; rtype: string | null; count: number }>(
-      `SELECT n.name, c.line, c.receiver, c.rtype, c.count
+    const rows = db.all<{ name: string; line: number; receiver: string | null; rtype: string | null; via: number | null; count: number }>(
+      `SELECT n.name, c.line, c.receiver, c.rtype, c.via, c.count
        FROM calls c JOIN names n ON n.id = c.name_id
        WHERE c.caller_id = ? ORDER BY c.line`,
       id
     );
     for (const row of rows) {
       const res = resolver.resolve(row.name, {
-        fileId: sym.file_id, path: sym.path, lang: sym.lang, receiver: row.receiver, rtype: row.rtype, caller,
+        fileId: sym.file_id, path: sym.path, lang: sym.lang, receiver: row.receiver, rtype: row.rtype, via: row.via, caller,
       });
       const first = res.candidates[0];
       // Follow the call to the implementation, not to a prototype / in-class declaration.
@@ -211,7 +212,7 @@ export function calleesOf(db: ClastDb, resolver: Resolver, sym: SymbolRow): Call
           ? Math.max(0, res.candidates.length - 1)
           // Unresolved, but the project does define methods with this name: not "external".
           : resolver.isOpaqueReceiver({
-              fileId: sym.file_id, path: sym.path, lang: sym.lang, receiver: row.receiver, rtype: row.rtype, caller,
+              fileId: sym.file_id, path: sym.path, lang: sym.lang, receiver: row.receiver, rtype: row.rtype, via: row.via, caller,
             })
             ? resolver.candidates(row.name).filter(c => langFamily(c.lang) === langFamily(sym.lang)).length
             : 0,
@@ -261,7 +262,7 @@ export function externalCallSites(db: ClastDb, name: string, limit = 2000): Call
   const nameId = db.nameId(name, false);
   if (nameId === undefined) return [];
   const rows = db.all<CallRow>(
-    `SELECT c.file_id, c.caller_id, c.line, c.receiver, c.rtype, c.count, f.path, f.lang
+    `SELECT c.file_id, c.caller_id, c.line, c.receiver, c.rtype, c.via, c.count, f.path, f.lang
      FROM calls c JOIN files f ON f.id = c.file_id WHERE c.name_id = ? LIMIT ?`,
     nameId, limit
   );

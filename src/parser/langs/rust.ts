@@ -800,7 +800,9 @@ function useTree(node: Node | null, prefix: string, decl: Node, ctx: Ctx, depth:
       const alias = field(node, 'alias');
       if (!path) return;
       const source = path.type === 'self' && prefix ? prefix : join(path.text);
-      ctx.imp(source, decl, alias ? [alias.text] : []);
+      const original = source.slice(source.lastIndexOf('::') + 1).replace(/^:/, '');
+      // `use a::Foo as Bar`: bind the alias, remember what it stands for.
+      ctx.imp(source, decl, alias ? [alias.text !== original && /^\w+$/.test(original) ? `${alias.text}=${original}` : alias.text] : []);
       return;
     }
     case 'use_wildcard': {

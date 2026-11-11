@@ -310,6 +310,11 @@ export interface CallSite {
   receiver: string | null;
   /** Declared type of the receiver, when the extractor could determine it. */
   rtype?: string | null;
+  /**
+   * Row id of the call that produces this call's receiver (`a.b().c()`:
+   * for c, the call to b). The receiver type is then b's return type.
+   */
+  via?: number | null;
   /** Symbol the call is made from, if known. */
   caller?: SymbolRow | null;
 }
@@ -533,7 +538,11 @@ export class Resolver {
     for (let depth = 0; depth < 5 && frontier.length; depth++) {
       const next: number[] = [];
       for (const id of frontier) {
-        for (const h of this.db.all<{ name: string }>(`SELECT name FROM heritage WHERE symbol_id = ?`, id)) {
+        for (const row of this.db.all<{ name: string; file_id: number }>(
+          `SELECT name, file_id FROM heritage WHERE symbol_id = ?`, id
+        )) {
+          // `class A extends Base` where Base is `import { X as Base }`: the supertype is X.
+          const h = { name: this.importedNames(row.file_id).aliases.get(row.name) ?? row.name };
           if (set.has(h.name)) continue;
           set.add(h.name);
           for (const parent of this.db.symbolsByName(h.name)) {
@@ -555,8 +564,17 @@ export class Resolver {
     for (const s of this.db.symbolsByName(name)) {
       if (!CONTAINER_KINDS.has(s.kind)) continue;
       for (const a of this.ancestorsOf(s.id)) rel.anc.add(a);
+      // Subtypes that extend this type under an import alias.
+      for (const use of this.aliasesOf(s)) {
+        for (const row of this.db.all<{ name: string }>(
+          `SELECT s.name FROM heritage h JOIN symbols s ON s.id = h.symbol_id WHERE h.name = ? AND h.file_id = ?`,
+          use.alias, use.fileId
+        )) {
+          if (row.name !== name) rel.desc.add(row.name);
+        }
+      }
     }
-    let frontier = [name];
+    let frontier = [name, ...rel.desc];
     for (let depth = 0; depth < 6 && frontier.length && rel.desc.size < 4000; depth++) {
       const next: string[] = [];
       for (const n of frontier) {
@@ -907,8 +925,17 @@ export class Resolver {
    * extractor could not (the class is declared in another file: C++ headers,
    * partial classes, Go structs elsewhere in the package).
    */
-  private withFieldType(site: CallSite): CallSite {
+  private withFieldType(site: CallSite, depth = 0): CallSite {
+    if (site.rtype) {
+      // The declared type may be written with an import alias (`const q: JobQueue`).
+      const original = this.importedNames(site.fileId).aliases.get(site.rtype);
+      return original ? { ...site, rtype: original } : site;
+    }
     const r = site.receiver;
+    if (!site.rtype && r === '?' && site.via) {
+      const t = this.chainType(site, depth);
+      return t ? { ...site, rtype: t } : site;
+    }
     if (site.rtype || !r || r === '?' || !site.caller) return site;
     let field: string | null = null;
     const m = /^(?:this|self|\$this|base|Self)(?:\.|->|::)([A-Za-z_]\w*)$/.exec(r) ?? /^@([A-Za-z_]\w*)$/.exec(r);
@@ -1053,8 +1080,50 @@ export class Resolver {
     return true;
   }
 
+  private chainTypeCache = new Map<number, string | null>();
+
+  /**
+   * Type of an expression receiver that is itself a call: the return type of
+   * that call's target (or the class, for constructor calls). Follows up to
+   * four links of a chain.
+   */
+  private chainType(site: CallSite, depth: number): string | null {
+    const via = site.via;
+    if (!via || depth > 4) return null;
+    const cached = this.chainTypeCache.get(via);
+    if (cached !== undefined) return cached;
+    this.chainTypeCache.set(via, null); // guards against cycles
+    const row = this.db.get<{ name: string; receiver: string | null; rtype: string | null; via: number | null }>(
+      `SELECT n.name, c.receiver, c.rtype, c.via FROM calls c JOIN names n ON n.id = c.name_id WHERE c.rowid = ?`, via
+    );
+    let type: string | null = null;
+    if (row) {
+      const res = this.resolve(
+        row.name,
+        { fileId: site.fileId, path: site.path, lang: site.lang, receiver: row.receiver, rtype: row.rtype, via: row.via, caller: site.caller },
+        depth + 1
+      );
+      const top = res.candidates[0];
+      if (top) {
+        if (TYPE_KINDS.has(top.sym.kind)) type = top.sym.name; // Foo(...) / new Foo(...)
+        else {
+          // Prefer a declared return type from anywhere in the target's family
+          // (the interface may declare it while the implementation infers it).
+          type = top.sym.ret;
+          if (!type) {
+            for (const c of res.candidates) {
+              if (c.sym.ret && this.familyOf(top.sym).has(c.sym.id)) { type = c.sym.ret; break; }
+            }
+          }
+        }
+      }
+    }
+    this.chainTypeCache.set(via, type);
+    return type;
+  }
+
   /** Rank the definitions a call to `name` at `site` may refer to. */
-  resolve(name: string, rawSite: CallSite): Resolution {
+  resolve(name: string, rawSite: CallSite, depth = 0): Resolution {
     // The calling file may know the definition under another name:
     // `import { X as Y }`, `import express from './express'`, `const express = require('./express')`.
     if (!rawSite.receiver) {
@@ -1078,7 +1147,7 @@ export class Resolver {
 
     const all = this.candidates(name);
     if (all.length === 0) return { candidates: [], confident: false };
-    const site = this.withFieldType(rawSite);
+    const site = this.withFieldType(rawSite, depth);
     const cands = all.length > PRESELECT_THRESHOLD ? this.preselect(name, site) : all;
     if (cands.length === 0) return { candidates: [], confident: false };
 

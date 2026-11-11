@@ -382,8 +382,10 @@ const useDecl: Visitor = (node, ctx) => {
     }
     if (!target) continue;
     const full = prefix + target.text.replace(/^\\+/, '').replace(/\s+/g, '');
-    const alias = field(clause, 'alias')?.text ?? full.slice(full.lastIndexOf('\\') + 1);
-    ctx.imp(full, node, [alias]);
+    const original = full.slice(full.lastIndexOf('\\') + 1);
+    const alias = field(clause, 'alias')?.text;
+    // `use Contracts\Pipeline as PipelineContract`: bind the alias, remember what it stands for.
+    ctx.imp(full, node, [alias && alias !== original ? `${alias}=${original}` : original]);
   }
 };
 

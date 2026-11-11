@@ -255,7 +255,8 @@ describe('php extraction', () => {
       './x.php',
     ]);
     assert.deepEqual(ex.imports.map(i => i.names[0] ?? ''), [
-      'Collection', 'Baz', 'Qux', 'C', 'E', 'F', 'helper', 'LIMIT', '', '',
+      // alias=original for renamed imports
+      'Collection', 'Baz=Bar', 'Qux', 'C', 'E=D', 'F', 'helper', 'LIMIT', '', '',
     ]);
     assert.equal(ex.imports[0]!.line, 6);
   });

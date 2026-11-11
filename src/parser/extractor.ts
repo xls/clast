@@ -1,6 +1,7 @@
 import type { Language, Node, Tree } from 'web-tree-sitter';
 import { CONTAINER_KINDS, type ExCall, type ExHeritage, type ExImport, type ExSymbol, type Extraction, type SymbolKind } from '../types.js';
 import { typeName, type Ctx, type DefOpts, type LangSpec, type Visitor } from './spec.js';
+import { returnTypeOf } from './returns.js';
 
 const MAX_SIGNATURE = 240;
 const MAX_DOC = 600;
@@ -104,6 +105,9 @@ export function extract(tree: Tree, source: string, compiled: CompiledSpec): Ext
   const occ = new Map<string, number[]>();
   const scopes: Scope[] = [];
   const containerDefs = new Map<string, number>();
+  /** Outer calls of a chain waiting for the call that produces their receiver, by start offset. */
+  const chainOuters = new Map<number, Array<{ call: ExCall; end: number }>>();
+  const viaRef = new Map<ExCall, ExCall>();
   let defaultExport: string | null = null;
   /** Declared types: owner symbol index (-1 = file) -> variable/field name -> type name. */
   const hints = new Map<number, Map<string, string>>();
@@ -229,11 +233,19 @@ export function extract(tree: Tree, source: string, compiled: CompiledSpec): Ext
         containerDefs.set(key, symbols.length);
       }
 
+      let ret: string | null = null;
+      if (o.kind === 'function' || o.kind === 'method' || o.kind === 'declaration') {
+        // Enclosing class for Self / static / this return types: the last qualifier segment.
+        const selfType = prefix.length ? prefix[prefix.length - 1]!.split('.').pop()! : null;
+        ret = returnTypeOf(signature, name, compiled.spec.id, selfType, compiled.spec.lowercaseTypes === true);
+      }
+
       const index = symbols.length;
       symbols.push({
         name,
         qname,
         kind: o.kind,
+        ret,
         signature,
         doc,
         startLine: range.startPosition.row + 1,
@@ -290,14 +302,30 @@ export function extract(tree: Tree, source: string, compiled: CompiledSpec): Ext
       if (!name || name.length > MAX_NAME) return;
       if (!/^[\p{L}_$~][\p{L}\p{N}_$!?]*$/u.test(name)) return;
       const caller = currentCaller();
-      const key = caller + '\0' + name + '\0' + (receiver ?? '');
-      const existing = callMap.get(key);
-      if (existing) {
-        existing.count++;
-        return;
+      const start = node.startIndex;
+      const end = node.endIndex;
+      // Calls on expression receivers are kept apart per site until the chain is known (merged below).
+      const key = caller + '\0' + name + '\0' + (receiver === '?' ? '?' + start + ':' + end : receiver ?? '');
+      let rec = callMap.get(key);
+      if (rec) {
+        rec.count++;
+      } else {
+        const rtype = receiverType ? typeName(receiverType, compiled.spec.lowercaseTypes === true) : null;
+        rec = { caller, name, line: node.startPosition.row + 1, receiver, rtype, count: 1, via: -1 };
+        callMap.set(key, rec);
       }
-      const rtype = receiverType ? typeName(receiverType, compiled.spec.lowercaseTypes === true) : null;
-      callMap.set(key, { caller, name, line: node.startPosition.row + 1, receiver, rtype, count: 1 });
+      // Call chains: in `a.b().c()` the expression for c starts where the expression for b starts,
+      // and the walker reaches c first. Link each outer call to the call that produces its receiver.
+      const outers = chainOuters.get(start);
+      if (outers) {
+        for (const o of outers) {
+          if (o.end > end && !viaRef.has(o.call) && o.call !== rec) viaRef.set(o.call, rec);
+        }
+      }
+      if (receiver === '?' && !rec.rtype) {
+        if (outers) outers.push({ call: rec, end });
+        else chainOuters.set(start, [{ call: rec, end }]);
+      }
     },
 
     imp(src, node, names = []): void {
@@ -452,6 +480,38 @@ export function extract(tree: Tree, source: string, compiled: CompiledSpec): Ext
       if (t) call.rtype = t;
     }
   }
+  // Merge chained calls that are the same edge (`x.a().b()` twice in one function), then
+  // express receiver links as indexes into the final list.
+  const calls: ExCall[] = [];
+  {
+    const kept = new Map<string, ExCall>();
+    const redirect = new Map<ExCall, ExCall>();
+    for (const call of callMap.values()) {
+      if (call.receiver !== '?') {
+        calls.push(call);
+        continue;
+      }
+      const inner = viaRef.get(call);
+      const key = call.caller + '\0' + call.name + '\0' + (inner ? inner.name + '\0' + (inner.receiver ?? '') : '') + '\0' + (call.rtype ?? '');
+      const first = kept.get(key);
+      if (first) {
+        first.count += call.count;
+        redirect.set(call, first);
+      } else {
+        kept.set(key, call);
+        calls.push(call);
+      }
+    }
+    const indexOf = new Map<ExCall, number>();
+    calls.forEach((c, i) => indexOf.set(c, i));
+    for (const [outer, innerRaw] of viaRef) {
+      if (redirect.has(outer)) continue;
+      const inner = redirect.get(innerRaw) ?? innerRaw;
+      const i = indexOf.get(inner);
+      if (i !== undefined) outer.via = i;
+    }
+  }
+
   // Field types of class-like symbols are exported so the resolver can type
   // `this.x.foo()` / `x_->foo()` when the class lives in another file
   // (C++ headers, Go structs in the same package, partial classes).
@@ -471,7 +531,7 @@ export function extract(tree: Tree, source: string, compiled: CompiledSpec): Ext
     lang: compiled.spec.id,
     lineCount,
     symbols,
-    calls: [...callMap.values()],
+    calls,
     imports,
     heritage,
     fieldTypes,
