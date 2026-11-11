@@ -42,6 +42,12 @@ export function untyped(thing: any): void {
   thing.run();
 }
 
+export function viaVariable(): void {
+  const builder = make();
+  const product = builder.build();
+  product.run();
+}
+
 export class Jobs extends JobQueue {
   flush(): void { this.run(); }
 }
@@ -96,8 +102,8 @@ describe('call chains and return types', () => {
 
   it('types each link of a chain from the previous call', () => {
     // make() -> Builder; .add() -> Builder; .build() -> Product; .run() is Product.run, not Queue.run.
-    assert.deepEqual(callerNames('Product.run', { certainOnly: true }), ['viaConstructor', 'viaFactory']);
-    assert.deepEqual(callerNames('Builder.build', { certainOnly: true }), ['viaConstructor', 'viaFactory']);
+    assert.deepEqual(callerNames('Product.run', { certainOnly: true }), ['viaConstructor', 'viaFactory', 'viaVariable']);
+    assert.deepEqual(callerNames('Builder.build', { certainOnly: true }), ['viaConstructor', 'viaFactory', 'viaVariable']);
     assert.deepEqual(callerNames('Builder.add', { certainOnly: true }), ['viaConstructor', 'viaFactory']);
   });
 
@@ -112,10 +118,17 @@ describe('call chains and return types', () => {
 
   it('lists unknown-receiver call sites separately in the tools', async () => {
     const text = await callGraph(p.ctx, { name: 'Product.run', direction: 'callers' });
-    assert.match(text, /callers \(2 resolved, 1 on receivers of unknown type/);
+    assert.match(text, /callers \(3 resolved, 1 on receivers of unknown type/);
     assert.match(text, /untyped {2}src\/main\.ts:13 {2}\? \(receiver type unknown\)/);
     const ctxText = await getContext(p.ctx, { name: 'Product.run' });
-    assert.match(ctxText, /callers \(2 resolved, 1 on receivers of unknown type\)/);
+    assert.match(ctxText, /callers \(3 resolved, 1 on receivers of unknown type\)/);
+  });
+
+  it('types variables initialised from a call by the callee\'s return type', () => {
+    // const builder = make(); const product = builder.build(); product.run();
+    const callees = calleesOf(p.clast.db, p.ctx.resolver, one('viaVariable'));
+    const targets = callees.filter(c => c.target && c.certain).map(c => c.target!.qname).sort();
+    assert.deepEqual(targets, ['Builder.build', 'Product.run', 'make']);
   });
 
   it('resolves callees through the chain', () => {

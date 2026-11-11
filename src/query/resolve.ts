@@ -932,11 +932,13 @@ export class Resolver {
       return original ? { ...site, rtype: original } : site;
     }
     const r = site.receiver;
-    if (!site.rtype && r === '?' && site.via) {
+    if (r && site.via) {
+      // The receiver is produced by another call (a chain link, or a variable initialised from a call).
       const t = this.chainType(site, depth);
-      return t ? { ...site, rtype: t } : site;
+      if (t) return { ...site, rtype: t };
+      if (r === '?') return site;
     }
-    if (site.rtype || !r || r === '?' || !site.caller) return site;
+    if (!r || r === '?' || !site.caller) return site;
     let field: string | null = null;
     const m = /^(?:this|self|\$this|base|Self)(?:\.|->|::)([A-Za-z_]\w*)$/.exec(r) ?? /^@([A-Za-z_]\w*)$/.exec(r);
     if (m) field = m[1]!;

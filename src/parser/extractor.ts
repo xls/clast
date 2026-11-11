@@ -86,6 +86,40 @@ export function cleanComment(raw: string): string {
   return lines.join('\n');
 }
 
+const VALUE_WRAPPERS = new Set([
+  'await_expression', 'try_expression', 'parenthesized_expression', 'non_null_expression', 'as_expression',
+  'expression_list', 'equals_value_clause', 'unary_expression', 'reference_expression', 'type_cast_expression',
+]);
+const BINDING_NODES = new Set([
+  'variable_declarator', 'assignment_expression', 'assignment', 'short_var_declaration', 'let_declaration',
+  'init_declarator', 'var_spec', 'local_variable_declaration', 'const_spec', 'augmented_assignment',
+]);
+
+/**
+ * If `call` is the whole right-hand side of a simple variable binding
+ * (`x = f()`, `let x = f()?`, `x, err := f()`, `auto x = f()`), the name of
+ * that variable; otherwise null. Works across grammars by looking at the
+ * usual field names.
+ */
+function boundVariable(call: Node): string | null {
+  let node: Node = call;
+  let p = call.parent;
+  for (let i = 0; p && i < 3 && VALUE_WRAPPERS.has(p.type); i++) {
+    node = p;
+    p = p.parent;
+  }
+  if (!p || !BINDING_NODES.has(p.type)) return null;
+  const target =
+    p.childForFieldName('name') ?? p.childForFieldName('left') ?? p.childForFieldName('pattern') ??
+    p.childForFieldName('declarator');
+  if (!target || target.endIndex > node.startIndex) return null;
+  // Go: `x, err := f()` - the first name receives the first result.
+  const first = target.type === 'expression_list' ? target.namedChild(0) : target;
+  if (!first || first.endIndex - first.startIndex > 60) return null;
+  const text = first.text.replace(/^[$@*&]+/, '').replace(/^mut\s+/, '');
+  return /^[A-Za-z_]\w*$/.test(text) ? text : null;
+}
+
 function squash(s: string, max: number): string {
   const t = s.replace(/\s+/g, ' ').trim();
   return t.length > max ? t.slice(0, max - 3) + '...' : t;
@@ -108,6 +142,8 @@ export function extract(tree: Tree, source: string, compiled: CompiledSpec): Ext
   /** Outer calls of a chain waiting for the call that produces their receiver, by start offset. */
   const chainOuters = new Map<number, Array<{ call: ExCall; end: number }>>();
   const viaRef = new Map<ExCall, ExCall>();
+  /** Variables initialised from a call: owner symbol index -> variable name -> that call. */
+  const callHints = new Map<number, Map<string, ExCall>>();
   let defaultExport: string | null = null;
   /** Declared types: owner symbol index (-1 = file) -> variable/field name -> type name. */
   const hints = new Map<number, Map<string, string>>();
@@ -344,6 +380,13 @@ export function extract(tree: Tree, source: string, compiled: CompiledSpec): Ext
         if (outers) outers.push({ call: rec, end });
         else chainOuters.set(start, [{ call: rec, end }]);
       }
+      // `x = make()`, `let x = Foo::new()?`, `x, err := load()`: x gets the call's return type.
+      const bound = boundVariable(node);
+      if (bound) {
+        let map = callHints.get(caller);
+        if (!map) callHints.set(caller, (map = new Map()));
+        if (!map.has(bound)) map.set(bound, rec);
+      }
     },
 
     imp(src, node, names = []): void {
@@ -498,6 +541,30 @@ export function extract(tree: Tree, source: string, compiled: CompiledSpec): Ext
       if (t) call.rtype = t;
     }
   }
+  // Receivers that are variables initialised from a call take that call's return type
+  // (resolved at query time through the same link as call chains).
+  if (callHints.size) {
+    for (const call of callMap.values()) {
+      const r = call.receiver;
+      if (!r || r === '?' || call.rtype || viaRef.has(call)) continue;
+      if (!/^[$@]?[A-Za-z_]\w*$/.test(r)) continue;
+      const name = r.replace(/^[$@]/, '');
+      for (let cur = call.caller, guard = 0; guard < 6; guard++) {
+        const hit = callHints.get(cur)?.get(name);
+        if (hit && hit !== call) {
+          viaRef.set(call, hit);
+          break;
+        }
+        if (cur < 0) break;
+        const s = symbols[cur]!;
+        // Stop at the function boundary: locals of an enclosing class / file are not visible by bare name.
+        if (s.kind !== 'function' && s.kind !== 'method') break;
+        cur = s.parent;
+        if (cur >= 0 && symbols[cur]!.kind !== 'function' && symbols[cur]!.kind !== 'method') break;
+      }
+    }
+  }
+
   // Merge chained calls that are the same edge (`x.a().b()` twice in one function), then
   // express receiver links as indexes into the final list.
   const calls: ExCall[] = [];
