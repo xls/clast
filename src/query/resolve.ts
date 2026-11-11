@@ -398,14 +398,19 @@ export class Resolver {
   /** Nearest enclosing class-like symbol of `sym` (lexical), or its container by qualified name. */
   private enclosingContainer(sym: SymbolRow): { name: string; id: number | null } | null {
     if (CONTAINER_KINDS.has(sym.kind)) return { name: sym.name, id: sym.id };
+    let namespace: { name: string; id: number | null } | null = null;
     let cur: SymbolRow | null = sym;
     for (let i = 0; i < 8 && cur; i++) {
       cur = this.parentOf(cur);
-      if (cur && CONTAINER_KINDS.has(cur.kind)) return { name: cur.name, id: cur.id };
+      if (!cur || !CONTAINER_KINDS.has(cur.kind)) continue;
+      if (cur.kind !== 'namespace') return { name: cur.name, id: cur.id };
+      namespace ??= { name: cur.name, id: cur.id };
     }
-    // Go receivers, Rust impl blocks, C++ out-of-line definitions: the container is only in the name.
+    // Go receivers, Rust impl blocks, C++ out-of-line definitions (possibly inside a
+    // namespace block): the class is only in the qualified name.
     const name = this.containerName(sym);
-    return name ? { name, id: null } : null;
+    if (name && (!namespace || name !== namespace.name)) return { name, id: null };
+    return namespace;
   }
 
   /** Names of the classes a container extends/implements, transitively (bounded). */
@@ -553,11 +558,17 @@ export class Resolver {
     else if (this.importsOf(site.fileId).has(cand.file_id)) e += 22;
     else if (dirOf(cand.path) === dirOf(site.path)) e += site.lang === 'go' || site.lang === 'java' ? 15 : 8;
     if (container && cand.file_id !== site.fileId && this.fileMentions(site.fileId, container)) e += 18;
+    let receiverMatches = false;
     if (recv && container) {
-      if (looselyNamed(recv, container)) e += 30;
-      else if (recv.length === 1 && container[0]!.toLowerCase() === recv.toLowerCase()) e += 8; // Go: `s` for *Site
+      if (looselyNamed(recv, container)) {
+        e += 30;
+        receiverMatches = true;
+      } else if (recv.length <= 2 && container.toLowerCase().startsWith(recv.toLowerCase())) {
+        // Go convention: `s` for *Site, `c` for *Context, `rg` ... Within a package this is good evidence.
+        e += 8;
+        receiverMatches = site.lang === 'go' && dirOf(cand.path) === dirOf(site.path);
+      }
     }
-    const receiverMatches = e >= 30 && recv !== null && container !== null && looselyNamed(recv, container);
     if (COMMON_MEMBER_NAMES.has(name.toLowerCase())) {
       // .get(), .add(), .count(): only the receiver's name can tell a project method from a builtin.
       return receiverMatches ? e : 0;
