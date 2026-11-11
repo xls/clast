@@ -759,6 +759,26 @@ export class Resolver {
         }
       }
     }
+    // One hop further: files that import the alias from a file that re-exports the symbol under it.
+    const seen = new Set(out.map(o => o.fileId + ':' + o.alias));
+    for (const via of [...out]) {
+      for (const r of this.db.all<{ file_id: number; names: string }>(
+        `SELECT file_id, names FROM imports INDEXED BY idx_imports_resolved WHERE resolved_id = ? AND names <> '' LIMIT 2000`,
+        via.fileId
+      )) {
+        for (const raw of r.names.split(',')) {
+          const eq = raw.indexOf('=');
+          const imported = eq === -1 ? raw : raw.slice(eq + 1);
+          if (imported !== via.alias) continue;
+          const local = eq === -1 ? raw : raw.slice(0, eq);
+          const k = r.file_id + ':' + local;
+          if (!seen.has(k)) {
+            seen.add(k);
+            out.push({ fileId: r.file_id, alias: local });
+          }
+        }
+      }
+    }
     this.aliasUseCache.set(key, out);
     return out;
   }
@@ -1647,7 +1667,8 @@ export class Resolver {
       const from = imported.names.get(name);
       if (from !== undefined && from !== null) {
         const original = imported.aliases.get(name);
-        let real: string | null = original ?? null;
+        // ... or the file it is imported from re-exports it under this name (`export { parseId as getId } from`).
+        let real: string | null = original ?? this.importedNames(from).aliases.get(name) ?? null;
         if (!real && !this.candidates(name).some(c => c.file_id === from)) {
           real = this.defaultExportOf(from);
           if (real === '*') {

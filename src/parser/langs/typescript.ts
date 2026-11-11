@@ -324,13 +324,44 @@ const importStatement: Visitor = (node, ctx) => {
       }
     }
   }
-  ctx.imp(stripQuotes(source.text), node, names);
+  const src = stripQuotes(source.text);
+  // Remember where each local name comes from, for `export { X as Y }` further down.
+  let map = importSources.get(ctx);
+  if (!map) importSources.set(ctx, (map = new Map()));
+  for (const n of names) map.set(n.split('=')[0]!, src + '\0' + (n.split('=')[1] ?? n));
+  ctx.imp(src, node, names);
 };
+
+/** Per file: local name -> "source\0original name" of what it was imported as. */
+const importSources = new WeakMap<Ctx, Map<string, string>>();
 
 const exportStatement: Visitor = (node, ctx) => {
   // Re-exports: export { a } from './x'; export * from './x';
   const source = field(node, 'source');
-  if (source) ctx.imp(stripQuotes(source.text), node);
+  const clause = childOfType(node, 'export_clause');
+  // Renamed on the way out: `export { parseId as getId } from './impl'`. Importers of this file
+  // call it by the new name, so the alias is recorded like an import alias (`getId=parseId`).
+  const renamed: Array<[string, string]> = [];
+  if (clause) {
+    for (const s of clause.namedChildren) {
+      if (!s || s.type !== 'export_specifier') continue;
+      const original = field(s, 'name')?.text;
+      const alias = field(s, 'alias')?.text;
+      if (original && alias && alias !== original && alias !== 'default' && original !== 'default') renamed.push([alias, original]);
+    }
+  }
+  if (source) {
+    ctx.imp(stripQuotes(source.text), node, renamed.map(([alias, original]) => `${alias}=${original}`));
+  } else if (renamed.length) {
+    // `import { Picker } from './picker'; export { Picker as TerminalPicker };`
+    const map = importSources.get(ctx);
+    for (const [alias, original] of renamed) {
+      const from = map?.get(original);
+      if (!from) continue;
+      const [src, real] = from.split('\0') as [string, string];
+      ctx.imp(src, node, [`${alias}=${real}`]);
+    }
+  }
   // export default X / export default function name() {} / export default class Name {}
   if (node.children.some(c => c?.type === 'default')) {
     const value = field(node, 'value');

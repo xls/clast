@@ -847,3 +847,28 @@ void work(int x) { check(x > 0); }
     assert.deepEqual(callers('check'), ['work']);
   });
 });
+
+describe('renamed re-exports', () => {
+  let q: Project;
+  before(async () => {
+    q = await createProject({
+      'src/impl.ts': `export function parseId(text: string): string { return text; }
+`,
+      'src/barrel.ts': `export { parseId as getId } from './impl.js';
+`,
+      'src/use.ts': `import { getId } from './barrel.js';
+
+export function handle(text: string): string { return getId(text); }
+`,
+    });
+  });
+  after(() => q.dispose());
+
+  it('a call by the re-exported name is a call of the original function', () => {
+    const target = findSymbols(q.clast.db, 'parseId')[0]!;
+    const edges = callersOf(q.clast.db, q.ctx.resolver, target);
+    assert.deepEqual(edges.map(e => [e.caller?.qname, e.certain]), [['handle', true]]);
+    const callees = calleesOf(q.clast.db, q.ctx.resolver, findSymbols(q.clast.db, 'handle')[0]!).filter(c => c.target);
+    assert.deepEqual(callees.map(c => c.target!.qname), ['parseId']);
+  });
+});
