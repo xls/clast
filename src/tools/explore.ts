@@ -281,8 +281,10 @@ export async function overview(ctx: ToolContext, args: OverviewArgs = {}): Promi
     'languages: ' +
       [...langs.entries()]
         .sort((a, b) => b[1].lines - a[1].lines)
+        .slice(0, 6)
         .map(([l, a]) => `${l} ${a.files} files/${a.lines} lines`)
-        .join(', ')
+        .join(', ') +
+      (langs.size > 6 ? `, +${langs.size - 6} more` : '')
   );
 
   // Directory tree: two levels below the scope, single-child chains collapsed.
@@ -303,73 +305,104 @@ export async function overview(ctx: ToolContext, args: OverviewArgs = {}): Promi
     }
   }
   out.push('layout (files, lines):');
-  const renderDir = (node: Dir, name: string, depth: number, maxDepth: number): void => {
-    // Collapse a/b/c chains where each level only has one subdirectory and no extra files.
+  // Collapse a/b/c chains where each level has a single subdirectory and no files of its own.
+  interface View { label: string; dir: Dir; depth: number; expanded: boolean; test: boolean }
+  const collapse = (name: string, dir: Dir): { label: string; dir: Dir } => {
     let label = name;
-    let cur = node;
+    let cur = dir;
     while (cur.children.size === 1) {
       const [childName, child] = [...cur.children.entries()][0]!;
       if (child.files !== cur.files) break;
       label += '/' + childName;
       cur = child;
     }
-    out.push(`${'  '.repeat(depth)}${label}/  ${cur.files}, ${cur.lines}`);
-    // Test / fixture trees are listed but not expanded: navigation rarely starts there.
-    if (depth >= maxDepth || isTestPath(label + '/')) return;
-    const kids = [...cur.children.entries()].sort((a, b) => b[1].lines - a[1].lines);
-    const cap = depth === 1 ? 12 : 6;
-    for (const [n, c] of kids.slice(0, cap)) renderDir(c, n, depth + 1, maxDepth);
-    if (kids.length > cap) {
+    return { label, dir: cur };
+  };
+  const viewOf = (name: string, dir: Dir, depth: number): View => {
+    const c = collapse(name, dir);
+    return { label: c.label, dir: c.dir, depth, expanded: false, test: isTestPath(c.label + '/') };
+  };
+  // Greedy expansion: keep opening the biggest non-test directory until the
+  // map reaches its line budget, so big repos get depth where the code is.
+  const LAYOUT_BUDGET = 44;
+  const CHILD_CAP = 8;
+  const tree = new Map<View, View[]>();
+  const rootViews = [...root.children.entries()]
+    .map(([n, d]) => viewOf(n, d, 1))
+    .sort((a, b) => Number(a.test) - Number(b.test) || b.dir.lines - a.dir.lines)
+    .slice(0, 14);
+  let lineCount = rootViews.length;
+  const open: View[] = [...rootViews];
+  while (lineCount < LAYOUT_BUDGET) {
+    let best: View | null = null;
+    for (const v of open) {
+      if (v.expanded || v.test || v.depth >= 4 || v.dir.children.size < 2) continue;
+      if (!best || v.dir.lines > best.dir.lines) best = v;
+    }
+    if (!best) break;
+    best.expanded = true;
+    const kids = [...best.dir.children.entries()]
+      .map(([n, d]) => viewOf(n, d, best!.depth + 1))
+      .sort((a, b) => Number(a.test) - Number(b.test) || b.dir.lines - a.dir.lines);
+    tree.set(best, kids);
+    const shown = Math.min(kids.length, CHILD_CAP);
+    lineCount += shown + (kids.length > shown ? 1 : 0);
+    open.push(...kids.slice(0, shown));
+  }
+  const renderView = (v: View): void => {
+    out.push(`${'  '.repeat(v.depth)}${v.label}/  ${v.dir.files}, ${v.dir.lines}`);
+    const kids = tree.get(v);
+    if (!kids) return;
+    for (const k of kids.slice(0, CHILD_CAP)) renderView(k);
+    if (kids.length > CHILD_CAP) {
       let restFiles = 0;
-      for (const [, c] of kids.slice(cap)) restFiles += c.files;
-      out.push(`${'  '.repeat(depth + 1)}... ${kids.length - cap} more dirs (${restFiles} files)`);
+      for (const k of kids.slice(CHILD_CAP)) restFiles += k.dir.files;
+      out.push(`${'  '.repeat(v.depth + 1)}... ${kids.length - CHILD_CAP} more dirs (${restFiles} files)`);
     }
   };
-  const top = [...root.children.entries()].sort(
-    (a, b) => Number(isTestPath(a[0] + '/')) - Number(isTestPath(b[0] + '/')) || b[1].lines - a[1].lines
-  );
-  // Small repos can afford a deeper tree.
-  const maxDepth = files.length > 1500 ? 2 : 3;
   const rootFiles = files.filter(f => !f.path.slice(prefix.length).includes('/')).length;
   if (rootFiles) out.push(`  (${plural(rootFiles, 'file')} directly in ${scope || 'the root'})`);
-  for (const [n, c] of top.slice(0, 16)) renderDir(c, n, 1, maxDepth);
-  if (top.length > 16) out.push(`  ... ${top.length - 16} more top-level dirs`);
+  for (const v of rootViews) renderView(v);
+  if (root.children.size > rootViews.length) out.push(`  ... ${root.children.size - rootViews.length} more top-level dirs`);
 
   // Key symbols: types and functions whose names are mentioned in the most files.
-  const candidates = ctx.db.all<SymbolRow & { refs: number }>(
-    `SELECT s.id, s.file_id, s.name, s.name_lc, s.qname, s.kind, s.signature, s.doc, s.start_line, s.end_line,
-            s.start_col, s.doc_line, s.parent_id, s.exported, f.path, f.lang, t.refs
-     FROM (SELECT o.name_id, COUNT(*) AS refs FROM occ o GROUP BY o.name_id ORDER BY refs DESC LIMIT 1500) t
+  const popular = ctx.db.all<{ name: string; refs: number }>(
+    `SELECT n.name, t.refs
+     FROM (SELECT o.name_id, COUNT(*) AS refs FROM occ o GROUP BY o.name_id ORDER BY refs DESC LIMIT 2500) t
      JOIN names n ON n.id = t.name_id
-     JOIN symbols s ON s.name = n.name
-     JOIN files f ON f.id = s.file_id
-     WHERE s.kind IN ('class', 'interface', 'struct', 'trait', 'enum', 'function', 'type')
-       AND s.parent_id IS NULL AND length(s.name) > 3
-     ORDER BY t.refs DESC LIMIT 600`
+     WHERE length(n.name) > 3
+     ORDER BY t.refs DESC`
   );
-  const perName = new Map<string, number>();
-  for (const c of candidates) perName.set(c.name, (perName.get(c.name) ?? 0) + 1);
-  const key = candidates
-    .filter(c =>
-      (!scope || c.path.startsWith(prefix)) &&
-      !isTestPath(c.path) && !isVendoredPath(c.path) &&
-      (perName.get(c.name) ?? 0) <= 3 && // names defined all over the place are not landmarks
-      // Single common words ("filter", "join", "default") collect references that are not theirs.
-      (c.kind !== 'function' || splitIdentifier(c.name).length >= 2)
-    );
-  const seenNames = new Set<string>();
+  const KEY_KINDS = new Set(['class', 'interface', 'struct', 'trait', 'enum', 'function', 'type']);
+  const resolvedImports =
+    ctx.db.get<{ n: number }>(`SELECT COUNT(*) AS n FROM imports WHERE resolved_id IS NOT NULL`)?.n ?? 0;
+  const hasImportGraph = resolvedImports > files.length / 2;
   const keyLines: string[] = [];
-  for (const c of key) {
-    if (seenNames.has(c.name)) continue;
-    seenNames.add(c.name);
-    keyLines.push(`  ${c.kind} ${c.qname}  ${c.path}:${c.start_line}  refs:${c.refs}${c.doc ? '  // ' + firstLine(c.doc, 60) : ''}`);
+  for (const p of popular) {
     if (keyLines.length >= 25) break;
+    const defs = findSymbols(ctx.db, { name: p.name, container: [] }).filter(
+      s => KEY_KINDS.has(s.kind) && s.parent_id === null
+    );
+    // Names defined all over the place ("constructor", "main", "test") are not landmarks.
+    if (defs.length === 0 || defs.length > 8) continue;
+    const c = defs[0]!;
+    if (scope && !c.path.startsWith(prefix)) continue;
+    if (isTestPath(c.path) || isVendoredPath(c.path)) continue;
+    // Single common words ("filter", "join", "default") collect references that are not theirs.
+    if (c.kind === 'function' && splitIdentifier(c.name).length < 2) continue;
+    // A widely used symbol lives in a widely imported file. A popular *name*
+    // defined in a file nobody imports is a collision with a builtin or property.
+    if (hasImportGraph) {
+      const importers =
+        ctx.db.get<{ n: number }>(`SELECT COUNT(*) AS n FROM imports WHERE resolved_id = ?`, c.file_id)?.n ?? 0;
+      if (importers < Math.max(2, p.refs * 0.04)) continue;
+    }
+    keyLines.push(`  ${c.kind} ${c.qname}  ${c.path}:${c.start_line}  refs:${p.refs}${c.doc ? '  // ' + firstLine(c.doc, 60) : ''}`);
   }
   if (keyLines.length) {
     out.push('key symbols (most widely referenced):');
     out.push(...keyLines);
   }
-
   // Hub files: imported by the most other files.
   const hubs = ctx.db
     .all<{ path: string; n: number }>(

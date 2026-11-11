@@ -1,7 +1,7 @@
 import { CALLABLE_KINDS, CONTAINER_KINDS, type SymbolRow } from '../types.js';
 import { buildGraph, calleesOf, callersOf, type GraphNode } from '../query/callgraph.js';
 import { firstLine, isTestPath, loc, plural, symLine } from '../query/format.js';
-import { findSymbols, parseSymbolRef } from '../query/resolve.js';
+import { findSymbols, otherDefinitions, parseSymbolRef } from '../query/resolve.js';
 import { searchSymbols, type SearchOptions } from '../query/search.js';
 import { ToolContext, toList } from './context.js';
 
@@ -197,11 +197,12 @@ export async function getContext(ctx: ToolContext, args: ContextArgs): Promise<s
 
     out.push(...(await describe(ctx, matches[0]!, args)));
 
-    if (matches.length > 1) {
-      // Same qualified name in the same file = overloads / declaration + definition: show briefly.
-      out.push(`other definitions named "${matches[0]!.name}" (${matches.length - 1}; pass path or Container.name to select):`);
-      for (const m of matches.slice(1, 9)) out.push(`  ${symLine(m)}`);
-      if (matches.length > 9) out.push(`  ... ${matches.length - 9} more`);
+    const { others, overloads } = otherDefinitions(matches[0]!, matches);
+    if (overloads) out.push(`(+${overloads} overload/declaration(s) of the same name in this file)`);
+    if (others.length) {
+      out.push(`other definitions named "${matches[0]!.name}" (${others.length}; pass path or Container.name to select):`);
+      for (const m of others.slice(0, 8)) out.push(`  ${symLine(m)}`);
+      if (others.length > 8) out.push(`  ... ${others.length - 8} more`);
     }
     out.push('');
   }
@@ -275,9 +276,10 @@ export async function callGraph(ctx: ToolContext, args: CallGraphArgs): Promise<
   if (out.some(l => l.endsWith('  ?') || l.includes('  ?  '))) {
     out.push('("?" = matched by name only; another definition with the same name could be the real target)');
   }
-  if (matches.length > 1) {
-    out.push(`note: ${matches.length - 1} other definition(s) named "${sym.name}" exist; pass path or Container.name to pick one:`);
-    for (const m of matches.slice(1, 5)) out.push(`  ${symLine(m)}`);
+  const { others } = otherDefinitions(sym, matches);
+  if (others.length) {
+    out.push(`note: ${others.length} other definition(s) named "${sym.name}" exist; pass path or Container.name to pick one:`);
+    for (const m of others.slice(0, 4)) out.push(`  ${symLine(m)}`);
   }
   return note + out.join('\n');
 }

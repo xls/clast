@@ -114,10 +114,33 @@ export function findSymbols(
       false
     );
   }
+  const importers = new Map<number, number>();
+  const importerBoost = (fileId: number): number => {
+    let n = importers.get(fileId);
+    if (n === undefined) {
+      n = db.get<{ n: number }>(`SELECT COUNT(*) AS n FROM imports WHERE resolved_id = ?`, fileId)?.n ?? 0;
+      importers.set(fileId, n);
+    }
+    // Among copies of the same code, the one the rest of the project imports is the real one.
+    return Math.min(4, Math.log2(1 + n) / 2);
+  };
+  const multi = rows.length > 1;
   return rows
-    .map(s => ({ s, score: definitionScore(s) }))
-    .sort((a, b) => b.score - a.score || a.s.path.localeCompare(b.s.path) || a.s.start_line - b.s.start_line)
+    .map(s => ({ s, score: definitionScore(s) + (multi ? importerBoost(s.file_id) : 0) }))
+    .sort((a, b) => b.score - a.score || a.s.path.length - b.s.path.length || a.s.path.localeCompare(b.s.path) || a.s.start_line - b.s.start_line)
     .map(x => x.s);
+}
+
+/** Drop overloads / re-declarations of `chosen` (same qualified name in the same file). */
+export function otherDefinitions(chosen: SymbolRow, all: SymbolRow[]): { others: SymbolRow[]; overloads: number } {
+  const others: SymbolRow[] = [];
+  let overloads = 0;
+  for (const s of all) {
+    if (s.id === chosen.id) continue;
+    if (s.file_id === chosen.file_id && s.qname === chosen.qname) overloads++;
+    else others.push(s);
+  }
+  return { others, overloads };
 }
 
 export interface FileHit {
@@ -294,6 +317,49 @@ export class Resolver {
     return score;
   }
 
+  private familyCache = new Map<number, Set<number>>();
+
+  /**
+   * Symbols that are "the same target" as `sym` for call-graph purposes:
+   * overloads (same qualified name in the same file) and same-named methods
+   * in containers related by inheritance (interface method <-> implementation,
+   * base method <-> override). A call resolved to any member counts for all.
+   */
+  familyOf(sym: SymbolRow): Set<number> {
+    let fam = this.familyCache.get(sym.id);
+    if (fam) return fam;
+    fam = new Set<number>([sym.id]);
+    const same = this.candidates(sym.name);
+    const container = this.containerName(sym);
+    let related: Set<string> | null = null;
+    if (container && sym.parent_id !== null && same.length > 1 && same.length < 400) {
+      related = new Set(this.ancestorsOf(sym.parent_id));
+      // Descendants: containers whose heritage names this container (2 levels).
+      let frontier = [container];
+      for (let depth = 0; depth < 2 && frontier.length; depth++) {
+        const next: string[] = [];
+        for (const name of frontier) {
+          for (const row of this.db.all<{ name: string }>(
+            `SELECT s.name FROM heritage h JOIN symbols s ON s.id = h.symbol_id WHERE h.name = ? LIMIT 200`, name
+          )) {
+            if (!related.has(row.name)) { related.add(row.name); next.push(row.name); }
+          }
+        }
+        frontier = next.slice(0, 50);
+      }
+    }
+    for (const other of same) {
+      if (other.id === sym.id) continue;
+      if (other.file_id === sym.file_id && other.qname === sym.qname) fam.add(other.id);
+      else if (related && other.kind === sym.kind) {
+        const oc = this.containerName(other);
+        if (oc && related.has(oc)) fam.add(other.id);
+      }
+    }
+    this.familyCache.set(sym.id, fam);
+    return fam;
+  }
+
   /** Rank the definitions a call to `name` at `site` may refer to. */
   resolve(name: string, site: CallSite): Resolution {
     const cands = this.candidates(name);
@@ -304,7 +370,10 @@ export class Resolver {
       .sort((a, b) => b.score - a.score);
     if (scored.length === 0) return { candidates: [], confident: false };
     const top = scored[0]!;
-    const second = scored[1];
+    // The runner-up that matters is the best candidate that is a genuinely
+    // different target (not an overload / interface twin of the winner).
+    const family = scored.length > 1 ? this.familyOf(top.sym) : null;
+    const second = scored.find((c, i) => i > 0 && !family!.has(c.sym.id));
     // A lone global candidate reached through an unrelated receiver is weak
     // evidence (think `list.push()` vs a project method named `push`).
     const confident = top.score >= 30 && (!second || top.score - second.score >= 12);

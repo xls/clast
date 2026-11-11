@@ -55,6 +55,9 @@ export function loadConfig(projectRoot: string): ClastConfig {
 }
 
 export function resolveDbPath(projectRoot: string, config: ClastConfig): string {
+  // CLAST_DB_PATH overrides the configured location (useful for CI caches and experiments).
+  const override = process.env.CLAST_DB_PATH;
+  if (override) return override === ':memory:' || isAbsolute(override) ? override : join(projectRoot, override);
   if (config.dbPath === ':memory:' || isAbsolute(config.dbPath)) return config.dbPath;
   return join(projectRoot, config.dbPath);
 }

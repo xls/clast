@@ -58,6 +58,7 @@ export function callersOf(db: ClastDb, resolver: Resolver, target: SymbolRow): C
     nameId
   );
 
+  const family = resolver.familyOf(target);
   const edges: CallerEdge[] = [];
   const callerCache = new Map<number, SymbolRow | undefined>();
   for (const row of rows) {
@@ -73,10 +74,11 @@ export function callersOf(db: ClastDb, resolver: Resolver, target: SymbolRow): C
     if (res.candidates.length === 0) continue;
     const top = res.candidates[0]!;
     let certain: boolean;
-    if (top.sym.id === target.id) {
+    if (family.has(top.sym.id)) {
+      // Resolved to the target or to its interface/override/overload twin.
       certain = res.confident;
     } else {
-      const mine = res.candidates.find(c => c.sym.id === target.id);
+      const mine = res.candidates.find(c => family.has(c.sym.id));
       // Keep near-ties as uncertain edges; drop sites that clearly mean another definition.
       if (!mine || top.score - mine.score > 10) continue;
       certain = false;
