@@ -793,7 +793,8 @@ export const c: LangSpec = {
   id: 'c',
   lowercaseTypes: true,
   grammar: 'c',
-  extensions: ['.c', '.h'],
+  // .def: X-macro tables included by C sources (command tables, opcode lists).
+  extensions: ['.c', '.h', '.def'],
   identifiers: C_IDENTIFIERS,
   visit: cVisitors,
   /** `.h` files are shared with C++: parse them as C++ when they look like it. */

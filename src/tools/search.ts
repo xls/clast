@@ -383,6 +383,26 @@ function notFound(ctx: ToolContext, name: string, path?: string): string[] {
   return out;
 }
 
+/**
+ * `Widget.layout` was asked for but the answer is `ChatWidget.layout` or an inherited
+ * `Composite.layout`: say so, instead of letting the reader assume it is what they named.
+ */
+function containerNote(asked: string, sym: SymbolRow): string[] {
+  const ref = parseSymbolRef(asked);
+  const want = ref.container[ref.container.length - 1];
+  if (!want) return [];
+  const parts = sym.qname.split('.');
+  const have = parts.length >= 2 ? parts[parts.length - 2]! : '';
+  if (have.toLowerCase() === want.toLowerCase()) return [];
+  // The container may be a package / module / file rather than a type.
+  const inPath = sym.path.toLowerCase().split(/[\/.]/).includes(want.toLowerCase());
+  if (inPath || parts.slice(0, -1).some(p => p.toLowerCase() === want.toLowerCase())) return [];
+  return [
+    `note: "${want}" does not define "${sym.name}" itself; this is ${sym.qname} ` +
+      `(inherited by ${want}, or the closest match - check that it is the one you mean).`,
+  ];
+}
+
 export async function getContext(ctx: ToolContext, args: ContextArgs): Promise<string> {
   const note = await ctx.ready();
   const names = toList(args.name);
@@ -423,6 +443,7 @@ export async function getContext(ctx: ToolContext, args: ContextArgs): Promise<s
       continue;
     }
 
+    out.push(...containerNote(name, chosen));
     out.push(...(await describe(ctx, chosen, args, overloads)));
     if (others.length) {
       out.push(`other definitions named "${chosen.name}" (${others.length}; select with Container.name or path:name):`);
@@ -557,6 +578,7 @@ export async function callGraph(ctx: ToolContext, args: CallGraphArgs): Promise<
   const out: string[] = [symLine(sym)];
   if (sym.signature) out.push(`  ${firstLine(sym.signature, 160)}`);
   out.push(...amb.lines);
+  out.push(...containerNote(args.name, sym));
   // Overloads are told apart by argument types, which call sites do not record: say that they are merged.
   const overloads = matches.filter(m => m.id !== sym.id && m.file_id === sym.file_id && m.qname === sym.qname);
   if (overloads.length) {
@@ -686,6 +708,7 @@ export async function hierarchy(ctx: ToolContext, args: HierarchyArgs): Promise<
   const out: string[] = [symLine(sym)];
   if (sym.signature) out.push(`  ${firstLine(sym.signature, 160)}`);
   out.push(...amb.lines);
+  out.push(...containerNote(args.name, sym));
 
   // A method: show the same method across the type hierarchy.
   if (!CONTAINER_KINDS.has(sym.kind) && sym.kind !== 'type') {
