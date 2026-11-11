@@ -183,6 +183,7 @@ async function main(): Promise<void> {
       case 'types':
         out = await hierarchy(ctx, {
           name: positional[0] ?? '', path: str('path'), depth: num('depth'), limit: num('limit'), within: str('within'),
+          direction: str('direction') as 'supertypes' | 'subtypes' | 'both' | undefined,
         });
         break;
       case 'refs':

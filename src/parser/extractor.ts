@@ -433,44 +433,50 @@ export function extract(tree: Tree, source: string, compiled: CompiledSpec): Ext
   const cursor = tree.walk();
   let hadError = tree.rootNode.hasError;
 
-  function visit(): void {
-    const typeId = cursor.nodeTypeId;
-    if (isIdent[typeId]) {
-      const name = source.slice(cursor.startIndex, cursor.endIndex);
-      if (name.length >= 2 && name.length <= MAX_NAME) {
-        addOcc(name, cursor.startPosition.row + 1);
-      }
-      // Identifiers are leaves in every supported grammar, but a few grammars
-      // wrap them (e.g. PHP `name`); fall through to children only if any.
-    }
-
-    const before = scopes.length;
-    const visitor = visitors[typeId];
-    let skip = false;
-    if (visitor) {
-      try {
-        if (visitor(cursor.currentNode, ctx) === 'skip') skip = true;
-      } catch {
-        // A visitor bug must never take down indexing of the whole file.
-        hadError = true;
-      }
-    }
-
-    if (!skip && cursor.gotoFirstChild()) {
-      do {
-        visit();
-      } while (cursor.gotoNextSibling());
-      cursor.gotoParent();
-    }
-    scopes.length = before;
-  }
-
+  // Iterative pre-order walk (no recursion: generated files nest tens of thousands deep).
+  // `open` holds, for every node whose children are being visited, the scope depth to restore on leaving it.
+  const open: number[] = [];
   try {
-    visit();
-  } catch (err) {
-    // Typically a stack overflow on pathological (generated) files: keep what we have.
-    if (!(err instanceof RangeError)) throw err;
-    hadError = true;
+    let entering = true;
+    for (;;) {
+      if (entering) {
+        const typeId = cursor.nodeTypeId;
+        if (isIdent[typeId]) {
+          const name = source.slice(cursor.startIndex, cursor.endIndex);
+          if (name.length >= 2 && name.length <= MAX_NAME) {
+            addOcc(name, cursor.startPosition.row + 1);
+          }
+          // Identifiers are leaves in every supported grammar, but a few grammars
+          // wrap them (e.g. PHP `name`); fall through to children only if any.
+        }
+
+        const before = scopes.length;
+        const visitor = visitors[typeId];
+        let skip = false;
+        if (visitor) {
+          try {
+            if (visitor(cursor.currentNode, ctx) === 'skip') skip = true;
+          } catch {
+            // A visitor bug must never take down indexing of the whole file.
+            hadError = true;
+          }
+        }
+
+        if (!skip && cursor.gotoFirstChild()) {
+          open.push(before);
+          continue;
+        }
+        scopes.length = before; // leaf (or skipped subtree): its scope closes right away
+      }
+      if (cursor.gotoNextSibling()) {
+        entering = true;
+        continue;
+      }
+      if (open.length === 0) break;
+      cursor.gotoParent();
+      scopes.length = open.pop()!;
+      entering = false;
+    }
   } finally {
     cursor.delete();
   }
