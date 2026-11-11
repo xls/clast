@@ -207,10 +207,12 @@ describe('ruby extraction', () => {
     ]) {
       assert.ok(calls.includes(want), `missing '${want}' in ${JSON.stringify(calls)}`);
     }
-    // Keyword-like DSL calls and bare identifiers are not calls.
-    for (const name of ['require', 'require_relative', 'include', 'extend', 'attr_accessor', 'private', 'bare', 'scope']) {
+    // Keyword-like DSL calls are not calls.
+    for (const name of ['require', 'require_relative', 'include', 'extend', 'attr_accessor', 'private', 'scope']) {
       assert.ok(!ex.calls.some(c => c.name === name), `unexpected call to ${name}`);
     }
+    // A bare identifier inside a method is a call with no arguments, unless it is a local variable.
+    assert.ok(ex.calls.some(c => c.name === 'bare' && c.receiver === null), 'bare identifier in a method body');
     // Calls are merged per (caller, name, receiver): Foo.new and Foo::Baz.new stay separate.
     const foo = ex.calls.find(c => c.name === 'new' && c.receiver === 'Foo');
     assert.equal(foo?.count, 1);

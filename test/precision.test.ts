@@ -1057,3 +1057,42 @@ end
     assert.equal(sup[0]!.sym, null);
   });
 });
+
+describe('Ruby calls without receiver, arguments or parentheses', () => {
+  let q: Project;
+  before(async () => {
+    q = await createProject({
+      'lib/person.rb': `class Person
+  def save
+    true
+  end
+
+  def touch
+    true
+  end
+
+  def offset
+    1
+  end
+
+  def update(attrs, touch: false)
+    offset = 2
+    save
+    items.each { |save_all| save_all }
+    touch
+    offset
+  end
+end
+`,
+    });
+  });
+  after(() => q.dispose());
+
+  it('a bare method name is a call; a parameter or local of that name is not', () => {
+    const callers = (ref: string) =>
+      callersOf(q.clast.db, q.ctx.resolver, findSymbols(q.clast.db, ref)[0]!).filter(e => e.certain).map(e => e.caller?.qname);
+    assert.deepEqual(callers('Person.save'), ['Person.update']);
+    assert.deepEqual(callers('Person.touch'), [], 'touch is a keyword parameter in update');
+    assert.deepEqual(callers('Person.offset'), [], 'offset is assigned as a local in update');
+  });
+});

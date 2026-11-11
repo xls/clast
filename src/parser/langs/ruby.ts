@@ -415,6 +415,74 @@ const SIMPLE_RECEIVERS = new Set([
   'identifier', 'self', 'instance_variable', 'class_variable', 'global_variable',
 ]);
 
+/** Nodes that bind local names: everything below them that is an identifier is a local variable. */
+const BINDERS = new Set([
+  'method_parameters', 'block_parameters', 'lambda_parameters', 'left_assignment_list', 'exception_variable',
+  'destructured_left_assignment', 'rest_assignment',
+]);
+
+/** Per file: method node id -> names that are local variables / parameters somewhere in that method. */
+const methodLocals = new WeakMap<Ctx, Map<number, Set<string>>>();
+
+function collectLocals(node: Node, out: Set<string>, binding: boolean, depth: number): void {
+  if (depth > 60) return;
+  if (node.type === 'identifier') {
+    if (binding) out.add(node.text);
+    return;
+  }
+  const binds = binding || BINDERS.has(node.type);
+  if (node.type === 'assignment' || node.type === 'operator_assignment') {
+    const left = field(node, 'left');
+    if (left && left.type === 'identifier') out.add(left.text);
+  } else if (node.type === 'for') {
+    const pattern = field(node, 'pattern');
+    if (pattern) collectLocals(pattern, out, true, depth + 1);
+  }
+  for (const c of node.namedChildren) if (c) collectLocals(c, out, binds, depth + 1);
+}
+
+/** Where a bare identifier is an expression (and so may be a method call with no arguments). */
+const EXPRESSION_PARENTS = new Set([
+  'body_statement', 'block_body', 'then', 'else', 'begin', 'ensure', 'do', 'binary', 'unary', 'argument_list',
+  'return', 'if', 'unless', 'while', 'until', 'elsif', 'conditional', 'parenthesized_statements', 'pair', 'array',
+  'interpolation', 'element_reference', 'if_modifier', 'unless_modifier', 'while_modifier', 'until_modifier',
+  'rescue_modifier', 'when', 'case', 'not', 'range', 'splat_argument', 'hash_splat_argument', 'block_argument',
+]);
+
+/**
+ * `save` / `_run_callbacks` written without receiver, arguments or parentheses is an identifier
+ * in the grammar: a call unless the method binds a local variable of that name.
+ */
+const bareIdentifier: Visitor = (node, ctx) => {
+  const p = node.parent;
+  if (!p) return;
+  const name = node.text;
+  if (name.length < 2 || name === 'it' || /^_\d$/.test(name) || /^[A-Z]/.test(name)) return;
+  if (p.type === 'call') {
+    if (p.childForFieldName('receiver')?.id !== node.id) return; // the method name itself: handled by `call`
+  } else if (p.type === 'assignment' || p.type === 'operator_assignment') {
+    if (p.childForFieldName('right')?.id !== node.id) return;
+  } else if (!EXPRESSION_PARENTS.has(p.type)) {
+    return;
+  }
+  let method: Node | null = null;
+  for (let q: Node | null = p, i = 0; q && i < 60; q = q.parent, i++) {
+    if (q.type === 'method' || q.type === 'singleton_method') { method = q; break; }
+  }
+  if (!method) return; // class / file level: declarations and DSL, handled elsewhere
+  let byMethod = methodLocals.get(ctx);
+  if (!byMethod) methodLocals.set(ctx, (byMethod = new Map()));
+  let locals = byMethod.get(method.id);
+  if (!locals) {
+    locals = new Set<string>();
+    collectLocals(method, locals, false, 0);
+    locals.delete(field(method, 'name')?.text ?? '');
+    byMethod.set(method.id, locals);
+  }
+  if (locals.has(name)) return;
+  ctx.call(name, node);
+};
+
 /** Name of the method a node is written in, or null at class / file level. */
 function enclosingMethodName(node: Node): string | null {
   for (let p = node.parent, i = 0; p && i < 40; p = p.parent, i++) {
@@ -482,5 +550,6 @@ export const ruby: LangSpec = {
     operator_assignment: assignment,
     call,
     super: superCall,
+    identifier: bareIdentifier,
   },
 };
