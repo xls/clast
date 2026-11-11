@@ -369,7 +369,10 @@ const BUILTIN_RECEIVERS: Record<string, Set<string>> = {
   csharp: new Set(['Console', 'Math', 'String', 'Convert', 'Task', 'Enumerable', 'Path', 'File', 'Guid', 'Environment']),
   go: new Set(['fmt', 'os', 'strings', 'strconv', 'bytes', 'errors', 'time', 'sync', 'math', 'sort', 'io', 'context']),
   rust: new Set(['std', 'core', 'alloc', 'Vec', 'String', 'Box', 'Arc', 'Rc', 'Option', 'Result', 'HashMap', 'mem', 'ptr', 'fmt']),
-  ruby: new Set(['Kernel', 'File', 'Dir', 'Time', 'Math', 'JSON', 'String', 'Array', 'Hash', 'Integer']),
+  ruby: new Set([
+    'Kernel', 'File', 'Dir', 'Time', 'Math', 'JSON', 'String', 'Array', 'Hash', 'Integer', 'Class', 'Module', 'Struct',
+    'Object', 'Proc', 'Set', 'Regexp', 'Thread', 'Mutex', 'Process', 'IO', 'ENV', 'Float', 'Symbol', 'Comparable',
+  ]),
   php: new Set(['parent']),
 };
 
@@ -841,7 +844,11 @@ export class Resolver {
         if (container === T) return 100 + vis + tie;
         const rel = this.relatedTo(T);
         if (rel.anc.has(container)) return 86 + vis + tie; // inherited from a supertype
-        if (rel.desc.has(container)) return 72 + vis + tie; // override in a subtype
+        if (rel.desc.has(container)) {
+          // An override in a subtype. When T itself is a library type (TextWriter, Stream) nearly all
+          // calls on it go elsewhere: keep the project override as a possibility, never as a fact.
+          return this.isProjectType(T) ? 72 + vis + tie : Math.min(48, 40 + vis + tie);
+        }
       }
       // Not a member of T or its relatives. Only languages with extension
       // methods / open classes can still reach an unrelated definition.
@@ -1307,7 +1314,16 @@ export class Resolver {
         // Build variants of one definition (#[cfg], foo_linux.go / foo_windows.go, #ifdef) are the same answer.
         !(c.sym.qname === top.sym.qname && c.sym.kind === top.sym.kind && top.score - c.score < 3)
     );
-    const confident = top.score >= CONFIDENT_SCORE && (!second || top.score - second.score >= CONFIDENT_GAP);
+    let confident = top.score >= CONFIDENT_SCORE && (!second || top.score - second.score >= CONFIDENT_GAP);
+    // A bare call to a distinctively named function or class that the project defines exactly once
+    // (`new AntiforgeryTokenSet()`, `lookupKeyReadOrReply()`): proximity is irrelevant, there is nothing else it can be.
+    if (
+      !confident && !second && !site.receiver && top.score >= 18 &&
+      !STRICT_IMPORTS.has(langFamily(site.lang)) &&
+      (splitIdentifier(name).length >= 2 || name.length >= 10) && this.familyCount(name) === 1
+    ) {
+      confident = true;
+    }
     return { candidates: scored, confident };
   }
 }

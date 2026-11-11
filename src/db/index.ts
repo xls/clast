@@ -9,7 +9,7 @@ import { ftsWords, initials, splitIdentifier } from '../query/words.js';
  * Bump whenever the schema or the extraction output changes shape. The index
  * is a cache: a version mismatch simply drops and rebuilds it.
  */
-export const SCHEMA_VERSION = 10;
+export const SCHEMA_VERSION = 11;
 
 /** Kinds that get a full-text row (concept search). Others are found by name. */
 const FTS_KINDS = new Set(['function', 'method', 'class', 'interface', 'struct', 'trait', 'enum', 'type', 'namespace', 'macro']);
@@ -256,7 +256,8 @@ export class ClastDb {
     raw.exec('PRAGMA synchronous = NORMAL');
     raw.exec('PRAGMA busy_timeout = 5000');
     raw.exec('PRAGMA temp_store = MEMORY');
-    raw.exec('PRAGMA cache_size = -131072');
+    // Modest private cache; the memory map below serves hot pages straight from the OS file cache.
+    raw.exec('PRAGMA cache_size = -32768');
     raw.exec(INDEXES);
     raw.exec('PRAGMA mmap_size = 268435456');
     return new ClastDb(raw, dbPath);
@@ -280,6 +281,7 @@ export class ClastDb {
     this.setMeta('bulk_in_progress', String(process.pid));
     this.db.exec('PRAGMA synchronous = OFF');
     this.db.exec('PRAGMA wal_autocheckpoint = 0');
+    this.db.exec('PRAGMA cache_size = -262144');
     if (dropIndexes) {
       // Cold load of an empty index: no journal at all (nothing to roll back to).
       this.stmts.clear();
@@ -315,6 +317,8 @@ export class ClastDb {
     this.db.exec('PRAGMA wal_checkpoint(TRUNCATE)');
     this.db.exec('PRAGMA wal_autocheckpoint = 1000');
     this.db.exec('PRAGMA synchronous = NORMAL');
+    this.db.exec('PRAGMA cache_size = -32768');
+    try { this.db.exec('PRAGMA shrink_memory'); } catch { /* optional */ }
     // Sampled statistics are enough for the planner and far cheaper than a full ANALYZE.
     this.db.exec('PRAGMA analysis_limit = 400');
     this.db.exec('ANALYZE');

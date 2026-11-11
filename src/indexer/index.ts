@@ -296,12 +296,10 @@ export class Indexer {
       fileId = outcome.fileId;
     });
     if (fileId !== undefined) {
-      if (this.structureChanged) {
-        resolveImports(this.db);
-        this.structureChanged = false;
-      } else {
-        resolveImports(this.db, [fileId]);
-      }
+      // A new file can also satisfy other files' previously unresolved imports;
+      // only those that mention its name are retried (not the whole project).
+      resolveImports(this.db, [fileId], this.structureChanged ? [rel] : undefined);
+      this.structureChanged = false;
     }
     return changed;
   }

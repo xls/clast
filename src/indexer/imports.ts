@@ -192,7 +192,7 @@ function resolveOne(row: ImportRow, index: PathIndex): number | undefined {
  * Resolve import specifiers to indexed files. With `fileIds`, only imports of
  * those files are (re)resolved; otherwise every import is.
  */
-export function resolveImports(db: ClastDb, fileIds?: number[]): number {
+export function resolveImports(db: ClastDb, fileIds?: number[], newPaths?: string[]): number {
   const files = db.all<{ id: number; path: string }>(`SELECT id, path FROM files`);
   const index = new PathIndex(files);
 
@@ -202,6 +202,20 @@ export function resolveImports(db: ClastDb, fileIds?: number[]): number {
   if (fileIds) {
     rows = [];
     for (const id of fileIds) rows.push(...db.all<ImportRow>(`${base} WHERE i.file_id = ?`, id));
+    // Files that just appeared may satisfy imports that could not be resolved before:
+    // retry only the unresolved imports that mention such a file's name.
+    const seen = new Set(rows.map(r => r.rowid));
+    for (const p of newPaths ?? []) {
+      const stem = p.slice(p.lastIndexOf('/') + 1).replace(/\.[A-Za-z0-9]+$/, '');
+      if (stem.length < 2) continue;
+      const like = '%' + stem.replace(/[\\%_]/g, c => '\\' + c) + '%';
+      for (const r of db.all<ImportRow>(`${base} WHERE i.resolved_id IS NULL AND i.source LIKE ? ESCAPE '\\'`, like)) {
+        if (!seen.has(r.rowid)) {
+          seen.add(r.rowid);
+          rows.push(r);
+        }
+      }
+    }
   } else {
     rows = db.all<ImportRow>(base);
   }
