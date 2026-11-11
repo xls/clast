@@ -197,7 +197,7 @@ export function callersOf(
       }
       // Bound to a supertype's declaration, but on a receiver that cannot be the target's class
       // (a sibling subclass, or an explicit super call).
-      if (top.sym.id !== target.id && !resolver.reaches(target, top.sym, {
+      if (certain && top.sym.id !== target.id && !resolver.reaches(target, top.sym, {
         fileId: row.file_id, path: row.path, lang: row.lang, receiver: row.receiver, rtype: row.rtype, via: row.via, caller,
       })) continue;
     } else {

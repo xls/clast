@@ -361,3 +361,73 @@ describe('Ruby constants', () => {
     assert.doesNotMatch(text, /private def save/);
   });
 });
+
+describe('super calls, sibling subclasses and file-local functions', () => {
+  let q: Project;
+  before(async () => {
+    q = await createProject({
+      'py/models.py': `class Model:
+    def save(self):
+        pass
+
+
+class User(Model):
+    def save(self):
+        super().save()
+
+
+class Holder(Model):
+    pass
+
+
+def use(h: Holder, u: User):
+    h.save()
+    u.save()
+`,
+      'py/mixins.py': `class AuditMixin:
+    def save(self):
+        super().save()
+`,
+      'c/a.c': `static void helper(void) {}
+void run_a(void) { helper(); }
+`,
+      'c/b.c': `static void helper(void) {}
+void run_b(void) { helper(); }
+`,
+    });
+  });
+  after(() => q.dispose());
+
+  const callers = (ref: string, certainOnly = true): string[] => {
+    const s = findSymbols(q.clast.db, ref)[0];
+    assert.ok(s, `symbol not found: ${ref}`);
+    return callersOf(q.clast.db, q.ctx.resolver, s)
+      .filter(e => !certainOnly || e.certain)
+      .map(e => e.caller?.qname ?? '<file>')
+      .sort();
+  };
+
+  it('super().m() calls the parent implementation, not the enclosing method', () => {
+    assert.deepEqual(callers('Model.save'), ['User.save', 'use']);
+    const s = findSymbols(q.clast.db, 'User.save')[0]!;
+    const callees = calleesOf(q.clast.db, q.ctx.resolver, s).filter(c => c.target);
+    assert.deepEqual(callees.map(c => c.target!.qname), ['Model.save']);
+  });
+
+  it('a call on a sibling subclass is not a caller of the override', () => {
+    assert.deepEqual(callers('User.save'), ['use']);
+    const edges = callersOf(q.clast.db, q.ctx.resolver, findSymbols(q.clast.db, 'User.save')[0]!);
+    assert.deepEqual(edges.filter(e => e.certain).map(e => e.line), [17], 'u.save() only, not h.save()');
+  });
+
+  it('super() in a mixin with no declared parent is a possible caller, never a certain one', () => {
+    const all = callers('Model.save', false);
+    assert.ok(all.includes('AuditMixin.save'));
+    assert.ok(!callers('Model.save').includes('AuditMixin.save'));
+  });
+
+  it('C static functions of the same name in different files are different functions', () => {
+    assert.deepEqual(callers('c/a.c:helper'), ['run_a']);
+    assert.deepEqual(callers('c/b.c:helper'), ['run_b']);
+  });
+});
