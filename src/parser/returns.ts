@@ -80,8 +80,11 @@ function rawReturnType(sig: string, name: string, lang: string): string | null {
     case 'swift': {
       const end = afterParams(sig, name);
       if (end === -1) return null;
-      const m = /^\s*->\s*(.+?)(?:\s+where\b.*)?$/s.exec(sig.slice(end));
-      return m ? m[1]! : null;
+      // Swift: `func f() async throws -> T`, `throws(MyError) -> T`.
+      const m = /^\s*(?:(?:async|rethrows|throws(?:\([^)]*\))?)\s+)*->\s*(.+?)(?:\s+where\b.*)?$/s.exec(sig.slice(end));
+      if (!m) return null;
+      // `(any Foo)?` / `any Foo` / `some Foo` -> Foo
+      return m[1]!.replace(/^\((?:any|some)\s+([^()]+)\)/, '$1').replace(/^(?:any|some)\s+/, '');
     }
     case 'typescript':
     case 'tsx':

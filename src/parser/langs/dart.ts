@@ -387,6 +387,8 @@ function headStart(node: Node): Node {
 }
 
 function defineCallable(node: Node, range: Node, info: Callable, sigEnd: number, ctx: Ctx): void {
+  // A getter of an extension has no class symbol to carry its type; the hint would land on the file.
+  const fieldLike = range.parent?.type === 'program' || ctx.parentKind() !== null;
   ctx.def(node, {
     name: info.name,
     kind: info.kind,
@@ -396,7 +398,7 @@ function defineCallable(node: Node, range: Node, info: Callable, sigEnd: number,
   });
   // Parameters precede the body in the tree; their hints belong to the symbol just opened.
   if (info.hintParams) hintParameters(info.params, ctx);
-  if (info.getterType) ctx.typeHint(info.name, info.getterType);
+  if (info.getterType && fieldLike) ctx.typeHint(info.name, info.getterType);
 }
 
 /**

@@ -93,6 +93,7 @@ const VALUE_WRAPPERS = new Set([
 const BINDING_NODES = new Set([
   'variable_declarator', 'assignment_expression', 'assignment', 'short_var_declaration', 'let_declaration',
   'init_declarator', 'var_spec', 'local_variable_declaration', 'const_spec', 'augmented_assignment',
+  'property_declaration', 'initialized_variable_definition', // Swift, Dart
 ]);
 
 /**

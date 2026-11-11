@@ -472,6 +472,7 @@ const asExpression: Visitor = (node, ctx) => {
 
 /** Receiver text of a member call: `a`, `self.session`, `a?` / `a!` without the sigil, or '?'. */
 function receiverOf(target: Node | null): string {
+  if (target && target.type === 'simple_identifier') return identText(target);
   const r = simpleReceiver(target);
   if (!r) return '?';
   if (r === '?') return r;

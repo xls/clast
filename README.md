@@ -20,7 +20,7 @@ What an agent gets:
 - **Fast** - parallel indexing in worker threads; warm start only stats files; queries take milliseconds.
 - **No native compilation** - grammars are WASM, storage is Node's built-in `node:sqlite`.
 
-Languages: TypeScript, TSX, JavaScript, Python, Java, C#, Go, Rust, C, C++, Ruby, PHP.
+Languages: TypeScript, TSX, JavaScript, Python, Java, C#, Go, Rust, C, C++, Ruby, PHP, Swift, Dart.
 
 ---
 
@@ -200,6 +200,8 @@ Environment: `CLAST_PROJECT_DIR` (project root), `CLAST_DB_PATH` (index location
 | C++ | `cpp` | `.cpp`, `.hpp`, `.cc`, `.hh`, `.cxx`, `.hxx`, `.inl`, `.ipp` |
 | Ruby | `ruby` | `.rb`, `.rake`, `.gemspec` |
 | PHP | `php` | `.php` |
+| Swift | `swift` | `.swift` |
+| Dart | `dart` | `.dart` |
 
 ### Optional: generated doc comments
 
