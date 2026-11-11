@@ -63,7 +63,7 @@ export async function startServer(): Promise<void> {
     {
       title: 'Search symbols',
       description:
-        'Find functions, classes, methods, types and variables in the code index. Ranked: exact name > prefix > camelCase/snake_case word match > substring > fuzzy. The query can be an identifier ("parseConfig"), a partial or abbreviated name ("parseConf", "pcfg"), a qualified name ("Parser.parse"), or plain words describing behaviour ("resolve import path") which are matched against names, signatures and doc comments. Returns kind, qualified name, file:line range, signature and first doc line per hit. Prefer this over grep for locating definitions. Pass an array to run several searches in one call.',
+        'Ranked symbol search (functions, classes, methods, types, variables). Query by exact name, partial or abbreviated name ("parseConf", "pcfg"), typo, qualified name ("Parser.parse"), or plain words describing behaviour ("resolve import path": matched against names, signatures, docs). Returns kind, qualified name, file:line, signature and doc summary. Prefer over grep for finding definitions. An array runs several searches in one call.',
       inputSchema: {
         query: names.describe('Name, partial name, Container.name, or descriptive words. Array = several searches.'),
         kind: z.enum(SYMBOL_KINDS as [string, ...string[]]).optional().describe('Only this kind of symbol'),
@@ -82,7 +82,7 @@ export async function startServer(): Promise<void> {
     {
       title: 'Symbol source and context',
       description:
-        'Everything needed to understand or edit one symbol, in one call: its exact source (read fresh from disk, with line numbers, including the doc comment), plus who calls it, what it calls, and for classes the member outline, supertypes and subtypes. Use this INSTEAD of reading a whole file when you care about a specific function, method or class. Address symbols as "name", "Class.method" or "path/file.ext:name"; when several definitions share a name the best one is shown and the rest are listed. Pass an array of names to fetch several symbols at once.',
+        'One symbol in one call: its exact source (fresh from disk, with line numbers and doc comment) plus callers, callees, overloads, overrides and, for classes, members and sub/supertypes. Use INSTEAD of reading a whole file when you need a specific function, method or class. Address as "name", "Class.method", "path/file.ext:name" or "path/file.ext:<line>"; ambiguous names list their candidates. An array fetches several symbols at once.',
       inputSchema: {
         name: names.describe('Symbol name, Container.name, or path:name. Array = several symbols.'),
         path: z.string().optional().describe('Disambiguate by file or directory path'),
@@ -100,7 +100,7 @@ export async function startServer(): Promise<void> {
     {
       title: 'Call graph',
       description:
-        'Callers (who calls this) and/or callees (what this calls) of a function, method or class, as an indented tree with file:line per edge; depth > 1 follows the chain. Use before changing a signature or behaviour to see the blast radius, or to trace a request path. Calls are resolved with declared receiver types, imports, inheritance (a call through an interface or base class counts for the implementation) and this/self; edges marked "?" are name-only matches on an untyped receiver. Also works for names not defined in the project (library functions): it then lists the call sites by name.',
+        'Callers and/or callees of a function, method or class as a tree with file:line per edge (depth > 1 follows the chain). Use to see the blast radius before changing something, or to trace a request path. Calls are resolved by receiver type, imports and inheritance (a call through an interface counts for its implementations); "?" marks unconfirmed name-only matches. Test callers are summarised by default. Names not defined in the project (library functions) list their call sites by name.',
       inputSchema: {
         name: z.string().describe('Symbol name, Container.name, or path:name'),
         path: z.string().optional().describe('Disambiguate by file or directory path'),

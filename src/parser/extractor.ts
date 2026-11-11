@@ -126,7 +126,7 @@ export function extract(tree: Tree, source: string, compiled: CompiledSpec): Ext
     return -1;
   }
 
-  function leadingDoc(range: Node): { doc: string; line: number } {
+  function leadingDoc(range: Node): { doc: string; line: number; returns: string | null } {
     const parts: string[] = [];
     let line = 0;
     let nextRow = range.startPosition.row;
@@ -158,10 +158,12 @@ export function extract(tree: Tree, source: string, compiled: CompiledSpec): Ext
       if (parts.length >= 200) break;
       prev = prev.previousSibling;
     }
-    if (parts.length === 0) return { doc: '', line: 0 };
+    if (parts.length === 0) return { doc: '', line: 0, returns: null };
     let doc = parts.map(cleanComment).join('\n').trim();
+    // Documented return type (PHPDoc / JSDoc): taken before the text is truncated.
+    const returns = /@returns?\s+\{?([^\s}|]+)/.exec(doc)?.[1] ?? null;
     if (doc.length > MAX_DOC) doc = doc.slice(0, MAX_DOC - 3) + '...';
-    return { doc, line };
+    return { doc, line, returns };
   }
 
   const ctx: Ctx = {
@@ -238,6 +240,15 @@ export function extract(tree: Tree, source: string, compiled: CompiledSpec): Ext
         // Enclosing class for Self / static / this return types: the last qualifier segment.
         const selfType = prefix.length ? prefix[prefix.length - 1]!.split('.').pop()! : null;
         ret = returnTypeOf(signature, name, compiled.spec.id, selfType, compiled.spec.lowercaseTypes === true);
+        if (!ret) {
+          // No declared type: fall back to the documented one (`@return $this`, `@returns {Foo}`).
+          const documented = lead.returns ?? /@returns?\s+\{?([^\s}|]+)/.exec(doc)?.[1] ?? null;
+          if (documented) {
+            ret = /^\\?(\$this|static|self|this)$/.test(documented)
+              ? selfType
+              : typeName(documented, compiled.spec.lowercaseTypes === true);
+          }
+        }
       }
 
       const index = symbols.length;
@@ -311,7 +322,14 @@ export function extract(tree: Tree, source: string, compiled: CompiledSpec): Ext
         rec.count++;
       } else {
         const rtype = receiverType ? typeName(receiverType, compiled.spec.lowercaseTypes === true) : null;
-        rec = { caller, name, line: node.startPosition.row + 1, receiver, rtype, count: 1, via: -1 };
+        // A chained call spanning several lines starts at the head of the chain; report the
+        // line where this call's own argument list opens (`->then(`), which is where a reader looks.
+        let row = node.startPosition.row;
+        if (node.endPosition.row !== row) {
+          const args = node.childForFieldName('arguments');
+          if (args) row = args.startPosition.row;
+        }
+        rec = { caller, name, line: row + 1, receiver, rtype, count: 1, via: -1 };
         callMap.set(key, rec);
       }
       // Call chains: in `a.b().c()` the expression for c starts where the expression for b starts,
