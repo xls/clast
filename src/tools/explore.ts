@@ -172,7 +172,7 @@ function outlineFile(ctx: ToolContext, file: FileHit, members: 'all' | 'callable
       hidden.set(s.parent_id, (hidden.get(s.parent_id) ?? 0) + 1);
       continue;
     }
-    const label = s.signature || `${s.kind} ${s.name}`;
+    const label = firstLine(s.signature || `${s.kind} ${s.name}`, 150);
     // Members defined outside their type's body (Go receivers, Rust impl blocks, C++ Foo::bar):
     // say which type they belong to when the signature does not.
     const dot = s.qname.lastIndexOf('.');

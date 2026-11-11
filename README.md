@@ -72,7 +72,7 @@ The project root is `CLAST_PROJECT_DIR`, else `CLAUDE_PROJECT_DIR`, else the wor
 | `clast_get_context` | Show me X. | Source of one symbol plus callers, callees, overloads, overrides, subtypes. Batch several names in one call |
 | `clast_call_graph` | Who calls X? What does X call? | Caller / callee tree to depth N, test callers separated, `within` path filter. Works for external names too |
 | `clast_references` | Where is X used? | Every usage of an identifier (calls, types, imports, assignments) with the enclosing symbol of each line |
-| `clast_hierarchy` | What implements / extends / overrides X? | Supertypes and transitive subtypes; Go interface satisfaction by method set; the same method across related types |
+| `clast_hierarchy` | What implements / extends / overrides X? | Supertypes and transitive subtypes; Go interface satisfaction by method set; the same method across related types; `within` path filter |
 | `clast_grep` | Where does this text appear? | Literal or regex search over all text files; each hit is labelled with its enclosing function |
 | `clast_changes` | What did this diff touch? | Symbols changed vs HEAD or a base ref, their callers outside the change, and the tests that exercise them |
 | `clast_status` | Is the index healthy? | Counts, languages, indexing progress, watcher state |
