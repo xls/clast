@@ -136,6 +136,13 @@ function resolveOne(row: ImportRow, index: PathIndex): number | undefined {
   }
 
   if (row.lang === 'c' || row.lang === 'cpp' || row.lang === 'objc') {
+    // <system.h> includes only resolve to an exact project path (a public
+    // include dir), never by suffix: <math.h> is not some vendored test/math.h.
+    const sys = /^<(.*)>$/.exec(src);
+    if (sys) {
+      const p = sys[1]!;
+      return index.lookup(p) ?? index.lookup('include/' + p) ?? index.lookup('src/' + p);
+    }
     return (
       index.lookup(posix.normalize(posix.join(dir, src))) ??
       index.lookup(src) ??

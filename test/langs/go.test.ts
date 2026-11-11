@@ -263,6 +263,117 @@ func run() {
     assert.deepEqual(callList(ex), ['run -> deep', 'run -> h', 'run -> pkg.Make', 'run -> point']);
   });
 
+  it('resolves receivers to declared types', async () => {
+    const ex = await extractSource('h.go', `package h
+
+type Engine struct {
+	pool sync.Pool
+	trees, other MethodTrees
+	*RouterGroup
+	count int
+}
+
+type Reader interface {
+	Read(p Packet)
+}
+
+func (engine *Engine) Serve(w http.ResponseWriter, a, b *Request, rest ...Option) (res Result, err error) {
+	engine.pool.Get()
+	engine.other.find()
+	engine.RouterGroup.Use()
+	engine.count.String()
+	w.Write()
+	b.Parse()
+	res.Done()
+	rest.each()
+	var v Visitor
+	var lit = Site{}
+	ptr := &Page{}
+	n := new(Node)
+	c, d := NewClient(1), pkg.NewDialer()
+	g := build()
+	v.Visit()
+	lit.Render()
+	ptr.Title()
+	n.Next()
+	c.Do()
+	d.Dial()
+	g.Go()
+	fn := func(q *Query) { q.Run() }
+	engine.pool.Get().(*Ctx).reset()
+	p.x()
+	return
+}
+
+var global = &Engine{}
+
+func use() { global.Serve() }
+`);
+    const rtype = (name: string) => {
+      const c = ex.calls.find(x => x.name === name);
+      assert.ok(c, `call ${name} not found`);
+      return c.rtype;
+    };
+    assert.equal(rtype('Get'), 'Pool');
+    assert.equal(rtype('find'), 'MethodTrees');
+    assert.equal(rtype('Use'), 'RouterGroup');
+    assert.equal(rtype('String'), null);
+    assert.equal(rtype('Write'), 'ResponseWriter');
+    assert.equal(rtype('Parse'), 'Request');
+    assert.equal(rtype('Done'), 'Result');
+    assert.equal(rtype('each'), null, 'variadic parameters are slices');
+    assert.equal(rtype('Visit'), 'Visitor');
+    assert.equal(rtype('Render'), 'Site');
+    assert.equal(rtype('Title'), 'Page');
+    assert.equal(rtype('Next'), 'Node');
+    assert.equal(rtype('Do'), 'Client');
+    assert.equal(rtype('Dial'), 'Dialer');
+    assert.equal(rtype('Go'), null, 'arbitrary calls are not guessed');
+    assert.equal(rtype('Run'), 'Query');
+    assert.equal(rtype('x'), null, 'interface method parameters are not hints');
+    assert.equal(rtype('Serve'), 'Engine');
+    // Call chains keep a receiver marker so they are not mistaken for bare calls.
+    assert.equal(ex.calls.find(x => x.name === 'reset')!.receiver, '?');
+  });
+
+  it('records interface assertions and skips self-embedding', async () => {
+    const ex = await extractSource('i.go', `package i
+
+var _ IRouter = (*Engine)(nil)
+var _ error = (*Engine)(nil)
+
+type Engine struct{ RouterGroup }
+
+var (
+	_ IRoutes = &Engine{}
+	_ http.Handler = new(Engine)
+	_ Missing = (*Elsewhere)(nil)
+)
+
+type ResponseWriter interface {
+	http.ResponseWriter
+	http.Hijacker
+}
+
+type Context struct {
+	context.Context
+	Base
+}
+
+type Base struct{ Base2 }
+`);
+    assert.deepEqual(heritageList(ex), [
+      'Engine implements IRouter',
+      'Engine extends RouterGroup',
+      'Engine implements IRoutes',
+      'Engine implements Handler',
+      'ResponseWriter extends Hijacker',
+      'Context extends Base',
+      'Base extends Base2',
+    ]);
+    assert.ok(!ex.symbols.some(s => s.name === '_'));
+  });
+
   it('tolerates broken source', async () => {
     const ex = await extractSource('c.go', 'package c\n\nfunc (s *) Broken( {\n\ttype struct\n}\nfunc Ok() { call( }\n');
     assert.ok(Array.isArray(ex.symbols));

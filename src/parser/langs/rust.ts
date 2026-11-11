@@ -1,14 +1,18 @@
 import type { Node } from 'web-tree-sitter';
 import { cleanComment } from '../extractor.js';
 import type { Ctx, DefOpts, LangSpec, Visitor } from '../spec.js';
-import { field } from '../spec.js';
+import { field, simpleReceiver } from '../spec.js';
 
 const MAX_SIG_SLICE = 600;
 const MAX_DOC = 600;
 const MAX_DOC_LINES = 40;
+const MAX_TYPE_TEXT = 80;
 
 /** Prelude enum constructors: never user symbols, extremely frequent. */
 const NOISE_CALLS = new Set(['Some', 'Ok', 'Err']);
+
+/** Smart pointers / cells: `Arc::new(Foo::new())` is used like a `Foo`. */
+const VALUE_WRAPPERS = new Set(['Arc', 'Rc', 'Box', 'Mutex', 'RwLock', 'RefCell', 'Cell', 'Pin']);
 
 /** An item found in macro arguments, applied when the walker reaches its body token tree. */
 interface Pending {
@@ -22,6 +26,10 @@ interface Pending {
   member?: boolean;
   /** Register the symbol as a type for `impl Trait for Type` heritage. */
   isType?: boolean;
+  /** `macro_rules!` definition: its body is a template that defines nothing. */
+  macroDef?: boolean;
+  /** Declared types of parameters / fields: [name, type text]. */
+  hints?: Array<[string, string]>;
 }
 
 /**
@@ -37,11 +45,14 @@ interface FileState {
   macroDefEnd: number;
   /** Keyed by the start offset of the body token tree. */
   pending: Map<number, Pending>;
+  /** Type of the `impl` block being walked (what `Self` means) and its end offset. */
+  implName: string | null;
+  implEnd: number;
 }
 const states = new WeakMap<Ctx, FileState>();
 function state(ctx: Ctx): FileState {
   let s = states.get(ctx);
-  if (!s) states.set(ctx, (s = { types: new Map(), attrEnd: -1, macroDefEnd: -1, pending: new Map() }));
+  if (!s) states.set(ctx, (s = { types: new Map(), attrEnd: -1, macroDefEnd: -1, pending: new Map(), implName: null, implEnd: -1 }));
   return s;
 }
 
@@ -143,10 +154,76 @@ function typeName(node: Node | null | undefined): string | null {
   return null;
 }
 
-function shortText(node: Node | null | undefined, max = 40): string | null {
-  if (!node || node.endIndex - node.startIndex > max) return null;
-  const t = node.text;
-  return /[\s(]/.test(t) ? null : t;
+/**
+ * Raw type text prepared for ctx.typeHint: references, raw pointers and
+ * `mut` / `dyn` / `impl` are dropped (`&'a mut Foo` -> Foo); `Self` becomes
+ * the type of the enclosing `impl` block.
+ */
+function cleanType(raw: string, at: number, st: FileState): string | null {
+  const t = raw.replace(/[&*]\s*(?:'\w+\s*)?/g, '').replace(/\b(?:mut|dyn|impl|const)\s+/g, '').trim();
+  if (t === 'Self') return at < st.implEnd ? st.implName : null;
+  return t || null;
+}
+
+function typeText(node: Node | null | undefined, st: FileState): string | null {
+  if (!node || node.endIndex - node.startIndex > MAX_TYPE_TEXT) return null;
+  return cleanType(node.text, node.startIndex, st);
+}
+
+function isTypeName(name: string | null): name is string {
+  return !!name && name.length > 1 && name[0]! >= 'A' && name[0]! <= 'Z';
+}
+
+/**
+ * Type of the value an expression obviously constructs: `Foo { .. }`,
+ * `Foo::new(..)` / `Foo::default()` / `m::Foo::with_capacity(..)` (a path
+ * whose type segment is capitalised; enum variants `E::V(..)` yield the enum),
+ * tuple structs `Foo(..)`, also behind `?`, `.await`, `&` and smart pointer
+ * constructors (`Arc::new(Foo::new())`). Other calls are not guessed.
+ */
+function valueType(v: Node | null | undefined, st: FileState): string | null {
+  for (let i = 0; v && i < 6; i++) {
+    switch (v.type) {
+      case 'try_expression':
+      case 'await_expression':
+      case 'parenthesized_expression':
+        v = v.namedChildren[0];
+        break;
+      case 'reference_expression':
+        v = field(v, 'value');
+        break;
+      case 'struct_expression': {
+        const name = typeName(field(v, 'name'));
+        if (name === 'Self') return v.startIndex < st.implEnd ? st.implName : null;
+        return isTypeName(name) ? name : null;
+      }
+      case 'call_expression': {
+        let fn = field(v, 'function');
+        if (fn && fn.type === 'generic_function') fn = field(fn, 'function');
+        if (!fn) return null;
+        if (fn.type === 'identifier') {
+          const name = fn.text;
+          return isTypeName(name) && !NOISE_CALLS.has(name) ? name : null;
+        }
+        if (fn.type !== 'scoped_identifier') return null;
+        const type = typeName(field(fn, 'path'));
+        if (type === 'Self') return v.startIndex < st.implEnd ? st.implName : null;
+        if (!isTypeName(type)) {
+          // `module::Foo(..)`: tuple struct behind a module path.
+          const name = field(fn, 'name')?.text ?? null;
+          return type && isTypeName(name) && !NOISE_CALLS.has(name) ? name : null;
+        }
+        if (!VALUE_WRAPPERS.has(type)) return type;
+        const ctor = field(fn, 'name')?.text;
+        if (ctor !== 'new' && ctor !== 'pin') return null;
+        v = field(v, 'arguments')?.namedChildren[0];
+        break;
+      }
+      default:
+        return null;
+    }
+  }
+  return null;
 }
 
 /** `impl_item` / `trait_item` that directly contains the member, if any. */
@@ -189,6 +266,7 @@ function fields(list: Node | null, ctx: Ctx): void {
     const name = field(f, 'name');
     if (!name) continue;
     define(f, ctx, { name: name.text, kind: 'field', body: null, scope: false, exported: isPub(f) });
+    ctx.typeHint(name.text, typeText(field(f, 'type'), state(ctx)));
   }
 }
 
@@ -236,11 +314,14 @@ const implItem: Visitor = (node, ctx) => {
   const name = typeName(field(node, 'type'));
   if (!name) return;
   ctx.scope(name);
+  const st = state(ctx);
+  st.implName = name;
+  st.implEnd = node.endIndex;
   const trait = field(node, 'trait');
   if (!trait) return;
   // Heritage needs the symbol of the implementing type: only known when the
   // type is defined earlier in the same file.
-  const sym = state(ctx).types.get(name);
+  const sym = st.types.get(name);
   if (sym !== undefined) ctx.inherit(sym, typeName(trait), 'implements');
 };
 
@@ -310,12 +391,13 @@ function recordCall(fn: Node | null, node: Node, ctx: Ctx): void {
         // `Vec::<u8>::new` -> receiver `Vec`
         const recv = path && (path.type === 'generic_type' || path.type === 'bracketed_type')
           ? typeName(path)
-          : shortText(path);
-        ctx.call(field(fn, 'name')?.text, node, recv);
+          : simpleReceiver(path);
+        ctx.call(field(fn, 'name')?.text, node, recv ?? '?');
         return;
       }
       case 'field_expression':
-        ctx.call(field(fn, 'field')?.text, node, shortText(field(fn, 'value')));
+        // Always a receiver ('?' for method chains): a method call is never a bare call.
+        ctx.call(field(fn, 'field')?.text, node, simpleReceiver(field(fn, 'value')) ?? '?');
         return;
       case 'generic_function': // `foo::<T>()`, `x.collect::<Vec<_>>()`
         fn = field(fn, 'function');
@@ -334,7 +416,31 @@ const macroInvocation: Visitor = (node, ctx) => {
   const m = field(node, 'macro');
   if (!m) return;
   if (m.type === 'identifier') ctx.call(m.text, node);
-  else if (m.type === 'scoped_identifier') ctx.call(field(m, 'name')?.text, node, shortText(field(m, 'path')));
+  else if (m.type === 'scoped_identifier') ctx.call(field(m, 'name')?.text, node, simpleReceiver(field(m, 'path')) ?? '?');
+};
+
+/** `x: &Foo`, `mut x: Foo` in function and closure parameter lists. */
+const parameter: Visitor = (node, ctx) => {
+  const list = node.parent;
+  if (!list) return;
+  if (list.type !== 'closure_parameters') {
+    const owner = list.parent?.type;
+    if (owner !== 'function_item' && owner !== 'function_signature_item') return;
+  }
+  const pat = field(node, 'pattern');
+  if (!pat || pat.type !== 'identifier') return;
+  const type = typeText(field(node, 'type'), state(ctx));
+  if (type) ctx.typeHint(pat.text, type);
+};
+
+/** `let x: Foo = ..`, `let x = Foo::new(..)`, `let x = Foo { .. }` */
+const letDeclaration: Visitor = (node, ctx) => {
+  const pat = field(node, 'pattern');
+  if (!pat || pat.type !== 'identifier') return;
+  const st = state(ctx);
+  const declared = field(node, 'type');
+  const type = declared ? typeText(declared, st) : valueType(field(node, 'value'), st);
+  if (type) ctx.typeHint(pat.text, type);
 };
 
 /** `Foo { a, b }` uses the type. */
@@ -360,6 +466,127 @@ const ITEM_KINDS: Record<string, DefOpts['kind']> = {
 
 function isGroup(node: Node | undefined | null, open: string): node is Node {
   return !!node && node.type === 'token_tree' && node.firstChild?.type === open;
+}
+
+/**
+ * Line range of an item recovered from macro arguments: from its first token
+ * (visibility / `async` / keyword) to its last one. There is no single node
+ * that covers it, and the framework takes the range of a definition from a
+ * node, so this builds the few node properties `Ctx.def` reads.
+ * `doc` is the last doc comment in front of the item (for the doc line).
+ */
+function span(first: Node, last: Node, doc: Node | null | undefined): Node {
+  return {
+    startIndex: first.startIndex,
+    endIndex: last.endIndex,
+    startPosition: first.startPosition,
+    endPosition: last.endPosition,
+    previousSibling: doc ?? null,
+    parent: null,
+  } as unknown as Node;
+}
+
+/** Doc comments in front of token `cs[s]`, skipping `#[attr]` pairs. */
+function docBefore(cs: Node[], s: number): Node[] {
+  const parts: Node[] = [];
+  for (let d = s - 1; d >= 0 && parts.length < 400;) {
+    const t = cs[d]!;
+    if (isComment(t)) {
+      parts.unshift(t);
+      d--;
+    } else if (isGroup(t, '[') && d >= 1 && cs[d - 1]!.type === '#') {
+      d -= 2;
+    } else {
+      break;
+    }
+  }
+  return parts;
+}
+
+/**
+ * Declared types in a parameter list or struct body given as a token group:
+ * `(future: F, meta: SpawnMeta<'_>)`, `{ #[pin] pub inner: Inner, .. }`.
+ */
+function groupHints(group: Node, ctx: Ctx, st: FileState): Array<[string, string]> {
+  const out: Array<[string, string]> = [];
+  const len = group.endIndex - group.startIndex;
+  if (len < 5 || len > 4000) return out;
+  const text = ctx.src.slice(group.startIndex + 1, group.endIndex - 1).replace(/\/\/[^\n]*/g, '');
+  const entry = (start: number, end: number): void => {
+    const m = /^\s*(?:#\[[^\]]*\]\s*)*(?:pub(?:\s*\([^)]*\))?\s+)?(?:mut\s+)?([A-Za-z_]\w*)\s*:(?!:)\s*(\S[^]*)$/.exec(text.slice(start, end));
+    if (!m || m[2]!.length > MAX_TYPE_TEXT) return;
+    const type = cleanType(m[2]!, group.startIndex, st);
+    if (type) out.push([m[1]!, type]);
+  };
+  let depth = 0;
+  let start = 0;
+  for (let i = 0; i < text.length; i++) {
+    const ch = text.charCodeAt(i);
+    if (ch === 60 || ch === 40 || ch === 91 || ch === 123) depth++; // < ( [ {
+    else if (ch === 41 || ch === 93 || ch === 125) depth--; // ) ] }
+    else if (ch === 62) { // > but not -> / =>
+      const before = text.charCodeAt(i - 1);
+      if (before !== 45 && before !== 61) depth--;
+    } else if (ch === 44 && depth === 0) { // ,
+      entry(start, i);
+      start = i + 1;
+    }
+  }
+  entry(start, text.length);
+  return out;
+}
+
+/**
+ * `macro_rules! name { .. }` inside macro arguments (`doc! { macro_rules! select { .. } }`).
+ * `cs[i]` is the `macro_rules` identifier.
+ */
+function macroRules(cs: Node[], i: number, st: FileState): void {
+  const name = cs[i + 2];
+  const body = cs[i + 3];
+  if (cs[i + 1]?.type !== '!' || !name || name.type !== 'identifier' || !body || body.type !== 'token_tree') return;
+  if (st.pending.has(body.startIndex)) return;
+  let exported = false;
+  for (let d = i - 1; d >= 1; d--) {
+    const t = cs[d]!;
+    if (isComment(t)) continue;
+    if (!isGroup(t, '[') || cs[d - 1]!.type !== '#') break;
+    if (t.endIndex - t.startIndex < 40 && t.text.includes('macro_export')) exported = true;
+    d--;
+  }
+  const docParts = docBefore(cs, i);
+  st.pending.set(body.startIndex, {
+    def: {
+      name: name.text,
+      kind: 'macro',
+      sig: 'macro_rules! ' + name.text,
+      doc: joinDoc(docParts) ?? '',
+      exported,
+      range: span(cs[i]!, body, docParts[docParts.length - 1]),
+    },
+    macroDef: true,
+  });
+}
+
+/**
+ * Receiver of a call recovered from tokens; `cs[k]` is the called name.
+ * `x.f(..)` -> x, `self.q.f(..)` -> self.q, `A::B::f(..)` -> A::B, call
+ * chains and other expressions -> '?', a bare `f(..)` -> null.
+ */
+function tokenReceiver(cs: Node[], k: number): string | null {
+  const sep = cs[k - 1]?.type;
+  if (sep !== '.' && sep !== '::') return null;
+  let recv = '';
+  for (let j = k - 2, parts = 0; j >= 0; j -= 2, parts++) {
+    const t = cs[j]!;
+    const type = t.type;
+    if (type !== 'identifier' && type !== 'self' && type !== 'crate' && type !== 'super') return '?';
+    if (parts >= (sep === '.' ? 2 : 4)) return '?';
+    recv = recv ? t.text + sep + recv : t.text;
+    const before = cs[j - 1]?.type;
+    if (before === sep) continue;
+    return before === '.' || before === '::' ? '?' : recv;
+  }
+  return recv || '?';
 }
 
 /** `impl<T> fmt::Debug for &'a Foo<T> where ..` -> [Foo, Debug] */
@@ -425,21 +652,11 @@ function macroItem(cs: Node[], i: number, member: boolean, ctx: Ctx, st: FileSta
       break;
     }
   }
-  // Doc comments in front of that, skipping `#[attr]` pairs.
-  const docParts: Node[] = [];
-  for (let d = s - 1; d >= 0 && docParts.length < 400;) {
-    const t = cs[d]!;
-    if (isComment(t)) {
-      docParts.unshift(t);
-      d--;
-    } else if (isGroup(t, '[') && d >= 1 && cs[d - 1]!.type === '#') {
-      d -= 2;
-    } else {
-      break;
-    }
-  }
+  const docParts = docBefore(cs, s);
+  const lastDoc = docParts[docParts.length - 1];
   const doc = joinDoc(docParts) ?? '';
-  const start = cs[s]!.startIndex;
+  const first = cs[s]!;
+  const start = first.startIndex;
   const sigTo = (end: number) => ctx.src.slice(start, Math.min(end, start + MAX_SIG_SLICE)).replace(/[;,\s]+$/, '');
 
   if (kw === 'const' || kw === 'static' || kw === 'type') {
@@ -453,6 +670,7 @@ function macroItem(cs: Node[], i: number, member: boolean, ctx: Ctx, st: FileSta
         const long = eq >= 0 && t.startIndex - eq > 80;
         ctx.def(nameNode, {
           name, kind: ITEM_KINDS[kw]!, sig: sigTo(long ? eq : t.startIndex), doc, scope: false,
+          range: span(first, t, lastDoc),
           exported: exported || (member && kw === 'type'),
         });
         return;
@@ -462,11 +680,14 @@ function macroItem(cs: Node[], i: number, member: boolean, ctx: Ctx, st: FileSta
   }
 
   let body: Node | null = null;
+  let params: Node | null = null;
+  let last: Node | null = null;
   let end = -1;
   for (let j = i + 2; j < cs.length && j < i + 120; j++) {
     const t = cs[j]!;
-    if (t.type === ';') { end = t.startIndex; break; }
+    if (t.type === ';') { end = t.startIndex; last = t; break; }
     if (isGroup(t, '{')) { body = t; break; }
+    if (!params && kw === 'fn' && isGroup(t, '(')) params = t;
   }
   if (kw === 'mod' && !body) {
     if (end >= 0) ctx.imp('self::' + name, nameNode, [name]);
@@ -480,9 +701,13 @@ function macroItem(cs: Node[], i: number, member: boolean, ctx: Ctx, st: FileSta
     sig: sigTo(body ? body.startIndex : end),
     doc,
     exported,
+    // The whole item, not only its body: `pub fn spawn<F>(..) -> .. where .. { .. }`
+    range: span(first, body ?? last ?? nameNode, lastDoc),
   };
   if (body && !st.pending.has(body.startIndex)) {
-    st.pending.set(body.startIndex, { def: opts, member: kw === 'trait', isType });
+    const typed = kw === 'fn' ? params : kw === 'struct' || kw === 'union' ? body : null;
+    const hints = typed ? groupHints(typed, ctx, st) : undefined;
+    st.pending.set(body.startIndex, { def: opts, member: kw === 'trait', isType, hints });
   } else {
     opts.scope = false;
     const sym = ctx.def(nameNode, opts);
@@ -510,6 +735,8 @@ const tokenTree: Visitor = (node, ctx) => {
     if (p.def) {
       const sym = ctx.def(node, p.def);
       if (p.isType) st.types.set(p.def.name, sym);
+      if (p.macroDef) st.macroDefEnd = node.endIndex;
+      if (p.hints) for (const [name, type] of p.hints) ctx.typeHint(name, type);
     } else if (p.scope) {
       ctx.scope(p.scope);
       const sym = st.types.get(p.scope);
@@ -530,14 +757,18 @@ const tokenTree: Visitor = (node, ctx) => {
         // `fn name(..)` is a declaration, not a call.
         if (c.firstChild?.type === '(' && !(i > 1 && cs[i - 2]?.type === 'fn')) {
           const name = prev.text;
-          if (!NOISE_CALLS.has(name)) ctx.call(name, prev);
+          if (!NOISE_CALLS.has(name)) ctx.call(name, prev, tokenReceiver(cs, i - 1));
         }
       } else if (prev.type === '!') {
         const m = i > 1 ? cs[i - 2] : null;
         if (m && m.type === 'identifier') ctx.call(m.text, m);
       }
-    } else if (items && ITEM_KEYWORDS.has(type)) {
+    } else if (!items) {
+      continue;
+    } else if (ITEM_KEYWORDS.has(type)) {
       macroItem(cs, i, member, ctx, st);
+    } else if (type === 'identifier' && c.endIndex - c.startIndex === 11 && c.text === 'macro_rules') {
+      macroRules(cs, i, st);
     }
   }
 };
@@ -620,6 +851,8 @@ export const rust: LangSpec = {
     call_expression: callExpression,
     macro_invocation: macroInvocation,
     struct_expression: structExpression,
+    parameter: parameter,
+    let_declaration: letDeclaration,
     attribute_item: attributeItem,
     inner_attribute_item: attributeItem,
     token_tree: tokenTree,

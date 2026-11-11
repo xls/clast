@@ -10,7 +10,7 @@ import { SYMBOL_KINDS } from '../types.js';
 import { findSymbols } from '../query/resolve.js';
 import { symLine } from '../query/format.js';
 import { ToolContext } from '../tools/context.js';
-import { callGraph, getContext, search } from '../tools/search.js';
+import { callGraph, getContext, hierarchy, search } from '../tools/search.js';
 import { changes, fileSummary, grep, overview, references, reindex, status } from '../tools/explore.js';
 import { VERSION } from '../version.js';
 
@@ -20,7 +20,8 @@ Use it first for code navigation:
 - Unfamiliar repo or directory -> clast_overview, then clast_file_summary on a directory or file.
 - "Where is X defined / what is it called?" -> clast_search (accepts exact names, partial or abbreviated names, Class.method, or plain words describing the behaviour).
 - "Show me X" / before editing X -> clast_get_context (returns the source of just that symbol plus its callers and callees; no need to read the whole file).
-- "Who calls X / what breaks if I change X?" -> clast_call_graph (callers/callees to depth N) and clast_references (every usage, including non-call uses, types and imports).
+- "Who calls X / what breaks if I change X?" -> clast_call_graph (callers/callees, depth N) and clast_references (every usage, including non-call uses, types and imports).
+- "What implements / extends / overrides X?" -> clast_hierarchy.
 - Text that is not a symbol (strings, comments, config keys) -> clast_grep (matches are labelled with the enclosing function).
 - Reviewing or finishing a change -> clast_changes (symbols touched by the git diff, their callers, and the tests that exercise them).
 
@@ -98,18 +99,37 @@ export async function startServer(): Promise<void> {
     {
       title: 'Call graph',
       description:
-        'Trace callers (who calls this, transitively) and/or callees (what this calls) of a function, method or class as an indented tree with file:line for every edge. Use before changing a signature or behaviour to see the blast radius, or to follow a request path through the code. Calls are resolved using imports, receivers (this/self, Class.method, module.func) and file proximity; edges marked "?" are name-only matches.',
+        'Callers (who calls this) and/or callees (what this calls) of a function, method or class, as an indented tree with file:line per edge; depth > 1 follows the chain. Use before changing a signature or behaviour to see the blast radius, or to trace a request path. Calls are resolved with declared receiver types, imports, inheritance (a call through an interface or base class counts for the implementation) and this/self; edges marked "?" are name-only matches on an untyped receiver. Also works for names not defined in the project (library functions): it then lists the call sites by name.',
       inputSchema: {
         name: z.string().describe('Symbol name, Container.name, or path:name'),
         path: z.string().optional().describe('Disambiguate by file or directory path'),
         direction: z.enum(['callers', 'callees', 'both']).default('both'),
-        depth: z.number().int().min(1).max(6).default(2).describe('Levels to traverse'),
-        limit: z.number().int().min(5).max(400).default(60).describe('Max nodes per direction'),
-        includeTests: z.boolean().default(true).describe('Include callers located in test files'),
+        depth: z.number().int().min(1).max(6).default(1).describe('Levels to traverse (1 = direct only; 2-3 to follow a chain)'),
+        limit: z.number().int().min(1).max(2000).default(50).describe('Max nodes per direction'),
+        includeTests: z.boolean().default(true).describe('Include callers / callees located in test files'),
+        within: z.string().optional().describe('Only callers located under this path (e.g. "src/server")'),
       },
       annotations: READ_ONLY,
     },
     guard(args => callGraph(ctx, args))
+  );
+
+  server.registerTool(
+    'clast_hierarchy',
+    {
+      title: 'Type hierarchy',
+      description:
+        'Supertypes and subtypes of a class, interface, struct or trait (transitive, as a tree): what it extends/implements and everything that extends/implements it, including Go types that satisfy an interface by method set. Given a method, lists the same method on related types (interface declaration, overrides, implementations). Use for "what implements X", "which classes override Y", "what does Z inherit from".',
+      inputSchema: {
+        name: z.string().describe('Type or method: name, Container.name, or path:name'),
+        path: z.string().optional().describe('Disambiguate by file or directory path'),
+        direction: z.enum(['supertypes', 'subtypes', 'both']).default('both'),
+        depth: z.number().int().min(1).max(8).default(3).describe('Levels to expand'),
+        limit: z.number().int().min(1).max(1000).default(80).describe('Max lines per direction'),
+      },
+      annotations: READ_ONLY,
+    },
+    guard(args => hierarchy(ctx, args))
   );
 
   server.registerTool(

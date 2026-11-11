@@ -7,7 +7,7 @@ import { createProject, type Project } from './fixture.js';
 import { searchSymbols } from '../src/query/search.js';
 import { findSymbols } from '../src/query/resolve.js';
 import { callersOf, calleesOf } from '../src/query/callgraph.js';
-import { callGraph, getContext, search } from '../src/tools/search.js';
+import { callGraph, getContext, hierarchy, search } from '../src/tools/search.js';
 import { changes, fileSummary, grep, overview, references, reindex, status } from '../src/tools/explore.js';
 
 let p: Project;
@@ -161,18 +161,50 @@ describe('tools', () => {
     assert.match(text, /function cylinderVolume {2}src\/math\/volume\.ts:4-6/);
     assert.match(text, /3\| \/\*\* Volume of a cylinder\. \*\//);
     assert.match(text, /5\| {3}return circleArea\(radius\) \* height;/);
-    assert.match(text, /callers \(1\):\n {2}main {2}src\/app\.ts:10/);
+    assert.match(text, /callers \(1 resolved\):\n {2}main {2}src\/app\.ts:10/);
+    assert.ok(!text.includes('referenced without a call'), 'import lines are not value references');
     assert.match(text, /calls \(1\):\n {2}circleArea {2}src\/math\/area\.ts:2-4/);
   });
 
   it('get_context shows hierarchy for classes and suggests on misses', async () => {
     const text = await getContext(p.ctx, { name: 'BaseShape' });
-    assert.match(text, /inherits: implements Shape/);
-    assert.match(text, /subtypes \(2\):/);
+    assert.match(text, /inherits: implements Shape \(src\/shapes\/shape\.ts:1\)/);
+    assert.match(text, /subtypes \(2 direct\):/);
     assert.match(text, /Circle {2}src\/shapes\/circle\.ts:4/);
     const miss = await getContext(p.ctx, { name: 'circlArea' });
-    assert.match(miss, /no symbol with this exact name/);
+    assert.match(miss, /no symbol with this name/);
     assert.match(miss, /circleArea/);
+  });
+
+  it('get_context links a method to its interface / override twins', async () => {
+    const text = await getContext(p.ctx, { name: 'Circle.area' });
+    assert.match(text, /same method on related types \(2; callers are shared\)/);
+    assert.match(text, /Shape\.area {2}src\/shapes\/shape\.ts:2/);
+    assert.match(text, /callers \(1 resolved\):\n {2}BaseShape\.describe/);
+  });
+
+  it('hierarchy lists transitive subtypes and method families', async () => {
+    const types = await hierarchy(p.ctx, { name: 'Shape' });
+    assert.match(types, /subtypes \(3, transitive\):\n {2}class BaseShape {2}src\/shapes\/shape\.ts:6\n {4}class Circle/);
+    const up = await hierarchy(p.ctx, { name: 'Circle', direction: 'supertypes' });
+    assert.match(up, /extends BaseShape {2}src\/shapes\/shape\.ts:6-17\n {4}implements Shape/);
+    const method = await hierarchy(p.ctx, { name: 'BaseShape.area' });
+    assert.match(method, /implementations on related types \(3\)/);
+    assert.match(method, /method Square\.area/);
+  });
+
+  it('call_graph answers for names that are not defined in the project', async () => {
+    const text = await callGraph(p.ctx, { name: 'toFixed' });
+    assert.match(text, /"toFixed" is not defined in this project/);
+    assert.match(text, /BaseShape\.format {2}src\/shapes\/shape\.ts:15/);
+  });
+
+  it('search tolerates typos, initials and abbreviations', async () => {
+    const text = await search(p.ctx, { query: ['cylnderVolume', 'cv', 'mkCirc'] });
+    assert.match(text, /"cylnderVolume": 1 match\nfunction cylinderVolume/);
+    assert.match(text, /"cv": 1 match\nfunction cylinderVolume/);
+    assert.match(text, /"mkCirc": 1 match\nfunction makeCircle/);
+    assert.match(await search(p.ctx, { query: 'x', kind: 'bogus' }), /unknown kind "bogus"\. Valid kinds: function, method/);
   });
 
   it('get_context supports batching and path:line addressing', async () => {

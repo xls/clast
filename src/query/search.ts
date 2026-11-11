@@ -3,7 +3,7 @@ import { SYMBOL_COLUMNS, SYMBOL_FROM } from '../db/index.js';
 import type { SymbolRow } from '../types.js';
 import { isTestPath, isVendoredPath } from './format.js';
 import { KIND_WEIGHT, parseSymbolRef, pathMatches } from './resolve.js';
-import { queryTerms, splitIdentifier, subwordMatch } from './words.js';
+import { editDistance, queryTerms, splitIdentifier, subwordMatch, wordMatches } from './words.js';
 
 export interface SearchOptions {
   kind?: string | string[];
@@ -22,6 +22,8 @@ export interface SearchHit {
   match: string;
   /** Number of files that mention the symbol's name. */
   refs: number;
+  /** True when no other symbol shares this name (so `refs` really is about this symbol). */
+  unique: boolean;
 }
 
 export interface SearchResult {
@@ -60,7 +62,7 @@ export function searchSymbols(db: ClastDb, query: string, opts: SearchOptions = 
       if (!accept(s)) continue;
       const score = base + (bonus ? bonus(s) : 0);
       const prev = found.get(s.id);
-      if (!prev || prev.score < score) found.set(s.id, { sym: s, score, match, refs: 0 });
+      if (!prev || prev.score < score) found.set(s.id, { sym: s, score, match, refs: 0, unique: false });
     }
   };
 
@@ -106,6 +108,24 @@ export function searchSymbols(db: ClastDb, query: string, opts: SearchOptions = 
     }
   }
 
+  // 2b. Abbreviations of the name's words: "KProd" -> KafkaProducer, "recAccum" -> RecordAccumulator.
+  const queryWords = !isMultiWord ? splitIdentifier(name) : [];
+  if (queryWords.length >= 2 && found.size < CANDIDATE_CAP) {
+    const pattern = queryWords.map(likeEscape).join('%') + '%';
+    add(
+      db.all<SymbolRow>(
+        `${select} WHERE s.name_lc LIKE ? ESCAPE '\\' ORDER BY length(s.name_lc) LIMIT 300`,
+        pattern
+      ).filter(s => subwordMatch(name, s.name) > 0),
+      66, 'abbrev',
+      s => subwordMatch(name, s.name) * 8 - Math.min(8, (s.name.length - name.length) * 0.2)
+    );
+  }
+  // 2c. Initials: "gcn" -> getContextNode, "qs" -> QuerySet.
+  if (!isMultiWord && /^[a-z]{2,6}$/.test(nameLc) && found.size < CANDIDATE_CAP) {
+    add(db.all<SymbolRow>(`${select} WHERE s.abbr = ? LIMIT 200`, nameLc), 60, 'initials');
+  }
+
   // 3. Word / concept match through FTS (names, signatures, docs, paths).
   const terms = queryTerms(q);
   if (terms.length && found.size < CANDIDATE_CAP) {
@@ -127,33 +147,43 @@ export function searchSymbols(db: ClastDb, query: string, opts: SearchOptions = 
     // All terms in the name: strongest concept signal.
     const inName = ftsRows(nameCols(quoted), CANDIDATE_CAP);
     add(inName, isMultiWord ? 74 : 64, 'words', s => {
+      // Terms found in the symbol's own name count fully; terms that only match
+      // the enclosing class name make the class, not each member, the best hit.
       const words = splitIdentifier(s.name);
-      // Prefer names that are mostly made of the query terms.
-      const coverage = terms.filter(t => words.some(w => w.startsWith(t))).length / Math.max(words.length, terms.length);
-      return coverage * 14;
+      const own = terms.filter(t => words.some(w => wordMatches(w, t))).length;
+      const coverage = own / Math.max(words.length, terms.length);
+      return coverage * 14 - (terms.length - own) * 9;
     });
 
     // Terms spread over name, signature, doc and path. Score by how many
     // terms the *name* covers first, then overall coverage, then bm25.
     const textBonus = (s: SymbolRow): number => {
-      const words = splitIdentifier(s.qname);
-      const hay = (s.qname + ' ' + s.signature + ' ' + s.doc + ' ' + s.path).toLowerCase();
+      const own = splitIdentifier(s.name);
+      const container = splitIdentifier(s.qname.slice(0, Math.max(0, s.qname.length - s.name.length)));
+      const hay = splitIdentifier(s.signature + ' ' + s.doc + ' ' + s.path);
       let inName = 0;
+      let inContainer = 0;
       let anywhere = 0;
       for (const t of terms) {
-        if (words.some(w => w.startsWith(t))) inName++;
-        if (hay.includes(t)) anywhere++;
+        if (own.some(w => wordMatches(w, t))) { inName++; anywhere++; }
+        else if (container.some(w => wordMatches(w, t))) { inContainer++; anywhere++; }
+        else if (hay.some(w => wordMatches(w, t))) anywhere++;
       }
       const rank = (s as SymbolRow & { rank: number }).rank;
-      return (inName / terms.length) * 26 + (anywhere / terms.length) * 14 + Math.min(6, -rank / 2);
+      return (
+        (inName / terms.length) * 28 +
+        (inContainer / terms.length) * 9 +
+        (anywhere / terms.length) * 14 +
+        Math.min(6, -rank / 2)
+      );
     };
     if (found.size < limit * 3 || isMultiWord) {
-      const all = ftsRows(quoted.join(' AND '), 200);
+      const all = ftsRows(quoted.join(' AND '), 400);
       add(all, 30, 'text', textBonus);
       // Free-text queries degrade to "any term"; identifier queries do not
       // (a partial identifier should fall through to substring / fuzzy).
       if (isMultiWord && terms.length > 1 && all.length < limit * 2) {
-        add(ftsRows(quoted.join(' OR '), 300), 22, 'text', textBonus);
+        add(ftsRows(quoted.join(' OR '), 500), 22, 'text', textBonus);
       }
     }
   }
@@ -173,7 +203,7 @@ export function searchSymbols(db: ClastDb, query: string, opts: SearchOptions = 
   // 5. Fuzzy: abbreviations ("gcn" -> getContextNode) and loose subsequences.
   let best = 0;
   for (const h of found.values()) if (h.score > best) best = h.score;
-  if (!isMultiWord && (found.size < limit || best < 50) && nameLc.length >= 2 && nameLc.length <= 40 && /^[a-z0-9_$]+$/.test(nameLc)) {
+  if (!isMultiWord && (found.size < limit || best < 55) && nameLc.length >= 2 && nameLc.length <= 40 && /^[a-z0-9_$]+$/.test(nameLc)) {
     const pattern = '%' + nameLc.split('').map(likeEscape).join('%') + '%';
     const rows = db.all<SymbolRow>(
       `${select} WHERE s.name_lc LIKE ? ESCAPE '\\' AND length(s.name_lc) <= ? ORDER BY length(s.name_lc) LIMIT 300`,
@@ -186,9 +216,32 @@ export function searchSymbols(db: ClastDb, query: string, opts: SearchOptions = 
     });
   }
 
+  // 6. Typos: edit distance against names that share the first two characters.
+  best = 0;
+  for (const h of found.values()) if (h.score > best) best = h.score;
+  if (!isMultiWord && best < 60 && nameLc.length >= 4 && nameLc.length <= 40) {
+    const bound = nameLc.length >= 9 ? 3 : nameLc.length >= 6 ? 2 : 1;
+    const prefix = nameLc.slice(0, 2);
+    const names = db.all<{ name_lc: string }>(
+      `SELECT DISTINCT s.name_lc AS name_lc FROM symbols s
+       WHERE s.name_lc >= ? AND s.name_lc < ? AND length(s.name_lc) BETWEEN ? AND ? LIMIT 20000`,
+      prefix, prefix + '￿', nameLc.length - bound, nameLc.length + bound
+    );
+    const close: Array<[string, number]> = [];
+    for (const row of names) {
+      const d = editDistance(nameLc, row.name_lc, bound);
+      if (d <= bound) close.push([row.name_lc, d]);
+    }
+    close.sort((a, b) => a[1] - b[1]);
+    for (const [candidate, d] of close.slice(0, 12)) {
+      add(db.all<SymbolRow>(`${select} WHERE s.name_lc = ? LIMIT 40`, candidate), 62 - d * 7, 'typo');
+    }
+  }
+
   // --- final ranking --------------------------------------------------------
   const hits = [...found.values()];
   const refCache = new Map<string, number>();
+  const defCache = new Map<string, number>();
   for (const h of hits) {
     const s = h.sym;
     let refs = refCache.get(s.name);
@@ -197,10 +250,17 @@ export function searchSymbols(db: ClastDb, query: string, opts: SearchOptions = 
       refCache.set(s.name, refs);
     }
     h.refs = refs;
+    let defs = defCache.get(s.name);
+    if (defs === undefined) {
+      defs = db.get<{ n: number }>(`SELECT COUNT(*) AS n FROM symbols WHERE name = ?`, s.name)?.n ?? 1;
+      defCache.set(s.name, defs);
+    }
+    h.unique = defs === 1;
     h.score += KIND_WEIGHT[s.kind] ?? 0;
     if (s.exported) h.score += 2;
     h.score += Math.min(8, Math.log2(1 + refs) * 1.4);
-    if (!wantTests && isTestPath(s.path)) h.score -= 9;
+    // Tests and examples mention every concept; for free-text queries they must not bury the implementation.
+    if (!wantTests && isTestPath(s.path)) h.score -= h.match === 'text' || h.match === 'words' ? 16 : 9;
     if (isVendoredPath(s.path)) h.score -= 6;
     if (s.doc) h.score += 1;
     // Nested helpers rank below top-level definitions of the same name.

@@ -196,7 +196,7 @@ describe('rust extraction', () => {
       'Tr.def -> self.req',
       'S.new -> Vec.new',
       'S.new -> helper',
-      'S.new -> conv',
+      'S.new -> ?.conv',
       'S.new -> a.clone',
       'S.new -> println',
       'S.new -> bar',
@@ -290,10 +290,201 @@ describe('rust extraction', () => {
       'Foo.fmt -> helper',
       'spawn -> inner',
       'spawn -> log',
-      'spawn -> method',
+      'spawn -> x.method',
     ]);
     assert.deepEqual(importList(ex), ['self::zed']);
     assert.deepEqual(heritageList(ex), ['Foo implements Debug']);
+    // Recovered items span from their first token to the end of the body.
+    assert.equal(spawn.startLine, 4);
+    assert.equal(spawn.endLine, 8);
+    assert.equal(spawn.docLine, 2);
+    assert.equal(sym(ex, 'Foo').startLine, 11);
+    assert.equal(sym(ex, 'LIMIT').startLine, 18);
+    assert.equal(sym(ex, 'LIMIT').signature, 'pub const LIMIT: usize = 10');
+  });
+
+  it('recovers multi-line signatures, receivers and type hints from macro arguments', async () => {
+    const ex = await extractSource('n.rs', `cfg_rt! {
+    /// Spawns a task.
+    ///
+    /// More.
+    #[track_caller]
+    pub fn spawn<F>(future: F, meta: &mut SpawnMeta<'_>, h: Arc<Handle>) -> JoinHandle<F::Output>
+    where
+        F: Future + Send + 'static,
+    {
+        meta.name();
+        h.spawn_task(1);
+        self.queue.push(2);
+        a.b.c.deep(3);
+        make().chained(4);
+        Builder::create(5);
+        std::mem::swap(6);
+        bare(7);
+    }
+}
+
+pin_project! {
+    /// Sleep doc.
+    pub struct Sleep {
+        #[pin]
+        entry: TimerEntry,
+        // a, comment: with punctuation
+        pub(crate) inner: Option<Box<Inner>>,
+        count: u32,
+    }
+}
+
+impl Sleep {
+    fn reset(&mut self) { self.entry.reset(); self.inner.clear(); self.count.pow(2); }
+}
+`);
+    const spawn = sym(ex, 'spawn');
+    assert.equal(spawn.startLine, 6);
+    assert.equal(spawn.endLine, 18);
+    assert.equal(spawn.signature,
+      "pub fn spawn<F>(future: F, meta: &mut SpawnMeta<'_>, h: Arc<Handle>) -> JoinHandle<F::Output> where F: Future + Send + 'static");
+    assert.equal(spawn.doc, 'Spawns a task.\n\nMore.');
+    const sleep = sym(ex, 'Sleep');
+    assert.equal(sleep.startLine, 23);
+    assert.equal(sleep.endLine, 29);
+    assert.equal(sleep.doc, 'Sleep doc.');
+
+    const call = (name: string) => {
+      const c = ex.calls.find(x => x.name === name);
+      assert.ok(c, `call ${name} not found`);
+      return c;
+    };
+    assert.equal(call('name').receiver, 'meta');
+    assert.equal(call('name').rtype, 'SpawnMeta');
+    assert.equal(call('spawn_task').rtype, 'Handle');
+    assert.equal(call('push').receiver, 'self.queue');
+    assert.equal(call('deep').receiver, '?');
+    assert.equal(call('chained').receiver, '?');
+    assert.equal(call('create').receiver, 'Builder');
+    assert.equal(call('swap').receiver, 'std::mem');
+    assert.equal(call('bare').receiver, null);
+    assert.equal(call('reset').rtype, 'TimerEntry');
+    assert.equal(call('clear').rtype, 'Inner');
+    assert.equal(call('pow').rtype, null);
+  });
+
+  it('recovers macro_rules definitions from macro arguments', async () => {
+    const ex = await extractSource('s.rs', `doc! {macro_rules! select {
+    ($($t:tt)*) => {
+        mod __util { pub fn hidden() {} }
+        const BRANCHES: u32 = 1;
+        $crate::helper!(1)
+    };
+}}
+
+wrap! {
+    /// Join doc.
+    #[macro_export]
+    macro_rules! join {
+        () => {};
+    }
+
+    #[cfg(feature = "a")]
+    pub fn dup() { one(); }
+    #[cfg(not(feature = "a"))]
+    pub fn dup() { two(); }
+}
+
+#[cfg(unix)]
+fn plat() {}
+#[cfg(windows)]
+fn plat() {}
+`);
+    assert.deepEqual(symbolList(ex), [
+      'macro select',
+      'macro join',
+      'function dup',
+      'function dup',
+      'function plat',
+      'function plat',
+    ]);
+    const select = sym(ex, 'select');
+    assert.equal(select.signature, 'macro_rules! select');
+    assert.equal(select.startLine, 1);
+    assert.equal(select.endLine, 7);
+    assert.equal(select.exported, false);
+    const join = sym(ex, 'join');
+    assert.equal(join.exported, true);
+    assert.equal(join.doc, 'Join doc.');
+    assert.equal(join.startLine, 12);
+    assert.equal(join.endLine, 14);
+    const dups = ex.symbols.filter(s => s.name === 'dup');
+    assert.deepEqual(dups.map(s => [s.startLine, s.endLine]), [[17, 17], [19, 19]]);
+    assert.deepEqual(callList(ex).filter(c => c.startsWith('dup')), ['dup -> one', 'dup -> two']);
+  });
+
+  it('resolves receivers to declared types', async () => {
+    const ex = await extractSource('h.rs', `pub struct Worker {
+    queue: Arc<Mutex<Queue>>,
+    handle: &'static Handle,
+    id: u32,
+}
+
+impl Worker {
+    pub fn run(&self, cx: &mut Context, mut park: Parker, opt: Option<Box<dyn Unpark>>, n: usize) -> Self {
+        self.queue.push(1);
+        self.handle.shutdown();
+        self.id.count_ones();
+        cx.defer();
+        park.park_timeout();
+        opt.unpark();
+        n.pow(2);
+        let typed: Stats = make();
+        let built = Builder::new(1)?;
+        let dflt = crate::cfg::Config::default();
+        let lit = Core { a: 1 };
+        let shared = Arc::new(Shared::with_capacity(4));
+        let me = Self::fresh();
+        let variant = Some(x);
+        let unknown = helper();
+        let conn = Conn::open(addr).await?;
+        typed.incr();
+        built.build();
+        dflt.validate();
+        lit.tick();
+        shared.close();
+        me.again();
+        variant.take();
+        unknown.guess();
+        conn.send();
+        let f = |task: Notified, other| { task.schedule(); other.thing(); };
+        a.b().chain();
+        me
+    }
+}
+`);
+    const rtype = (name: string) => {
+      const c = ex.calls.find(x => x.name === name);
+      assert.ok(c, `call ${name} not found`);
+      return c.rtype;
+    };
+    assert.equal(rtype('push'), 'Queue');
+    assert.equal(rtype('shutdown'), 'Handle');
+    assert.equal(rtype('count_ones'), null);
+    assert.equal(rtype('defer'), 'Context');
+    assert.equal(rtype('park_timeout'), 'Parker');
+    assert.equal(rtype('unpark'), 'Unpark');
+    assert.equal(rtype('pow'), null);
+    assert.equal(rtype('incr'), 'Stats');
+    assert.equal(rtype('build'), 'Builder');
+    assert.equal(rtype('validate'), 'Config');
+    assert.equal(rtype('tick'), 'Core');
+    assert.equal(rtype('close'), 'Shared');
+    assert.equal(rtype('again'), 'Worker');
+    assert.equal(rtype('take'), null);
+    assert.equal(rtype('guess'), null);
+    assert.equal(rtype('send'), 'Conn');
+    assert.equal(rtype('schedule'), 'Notified');
+    assert.equal(rtype('thing'), null);
+    const calls = callList(ex);
+    assert.ok(calls.includes('Worker.run -> ?.chain'), calls.join(' | '));
+    assert.ok(calls.includes('Worker.run -> Builder.new'), calls.join(' | '));
   });
 
   it('handles impls for references, paths and generic traits', async () => {

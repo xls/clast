@@ -90,3 +90,72 @@ export function subwordMatch(query: string, name: string): number {
   if (qi < q.length) return 0;
   return matchedWords / words.length;
 }
+
+/**
+ * Very light stemmer for matching query words against identifier words
+ * (dependency ~ dependencies, parsing ~ parse, resolved ~ resolve). Not
+ * linguistically exact; it only has to agree with itself.
+ */
+export function stem(word: string): string {
+  let w = word.toLowerCase();
+  if (w.length <= 3) return w;
+  if (w.endsWith('ies') && w.length > 4) return w.slice(0, -3) + 'y';
+  if (w.endsWith('sses')) return w.slice(0, -2);
+  if (w.endsWith('s') && !w.endsWith('ss') && !w.endsWith('us') && !w.endsWith('is')) w = w.slice(0, -1);
+  if (w.endsWith('ing') && w.length > 5) w = w.slice(0, -3);
+  else if (w.endsWith('ed') && w.length > 4) w = w.slice(0, -2);
+  else if (w.endsWith('er') && w.length > 5) w = w.slice(0, -2);
+  if (w.endsWith('e') && w.length > 4) w = w.slice(0, -1);
+  // dependency / dependenc(ies): unify the y / i variants
+  if (w.endsWith('y') && w.length > 4) w = w.slice(0, -1) + 'i';
+  return w;
+}
+
+/** True if a name word matches a query term, allowing prefixes and inflections. */
+export function wordMatches(nameWord: string, term: string): boolean {
+  if (nameWord.startsWith(term)) return true;
+  const a = stem(nameWord);
+  const b = stem(term);
+  return a === b || (b.length >= 4 && a.startsWith(b));
+}
+
+/** Initials of an identifier's sub-words: getContextNode -> gcn. Empty for single-word names. */
+export function initials(name: string): string {
+  const words = splitIdentifier(name);
+  if (words.length < 2) return '';
+  let out = '';
+  for (const w of words) out += w[0];
+  return out;
+}
+
+/** Damerau-Levenshtein distance with an upper bound (returns bound + 1 when exceeded). */
+export function editDistance(a: string, b: string, bound: number): number {
+  const n = a.length;
+  const m = b.length;
+  if (Math.abs(n - m) > bound) return bound + 1;
+  let prev2: number[] = [];
+  let prev: number[] = new Array(m + 1);
+  let cur: number[] = new Array(m + 1);
+  for (let j = 0; j <= m; j++) prev[j] = j;
+  for (let i = 1; i <= n; i++) {
+    cur[0] = i;
+    let rowMin = cur[0]!;
+    for (let j = 1; j <= m; j++) {
+      const cost = a.charCodeAt(i - 1) === b.charCodeAt(j - 1) ? 0 : 1;
+      let v = Math.min(prev[j]! + 1, cur[j - 1]! + 1, prev[j - 1]! + cost);
+      if (
+        i > 1 && j > 1 &&
+        a.charCodeAt(i - 1) === b.charCodeAt(j - 2) && a.charCodeAt(i - 2) === b.charCodeAt(j - 1)
+      ) {
+        v = Math.min(v, prev2[j - 2]! + 1);
+      }
+      cur[j] = v;
+      if (v < rowMin) rowMin = v;
+    }
+    if (rowMin > bound) return bound + 1;
+    prev2 = prev;
+    prev = cur;
+    cur = new Array(m + 1);
+  }
+  return prev[m]!;
+}

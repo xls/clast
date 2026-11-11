@@ -1,6 +1,6 @@
 import type { Node } from 'web-tree-sitter';
 import type { Ctx, LangSpec, Visitor } from '../spec.js';
-import { field } from '../spec.js';
+import { COMPLEX_RECEIVER, field } from '../spec.js';
 
 // ---------------------------------------------------------------------------
 // Per-file state. Visitors get no "leave" callback, so class/module visitors
@@ -12,6 +12,8 @@ import { field } from '../spec.js';
 const privateIds = new Set<number>();
 /** `<body id>:<name>` for `private :foo, :bar` / `private_class_method :foo`. */
 const privateNames = new Set<string>();
+/** `<symbol>:<name>` of heritage entries already recorded (de-duplication). */
+const heritageSeen = new Set<string>();
 
 const MIXINS = new Set(['include', 'extend', 'prepend']);
 const HIDERS = new Set(['private', 'protected', 'private_class_method']);
@@ -87,10 +89,23 @@ function firstLine(ctx: Ctx, node: Node, end = node.endIndex): string {
 }
 
 /**
- * Scan the direct children of a class/module body: record mixins as heritage
- * of `sym` (when >= 0) and remember which methods are private.
+ * Record a superclass / mixin once per (symbol, name). A symbol never
+ * inherits from its own name (`extend self`-style self-extension,
+ * `module ClassMethods; include Foo::ClassMethods`).
  */
-function scanBody(body: Node | null, sym: number, ctx: Ctx): void {
+function inherit(ctx: Ctx, sym: number, own: string, name: string | null, kind: 'extends' | 'implements'): void {
+  if (!name || sym < 0 || name === own) return;
+  const key = sym + ':' + name;
+  if (heritageSeen.has(key)) return;
+  heritageSeen.add(key);
+  ctx.inherit(sym, name, kind);
+}
+
+/**
+ * Scan the direct children of a class/module body: record mixins as heritage
+ * of `sym` (when >= 0, `own` is its name) and remember which methods are private.
+ */
+function scanBody(body: Node | null, sym: number, own: string, ctx: Ctx): void {
   if (!body) return;
   let hidden = false;
   for (const c of body.namedChildren) {
@@ -109,7 +124,7 @@ function scanBody(body: Node | null, sym: number, ctx: Ctx): void {
       const name = m.text;
       if (MIXINS.has(name)) {
         if (sym < 0) continue;
-        for (const a of args(c)) ctx.inherit(sym, constName(a), 'implements');
+        for (const a of args(c)) inherit(ctx, sym, own, constName(a), 'implements');
       } else if (HIDERS.has(name)) {
         for (const a of args(c)) {
           const lit = literal(a);
@@ -136,6 +151,7 @@ function openQualifier(nameNode: Node, ctx: Ctx): string {
 const program: Visitor = () => {
   privateIds.clear();
   privateNames.clear();
+  heritageSeen.clear();
 };
 
 const classDef: Visitor = (node, ctx) => {
@@ -145,8 +161,8 @@ const classDef: Visitor = (node, ctx) => {
   const sig = ctx.src.slice(node.startIndex, (superclass ?? nameNode).endIndex);
   const name = openQualifier(nameNode, ctx);
   const sym = ctx.def(node, { name, kind: 'class', sig, doc: firstChildDoc(node), exported: !name.startsWith('_') });
-  if (superclass) ctx.inherit(sym, constName(superclass.namedChildren[0]), 'extends');
-  scanBody(field(node, 'body'), sym, ctx);
+  if (superclass) inherit(ctx, sym, name, constName(superclass.namedChildren[0]), 'extends');
+  scanBody(field(node, 'body'), sym, name, ctx);
 };
 
 const moduleDef: Visitor = (node, ctx) => {
@@ -155,12 +171,12 @@ const moduleDef: Visitor = (node, ctx) => {
   const sig = ctx.src.slice(node.startIndex, nameNode.endIndex);
   const name = openQualifier(nameNode, ctx);
   const sym = ctx.def(node, { name, kind: 'namespace', sig, doc: firstChildDoc(node), exported: !name.startsWith('_') });
-  scanBody(field(node, 'body'), sym, ctx);
+  scanBody(field(node, 'body'), sym, name, ctx);
 };
 
 /** `class << self`: no symbol and no scope, methods belong to the enclosing class. */
 const singletonClass: Visitor = (node, ctx) => {
-  scanBody(field(node, 'body'), -1, ctx);
+  scanBody(field(node, 'body'), -1, '', ctx);
 };
 
 /** `def foo`, `def self.foo`, `private def foo`. */
@@ -185,11 +201,19 @@ const methodDef: Visitor = (node, ctx) => {
     }
   }
   const end = field(node, 'parameters') ?? nameNode;
+  let sig = ctx.src.slice(range.startIndex, end.endIndex);
+  if (node.type === 'method') {
+    // Inside `class << self` show the receiver, like `def self.foo`.
+    const holder = range.parent?.parent;
+    if (holder && holder.type === 'singleton_class' && field(holder, 'value')?.type === 'self') {
+      sig = ctx.src.slice(range.startIndex, nameNode.startIndex) + 'self.' + ctx.src.slice(nameNode.startIndex, end.endIndex);
+    }
+  }
   ctx.def(node, {
     name,
     kind: inType(ctx) ? 'method' : 'function',
     range,
-    sig: ctx.src.slice(range.startIndex, end.endIndex),
+    sig,
     doc: firstChildDoc(range),
     exported: !hidden && !name.startsWith('_'),
   });
@@ -213,7 +237,20 @@ const CLASS_FACTORIES = new Set(['Struct', 'Class', 'Data', 'Module']);
 /** `FOO = 1`, `Point = Struct.new(:x, :y) do ... end` */
 const assignment: Visitor = (node, ctx) => {
   const left = field(node, 'left');
-  if (!left || left.type !== 'constant') return;
+  if (!left) return;
+  const lt = left.type;
+  if (lt === 'identifier' || lt === 'instance_variable') {
+    // `x = Foo.new(...)`, `@x ||= Foo::Bar.new`: the only cheaply inferable types.
+    const right = field(node, 'right');
+    if (!right || right.type !== 'call') return;
+    const recv = field(right, 'receiver');
+    if (!recv || (recv.type !== 'constant' && recv.type !== 'scope_resolution')) return;
+    if (field(right, 'method')?.text !== 'new') return;
+    if (lt === 'identifier') ctx.typeHint(left.text, recv.text);
+    else ctx.typeHint(left.text.slice(1), recv.text, true);
+    return;
+  }
+  if (lt !== 'constant') return;
   if (ctx.inCallable()) return;
   const name = left.text;
   const right = field(node, 'right');
@@ -230,9 +267,9 @@ const assignment: Visitor = (node, ctx) => {
         doc: firstChildDoc(node),
         exported: true,
       });
-      if (factory === 'Class') ctx.inherit(sym, constName(args(right)[0]), 'extends');
-      else if (factory !== 'Module') ctx.inherit(sym, factory, 'extends');
-      scanBody(field(block, 'body'), sym, ctx);
+      if (factory === 'Class') inherit(ctx, sym, name, constName(args(right)[0]), 'extends');
+      else if (factory !== 'Module') inherit(ctx, sym, name, factory, 'extends');
+      scanBody(field(block, 'body'), sym, name, ctx);
       return;
     }
   }
@@ -295,6 +332,8 @@ function defEach(node: Node, ctx: Ctx, kind: 'property' | 'method', all: boolean
 }
 
 const attrCall: Dsl = (node, ctx) => defEach(node, ctx, 'property', true);
+/** `has_many :comments, dependent: :destroy`: one association named by the first argument. */
+const associationCall: Dsl = (node, ctx) => defEach(node, ctx, 'property', false);
 const delegateCall: Dsl = (node, ctx) => defEach(node, ctx, 'method', true);
 const aliasMethodCall: Dsl = (node, ctx) => defEach(node, ctx, 'method', false);
 
@@ -335,6 +374,12 @@ const DSL = new Map<string, Dsl>([
   ['cattr_writer', attrCall],
   ['class_attribute', attrCall],
   ['thread_mattr_accessor', attrCall],
+  ['has_many', associationCall],
+  ['has_one', associationCall],
+  ['belongs_to', associationCall],
+  ['has_and_belongs_to_many', associationCall],
+  ['has_one_attached', associationCall],
+  ['has_many_attached', associationCall],
   ['delegate', delegateCall],
   ['alias_method', aliasMethodCall],
   ['define_method', blockMethod],
@@ -367,8 +412,10 @@ const call: Visitor = (node, ctx) => {
     ctx.call(name, node);
     return;
   }
+  // An explicit receiver is always passed on (COMPLEX_RECEIVER for chains,
+  // literals, ...) so the call is never mistaken for an implicit-self call.
   const rt = recv.type;
-  let receiver: string | null = null;
+  let receiver: string = COMPLEX_RECEIVER;
   if (rt === 'constant') {
     receiver = recv.text;
     // Instantiation is how classes get used: `Foo.new` is also a call to `Foo`.

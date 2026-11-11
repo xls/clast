@@ -266,7 +266,7 @@ export function extract(tree: Tree, source: string, compiled: CompiledSpec): Ext
 
     typeHint(name, type, onContainer = false): void {
       if (!name || name.length > MAX_NAME) return;
-      const t = typeName(type);
+      const t = typeName(type, compiled.spec.lowercaseTypes === true);
       if (!t) return;
       // Owner: nearest enclosing function/method, else nearest container, else the file.
       let owner = -1;
@@ -281,7 +281,7 @@ export function extract(tree: Tree, source: string, compiled: CompiledSpec): Ext
       if (!map.has(name)) map.set(name, t);
     },
 
-    call(name, node, receiver = null): void {
+    call(name, node, receiver = null, receiverType = null): void {
       if (!name || name.length > MAX_NAME) return;
       if (!/^[\p{L}_$~][\p{L}\p{N}_$!?]*$/u.test(name)) return;
       const caller = currentCaller();
@@ -291,7 +291,8 @@ export function extract(tree: Tree, source: string, compiled: CompiledSpec): Ext
         existing.count++;
         return;
       }
-      callMap.set(key, { caller, name, line: node.startPosition.row + 1, receiver, rtype: null, count: 1 });
+      const rtype = receiverType ? typeName(receiverType, compiled.spec.lowercaseTypes === true) : null;
+      callMap.set(key, { caller, name, line: node.startPosition.row + 1, receiver, rtype, count: 1 });
     },
 
     imp(src, node, names = []): void {
@@ -416,7 +417,7 @@ export function extract(tree: Tree, source: string, compiled: CompiledSpec): Ext
 
     for (const call of callMap.values()) {
       const r = call.receiver;
-      if (!r || r === '?') continue;
+      if (!r || r === '?' || call.rtype) continue;
       const parts = r.replace(/->|::/g, '.').split('.');
       if (parts.length > 2 || parts.some(p => !/^[$@]?[A-Za-z_]\w*$/.test(p))) continue;
       let t: string | undefined;
@@ -440,6 +441,18 @@ export function extract(tree: Tree, source: string, compiled: CompiledSpec): Ext
       if (t) call.rtype = t;
     }
   }
+  // Field types of class-like symbols are exported so the resolver can type
+  // `this.x.foo()` / `x_->foo()` when the class lives in another file
+  // (C++ headers, Go structs in the same package, partial classes).
+  const fieldTypes: Array<[string, string, string]> = [];
+  for (const [owner, map] of hints) {
+    if (owner < 0 || !CONTAINER_KINDS.has(symbols[owner]!.kind)) continue;
+    const container = symbols[owner]!.name;
+    for (const [field, type] of map) {
+      if (fieldTypes.length < 4000) fieldTypes.push([container, field, type]);
+    }
+  }
+
   let lineCount = 1;
   for (let i = source.indexOf('\n'); i !== -1; i = source.indexOf('\n', i + 1)) lineCount++;
 
@@ -450,6 +463,7 @@ export function extract(tree: Tree, source: string, compiled: CompiledSpec): Ext
     calls: [...callMap.values()],
     imports,
     heritage,
+    fieldTypes,
     occ: [...occ.entries()].map(([name, lines]) => [name, lines.join(',')] as [string, string]),
     hadError,
   };

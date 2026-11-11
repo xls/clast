@@ -8,7 +8,7 @@ import { resolve } from 'node:path';
 import { Clast } from './engine.js';
 import { SourceParser } from './parser/index.js';
 import { ToolContext } from './tools/context.js';
-import { callGraph, getContext, search } from './tools/search.js';
+import { callGraph, getContext, hierarchy, search } from './tools/search.js';
 import { changes, fileSummary, grep, overview, references, reindex, status } from './tools/explore.js';
 import { VERSION } from './version.js';
 
@@ -23,8 +23,9 @@ usage: clast-ai [command] [args] [--root <dir>]
   outline <path>             file or directory outline
   search <query...>          ranked symbol search   [--kind k] [--path p] [--lang l] [--limit n]
   symbol <name...>           source + callers + callees of a symbol   [--path p] [--max-lines n] [--no-body]
-  callers <name>             caller tree   [--depth n] [--limit n]
-  callees <name>             callee tree   [--depth n] [--limit n]
+  callers <name>             who calls it   [--depth n] [--limit n] [--within path] [--no-tests]
+  callees <name>             what it calls  [--depth n] [--limit n]
+  hierarchy <name>           supertypes / subtypes / overrides   [--depth n] [--limit n]
   refs <name>                all references to an identifier   [--path p] [--limit n]
   grep <pattern>             text search with enclosing symbols   [--regex] [--path p] [--limit n]
   changes [base]             symbols touched by the git diff and their impact
@@ -159,8 +160,12 @@ async function main(): Promise<void> {
         out = await callGraph(ctx, {
           name: positional[0] ?? '', path: str('path'),
           direction: cmd === 'graph' ? 'both' : cmd,
-          depth: num('depth'), limit: num('limit'), includeTests,
+          depth: num('depth'), limit: num('limit'), includeTests, within: str('within'),
         });
+        break;
+      case 'hierarchy':
+      case 'types':
+        out = await hierarchy(ctx, { name: positional[0] ?? '', path: str('path'), depth: num('depth'), limit: num('limit') });
         break;
       case 'refs':
       case 'references':

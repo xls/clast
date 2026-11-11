@@ -55,8 +55,12 @@ export interface Ctx {
   def(node: Node, opts: DefOpts): number;
   /** Open a naming-only scope (Rust `impl`, PHP/Java packages, ...). */
   scope(name: string): void;
-  /** Record a call made at `node`. */
-  call(name: string | null | undefined, node: Node, receiver?: string | null): void;
+  /**
+   * Record a call made at `node`. `receiverType` may be given when the
+   * receiver's class is evident from the expression itself
+   * (`new Foo().bar()`, casts); otherwise it is derived from type hints.
+   */
+  call(name: string | null | undefined, node: Node, receiver?: string | null, receiverType?: string | null): void;
   /** Record an import of `source`. */
   imp(source: string | null | undefined, node: Node, names?: string[]): void;
   /** Record that symbol `sym` extends/implements `name`. */
@@ -95,6 +99,8 @@ export interface LangSpec {
   extensions: string[];
   /** Leaf node types recorded as identifier occurrences (reference index). */
   identifiers: string[];
+  /** Type names may be lowercase (Go unexported types, C structs); see typeName(). */
+  lowercaseTypes?: boolean;
   /** Node types whose text is a comment (for doc extraction). */
   comments?: string[];
   /**
@@ -194,14 +200,20 @@ const TYPE_WRAPPERS = new Set([
  * `Foo | null` -> Foo, `const Foo&` -> Foo. Collections and primitives
  * are not class types and yield null.
  */
-export function typeName(raw: string | null | undefined): string | null {
+export function typeName(raw: string | null | undefined, allowLowercase = false): string | null {
   if (!raw) return null;
   let t = raw.trim();
   for (let i = 0; i < 4; i++) {
+    // Strip qualifiers, pointer / reference sigils and lifetimes until stable (`&'a mut Foo`).
+    for (let guard = 0; guard < 6; guard++) {
+      const before = t;
+      t = t
+        .replace(/^(const|readonly|mut|final|volatile|static|ref|out|in|params|dyn|impl|struct|class|enum|typename|unsigned|signed)\s+/, '')
+        .replace(/^[&*?\s:]+/, '')
+        .replace(/^'[a-z_]+\s+/, '');
+      if (t === before) break;
+    }
     t = t
-      .replace(/^(const|readonly|mut|final|volatile|static|ref|out|in|params|dyn|impl|struct|class|enum|typename|unsigned|signed)\s+/, '')
-      .replace(/^[&*?\s:]+/, '')
-      .replace(/^'[a-z_]+\s+/, '')
       .replace(/[&*?!\s]+$/, '')
       .replace(/\s*\|\s*(null|undefined|None)\b/g, '')
       .replace(/^(null|undefined|None)\s*\|\s*/, '')
@@ -224,10 +236,26 @@ export function typeName(raw: string | null | undefined): string | null {
   if (/[|&(){}\[\],<>=\s]/.test(t)) return null;
   const name = t.split(/\.|::|\\/).pop() ?? '';
   if (!/^[A-Za-z_$][\w$]*$/.test(name)) return null;
-  // Lowercase names are primitives / builtins in every supported language (int, string, str, bool, ...).
-  if (!/[A-Z]/.test(name[0]!) || name.length < 2) return null;
+  if (name.length < 2) return null;
+  if (!/[A-Z]/.test(name[0]!)) {
+    // Lowercase names are primitives / builtins in most languages (int, string, str, bool, ...).
+    // Go and C name real types in lowercase too, so those specs opt in, minus the builtins.
+    if (!allowLowercase || PRIMITIVE_TYPES.has(name) || /^(u?int|float|complex)\d*(_t)?$/.test(name) || name.endsWith('_t')) return null;
+  }
   return name;
 }
+
+const PRIMITIVE_TYPES = new Set([
+  'int', 'uint', 'char', 'short', 'long', 'float', 'double', 'void', 'bool', 'boolean', 'byte', 'rune', 'string',
+  'str', 'error', 'any', 'auto', 'var', 'let', 'unsigned', 'signed', 'size', 'uintptr', 'interface', 'struct',
+  'func', 'map', 'chan', 'object', 'number', 'bigint', 'symbol', 'unknown', 'never', 'null', 'undefined', 'dict',
+  'list', 'tuple', 'set', 'bytes', 'usize', 'isize', 'self', 'this', 'array', 'mixed', 'callable', 'iterable',
+  'static', 'const', 'wchar', 'ssize', 'off', 'time', 'file', 'va_list', 'sds',
+  // C++ standard library value types: not classes of the project.
+  'vector', 'deque', 'pair', 'queue', 'stack', 'mutex', 'thread', 'atomic', 'function', 'optional', 'variant',
+  'ostream', 'istream', 'ofstream', 'ifstream', 'stringstream', 'unordered_map', 'unordered_set', 'basic_string',
+  'string_view', 'span', 'bitset', 'complex', 'regex', 'iterator', 'allocator',
+]);
 
 /** UPPER_SNAKE names are treated as constants. */
 export function isConstName(name: string): boolean {

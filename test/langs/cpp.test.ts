@@ -194,7 +194,7 @@ describe('cpp extraction', () => {
 
   it('extracts includes and heritage', async () => {
     const ex = await extractSource('a.cc', SRC);
-    assert.deepEqual(importList(ex), ['string', 'shape.h']);
+    assert.deepEqual(importList(ex), ['<string>', 'shape.h']);
     assert.deepEqual(heritageList(ex), ['geo.detail.Box extends Base', 'geo.detail.Box extends Other']);
     const ex2 = await extractSource('b.cpp', 'struct A {};\nclass B : public A, public virtual ns::C<int> {};\nstruct D final : B {};\n');
     assert.deepEqual(symbolList(ex2), ['struct A', 'class B', 'struct D']);
@@ -267,6 +267,18 @@ describe('cpp extraction', () => {
       '',
     ].join('\n'));
     assert.deepEqual(symbolList(ex), ['class Counter', 'method Counter.Add', 'field Counter.mu_', 'field Counter.count_']);
+    // With a class type the parser sees a function named after the macro.
+    const ex2 = await extractSource('n.cc', [
+      'class Impl {',
+      '  MemTable* imm_ GUARDED_BY(mutex_);',
+      '  port::CondVar signal_ GUARDED_BY(mutex_);',
+      '  void Run() { imm_->Ref(); }',
+      '};',
+      '',
+    ].join('\n'));
+    assert.deepEqual(symbolList(ex2), ['class Impl', 'field Impl.imm_', 'field Impl.signal_', 'method Impl.Run']);
+    assert.equal(sym(ex2, 'Impl.imm_').signature, 'MemTable* imm_ GUARDED_BY(mutex_)');
+    assert.equal(ex2.calls.find(c => c.name === 'Ref')!.rtype, 'MemTable');
   });
 
   it('handles out-of-line template members and specializations', async () => {
@@ -294,5 +306,153 @@ describe('cpp extraction', () => {
     const ex = await extractSource('x.cpp', 'class { int a; };\nnamespace {\nvoid f( {\nclass X : public {\n template<> ;; int ::* p;\n#define\n#include\n');
     assert.ok(Array.isArray(ex.symbols));
     for (const s of ex.symbols) assert.ok(!/[\s()*&]/.test(s.name), `garbage name ${s.name}`);
+  });
+
+  it('gives each declarator of a multi-declarator member its own signature', async () => {
+    const ex = await extractSource('a.cc', SRC);
+    assert.equal(sym(ex, 'geo.detail.Box.x_').signature, 'int x_');
+    assert.equal(sym(ex, 'geo.detail.Box.y_').signature, 'int y_');
+    assert.equal(sym(ex, 'geo.detail.Box.count').signature, 'static int count');
+    const ex2 = await extractSource('f.cc', 'struct S {\n  std::unique_ptr<Foo> foo_, *bar_;\n  Slice start = 1;\n};\n');
+    assert.equal(sym(ex2, 'S.foo_').signature, 'std::unique_ptr<Foo> foo_');
+    assert.equal(sym(ex2, 'S.bar_').signature, 'std::unique_ptr<Foo> *bar_');
+    assert.equal(sym(ex2, 'S.start').signature, 'Slice start = 1');
+  });
+
+  describe('receiver types', () => {
+    const TYPED = [
+      'class Inserter : public Handler {',
+      ' public:',
+      '  MemTable* mem_;',
+      '  std::unique_ptr<Cache> cache_;',
+      '  port::Mutex mu_ GUARDED_BY(x);',
+      '  std::vector<Item> items_;',
+      '  int n_;',
+      '  void Put(const Slice& key, DB* db, std::shared_ptr<Env> env, Options opts = Options(), int n = 0) {',
+      '    mem_->Add(key);',
+      '    this->cache_->Insert(key);',
+      '    mu_.Lock();',
+      '    items_.push_back(1);',
+      '    key.data();',
+      '    db->Write(1);',
+      '    env->Now();',
+      '    opts.Check();',
+      '    Status::OK();',
+      '    db->NewIterator()->Seek(key);',
+      '    table()[0].Reset();',
+      '  }',
+      '  void Decl(Hidden* h);',
+      '  void Use() { h->Leak(); }',
+      '};',
+      '',
+      'Status BuildTable(TableCache* table_cache, Iterator* iter) {',
+      '  TableBuilder* builder = new TableBuilder(options, file);',
+      '  auto meta = new FileMetaData(1);',
+      '  auto uniq = std::make_unique<WritableFile>(2);',
+      '  auto shared = make_shared<ns::Logger>();',
+      '  auto* impl = reinterpret_cast<DBImpl*>(db);',
+      '  auto unknown = Compute();',
+      '  Version v;',
+      '  WriteBatch batch(1), *other;',
+      '  builder->Add2(1);',
+      '  meta->Clear();',
+      '  uniq->Append(1);',
+      '  shared->Logv(1);',
+      '  impl->Recover(1);',
+      '  unknown.Run();',
+      '  v.Ref();',
+      '  batch.Delete(1);',
+      '  other->Merge(1);',
+      '  table_cache->Evict(1);',
+      '  for (const FileEntry& f : files) f.Size();',
+      '  for (auto& e : files) e.Size2();',
+      '  if (Snapshot* s = Current()) s->Release();',
+      '  auto fn = [](Slice* arg) { arg->remove_prefix(1); };',
+      '  return iter->status();',
+      '}',
+      '',
+      'void Inserter::Flush(Handler* handler) {',
+      '  this->mem_->Unref();',
+      '  handler->Done();',
+      '}',
+      '',
+    ].join('\n');
+
+    const typed = async () => {
+      const ex = await extractSource('typed.cc', TYPED);
+      return (name: string) => {
+        const c = ex.calls.find(x => x.name === name);
+        assert.ok(c, `no call ${name}`);
+        return c;
+      };
+    };
+
+    it('records receivers of member calls', async () => {
+      const call = await typed();
+      assert.equal(call('Add').receiver, 'mem_');
+      assert.equal(call('Insert').receiver, 'this->cache_');
+      assert.equal(call('OK').receiver, 'Status');
+      assert.equal(call('Seek').receiver, '?'); // call chain
+      assert.equal(call('Reset').receiver, '?'); // subscript
+      assert.equal(call('NewIterator').receiver, 'db');
+      assert.equal(call('Compute').receiver, null); // bare call
+      assert.equal(call('TableBuilder').receiver, null); // new expression
+    });
+
+    it('resolves receivers declared as parameters', async () => {
+      const call = await typed();
+      assert.equal(call('data').rtype, 'Slice'); // const Slice& key
+      assert.equal(call('Write').rtype, 'DB'); // DB* db
+      assert.equal(call('Now').rtype, 'Env'); // std::shared_ptr<Env> env
+      assert.equal(call('Check').rtype, 'Options'); // parameter with a default value
+      assert.equal(call('Evict').rtype, 'TableCache');
+      assert.equal(call('status').rtype, 'Iterator');
+      assert.equal(call('remove_prefix').rtype, 'Slice'); // lambda parameter
+      assert.equal(call('Done').rtype, 'Handler'); // out-of-line method
+      // Parameters of a declaration without a body are not hints for the class.
+      assert.equal(call('Leak').rtype, null);
+    });
+
+    it('resolves receivers declared as locals', async () => {
+      const call = await typed();
+      assert.equal(call('Add2').rtype, 'TableBuilder'); // Foo* p = new Foo(...)
+      assert.equal(call('Clear').rtype, 'FileMetaData'); // auto p = new Foo(...)
+      assert.equal(call('Append').rtype, 'WritableFile'); // std::make_unique<Foo>
+      assert.equal(call('Logv').rtype, 'Logger'); // make_shared<ns::Foo>
+      assert.equal(call('Recover').rtype, 'DBImpl'); // auto* p = reinterpret_cast<Foo*>
+      assert.equal(call('Run').rtype, null); // auto from an arbitrary call
+      assert.equal(call('Ref').rtype, 'Version'); // Foo x;
+      assert.equal(call('Delete').rtype, 'WriteBatch'); // Foo x(args)
+      assert.equal(call('Merge').rtype, 'WriteBatch'); // second declarator
+      assert.equal(call('Size').rtype, 'FileEntry'); // range-for with an explicit type
+      assert.equal(call('Size2').rtype, null); // range-for with auto
+      assert.equal(call('Release').rtype, 'Snapshot'); // declaration in a condition
+    });
+
+    it('resolves receivers that are data members', async () => {
+      const call = await typed();
+      assert.equal(call('Add').rtype, 'MemTable'); // bare field inside an inline method
+      assert.equal(call('Insert').rtype, 'Cache'); // this->field, unique_ptr unwrapped
+      assert.equal(call('Lock').rtype, 'Mutex'); // port::Mutex with a trailing annotation macro
+      assert.equal(call('push_back').rtype, null); // std::vector is not a class type
+      // Out-of-line definition: `this->field` resolves when the class is in the same file.
+      assert.equal(call('Unref').receiver, 'this->mem_');
+      assert.equal(call('Unref').rtype, 'MemTable');
+    });
+
+    it('resolves members of classes declared with an export macro', async () => {
+      const ex = await extractSource('exp.h', [
+        'namespace leveldb {',
+        'class LEVELDB_EXPORT Holder {',
+        ' public:',
+        '  void Go() { rep_->Start(); }',
+        ' private:',
+        '  Rep* rep_;',
+        '};',
+        '}',
+        '',
+      ].join('\n'));
+      assert.equal(ex.calls.find(c => c.name === 'Start')!.rtype, 'Rep');
+    });
   });
 });

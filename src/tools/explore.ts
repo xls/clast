@@ -60,8 +60,18 @@ export async function references(ctx: ToolContext, args: ReferencesArgs): Promis
     if (defs.length > 1) out.push('(references are matched by name, so they cover all definitions above)');
   }
 
+  if (ref.container.length) {
+    out.push(`(matched by the identifier "${name}" alone; the qualifier "${ref.container.join('.')}" is not used to filter usages)`);
+  }
+
+  // Definition lines of the name are context, not usages: they never eat the
+  // limit, and when many definitions share the name they are left out.
+  const allDefLines = new Set(ctx.db.symbolsByName(name).map(d => d.path + ':' + d.start_line));
+  const showDefs = allDefLines.size <= 3;
+  const perFile = totalFiles <= 3 ? limit : Math.max(4, Math.ceil(limit / 5));
   let printed = 0;
   let filesShown = 0;
+  let filesWithMore = 0;
   for (const r of rows) {
     if (printed >= limit) break;
     await ctx.fresh([r.path]);
@@ -69,25 +79,39 @@ export async function references(ctx: ToolContext, args: ReferencesArgs): Promis
     const cur = ctx.db.get<{ lines: string }>(`SELECT lines FROM occ WHERE name_id = ? AND file_id = ?`, nameId, r.file_id);
     if (!cur) continue;
     const lineNums = cur.lines.split(',').map(Number);
-    out.push(r.path);
-    filesShown++;
-    const defLines = new Set(defs.filter(d => d.path === r.path).map(d => d.start_line));
+    const body: string[] = [];
+    let inFile = 0;
+    let skipped = 0;
     for (const n of lineNums) {
-      if (printed >= limit) {
-        out.push(`  ... more lines in this file`);
-        break;
+      const isDef = allDefLines.has(r.path + ':' + n);
+      if (isDef) {
+        if (showDefs) body.push(`  ${String(n).padStart(5)}  [def] ${ctx.lines.line(r.path, n, 150)}`);
+        continue;
+      }
+      if (printed >= limit || inFile >= perFile) {
+        skipped++;
+        continue;
       }
       const enclosing = ctx.db.enclosingSymbol(r.file_id, n);
-      const tag = defLines.has(n) ? 'def' : enclosing ? enclosing.qname : '';
-      out.push(`  ${String(n).padStart(5)}  ${tag ? '[' + tag + '] ' : ''}${ctx.lines.line(r.path, n, 150)}`);
+      body.push(`  ${String(n).padStart(5)}  ${enclosing ? '[' + enclosing.qname + '] ' : ''}${ctx.lines.line(r.path, n, 150)}`);
       printed++;
+      inFile++;
+    }
+    if (body.length === 0) continue;
+    out.push(r.path);
+    out.push(...body);
+    filesShown++;
+    if (skipped) {
+      out.push(`  ... ${skipped} more in this file`);
+      filesWithMore++;
     }
   }
-  if (filesShown < totalFiles) {
-    const rest = rows.slice(filesShown);
-    out.push(`... ${plural(rest.length, 'more file')}: ${rest.slice(0, 12).map(r => r.path).join(', ')}${rest.length > 12 ? ', ...' : ''}`);
-    out.push('(narrow with path, or raise limit)');
+  const rest = rows.length - filesShown;
+  if (rest > 0 && printed >= limit) {
+    const remaining = rows.slice(filesShown).filter(r => !out.includes(r.path));
+    out.push(`... ${plural(remaining.length, 'more file')}: ${remaining.slice(0, 12).map(r => r.path).join(', ')}${remaining.length > 12 ? ', ...' : ''}`);
   }
+  if ((rest > 0 && printed >= limit) || filesWithMore) out.push('(narrow with path, or raise limit)');
   return note + out.join('\n');
 }
 
@@ -136,6 +160,7 @@ function outlineFile(ctx: ToolContext, file: FileHit, members: 'all' | 'callable
   const depthOf = new Map<number, number>();
   const hidden = new Map<number | null, number>();
   const width = String(file.line_count).length * 2 + 1;
+  let lastLine = '';
   for (const s of symbols) {
     const depth = s.parent_id !== null && depthOf.has(s.parent_id) ? depthOf.get(s.parent_id)! + 1 : 0;
     depthOf.set(s.id, depth);
@@ -144,11 +169,18 @@ function outlineFile(ctx: ToolContext, file: FileHit, members: 'all' | 'callable
       continue;
     }
     const label = s.signature || `${s.kind} ${s.name}`;
-    // Signatures of variables / fields do not say what they are; prefix the kind.
-    const text = MINOR_KINDS.has(s.kind) || s.kind === 'type' || s.kind === 'macro' ? label : label;
-    out.push(
-      `${range(s).padEnd(width)} ${'  '.repeat(depth)}${text}${s.doc ? '  // ' + firstLine(s.doc, 70) : ''}`
-    );
+    // Members defined outside their type's body (Go receivers, Rust impl blocks, C++ Foo::bar):
+    // say which type they belong to when the signature does not.
+    const dot = s.qname.lastIndexOf('.');
+    const owner = depth === 0 && dot > 0 ? s.qname.slice(0, dot) : '';
+    const ownerLast = owner.slice(owner.lastIndexOf('.') + 1);
+    const ownerTag = owner && !label.includes(ownerLast) ? `[${owner}] ` : '';
+    const line =
+      `${range(s).padEnd(width)} ${'  '.repeat(depth)}${ownerTag}${label}` +
+      `${s.doc ? '  // ' + firstLine(s.doc, 70) : ''}`;
+    if (line === lastLine) continue; // multi-declarator lines
+    lastLine = line;
+    out.push(line);
   }
   if (hidden.size) {
     let n = 0;
@@ -380,7 +412,7 @@ export async function overview(ctx: ToolContext, args: OverviewArgs = {}): Promi
   const keyLines: string[] = [];
   for (const p of popular) {
     if (keyLines.length >= 25) break;
-    const defs = findSymbols(ctx.db, { name: p.name, container: [] }).filter(
+    const defs = findSymbols(ctx.db, { name: p.name, container: [] }, { exact: true }).filter(
       s => KEY_KINDS.has(s.kind) && s.parent_id === null
     );
     // Names defined all over the place ("constructor", "main", "test") are not landmarks.
@@ -420,10 +452,16 @@ export async function overview(ctx: ToolContext, args: OverviewArgs = {}): Promi
   const entries = ctx.db
     .all<{ qname: string; path: string; start_line: number }>(
       `SELECT s.qname, f.path, s.start_line FROM symbols s JOIN files f ON f.id = s.file_id
-       WHERE s.name IN ('main', 'Main', '__main__') AND s.kind IN ('function', 'method') LIMIT 200`
+       WHERE s.name IN ('main', 'Main', '__main__') AND s.kind IN ('function', 'method') LIMIT 2000`
     )
     .filter(e => (!scope || e.path.startsWith(prefix)) && !isTestPath(e.path) && !isVendoredPath(e.path))
-    .slice(0, 10);
+    // The real entry points sit near the top of the tree, in files named after the program.
+    .sort((a, b) => {
+      const rank = (p: string): number =>
+        p.split('/').length * 2 - (/(^|\/)(main|server|app|cli|index|program|cmd)[^/]*$/i.test(p) ? 3 : 0);
+      return rank(a.path) - rank(b.path) || a.path.localeCompare(b.path);
+    })
+    .slice(0, 8);
   if (entries.length) {
     out.push('entry points:');
     for (const e of entries) out.push(`  ${e.qname}  ${e.path}:${e.start_line}`);
@@ -560,8 +598,14 @@ export async function changes(ctx: ToolContext, args: ChangesArgs = {}): Promise
   const base = args.base?.trim() || 'HEAD';
   if (!/^[\w./~^@{}-]+$/.test(base)) return 'error: invalid base ref';
 
+  if (git(root, ['rev-parse', '--git-dir']) === null) {
+    return note + 'error: this project is not a git repository (or git is not installed); clast_changes needs git.';
+  }
+  if (git(root, ['rev-parse', '--verify', '--quiet', base + '^{commit}']) === null) {
+    return note + `error: git ref "${base}" does not exist in this repository (shallow clone or typo?). Try HEAD, a branch name, or a commit hash.`;
+  }
   const diff = git(root, ['diff', '--unified=0', '--no-color', '--no-ext-diff', '--relative', base, '--']);
-  if (diff === null) return note + 'error: not a git repository, or the base ref does not exist.';
+  if (diff === null) return note + `error: git diff against "${base}" failed.`;
 
   // file -> changed line ranges on the new side
   const changed = new Map<string, Array<[number, number]>>();

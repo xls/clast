@@ -1,6 +1,6 @@
 import type { Node } from 'web-tree-sitter';
 import type { Ctx, LangSpec, Visitor } from '../spec.js';
-import { field } from '../spec.js';
+import { COMPLEX_RECEIVER, field } from '../spec.js';
 import type { SymbolKind } from '../../types.js';
 
 // Namespaces are deliberately not visited: `namespace X;` and `namespace X { }`
@@ -118,26 +118,130 @@ const anonymousClass: Visitor = (node, ctx) => {
   heritage(node, body, sym, ctx);
 };
 
+// ---------------------------------------------------------------------------
+// Receiver type hints
+// ---------------------------------------------------------------------------
+
+const varName = (node: Node): string => node.text.replace(/^&?\s*(\.\.\.)?\s*\$/, '');
+
+/** Docblock types that denote a single class: no arrays, generics or shapes. */
+function docType(raw: string): string | null {
+  return /[\[<{(]/.test(raw) ? null : raw;
+}
+
+/** Typed parameter -> local hint; a promoted constructor parameter is also a field. */
+function paramHint(p: Node, ctx: Ctx): void {
+  const type = field(p, 'type');
+  if (!type) return;
+  const name = field(p, 'name');
+  if (!name) return;
+  const n = varName(name);
+  const t = type.text;
+  ctx.typeHint(n, t);
+  if (p.type === 'property_promotion_parameter') ctx.typeHint(n, t, true);
+}
+
+/**
+ * Hints for the parameters of a named function / method: declared types
+ * first, then `@param Foo $x` from the docblock for the untyped ones (the
+ * first hint for a name wins).
+ */
+function signatureHints(node: Node, ctx: Ctx): void {
+  const params = field(node, 'parameters');
+  if (!params || params.namedChildCount === 0) return;
+  for (const p of params.namedChildren) {
+    if (p && (p.type === 'simple_parameter' || p.type === 'property_promotion_parameter')) paramHint(p, ctx);
+  }
+  const doc = node.previousSibling;
+  if (!doc || doc.type !== 'comment') return;
+  const text = doc.text;
+  if (!text.includes('@param')) return;
+  for (const m of text.matchAll(/@param\s+(\S+)\s+(?:\.\.\.)?\$(\w+)/g)) {
+    ctx.typeHint(m[2], docType(m[1]!));
+  }
+}
+
+/** Parameters of closures and arrow functions (named functions are handled by their own visitor). */
+const parameter: Visitor = (node, ctx) => {
+  const owner = node.parent?.parent;
+  if (owner && (owner.type === 'method_declaration' || owner.type === 'function_definition')) return;
+  paramHint(node, ctx);
+};
+
+/** Class named by a `new Foo(...)` expression: `Foo`, or null for anonymous / dynamic classes. */
+function createdClass(node: Node): string | null {
+  for (const c of node.namedChildren) {
+    if (!c) continue;
+    if (c.type === 'name' || c.type === 'qualified_name') return shortName(c);
+    if (c.type === 'arguments' || c.type === 'anonymous_class') return null;
+  }
+  return null;
+}
+
+/** `$x = new Foo(...)` -> local hint; `$this->x = new Foo(...)` -> field hint. */
+const assignmentExpr: Visitor = (node, ctx) => {
+  const right = field(node, 'right');
+  if (!right || right.type !== 'object_creation_expression') return;
+  const left = field(node, 'left');
+  if (!left) return;
+  if (left.type === 'variable_name') {
+    ctx.typeHint(varName(left), createdClass(right));
+  } else if (left.type === 'member_access_expression') {
+    const obj = field(left, 'object');
+    const name = field(left, 'name');
+    if (obj && name && obj.type === 'variable_name' && name.type === 'name' && obj.text === '$this') {
+      ctx.typeHint(name.text, createdClass(right), true);
+    }
+  }
+};
+
+/** `catch (FooException $e)`; multi-catch is ambiguous and skipped. */
+const catchClause: Visitor = (node, ctx) => {
+  const type = field(node, 'type');
+  const name = field(node, 'name');
+  if (!type || !name || type.namedChildCount !== 1) return;
+  ctx.typeHint(varName(name), type.text);
+};
+
+/** Inline `@var Foo $x` annotations (short comments only, to stay cheap). */
+const comment: Visitor = (node, ctx) => {
+  if (node.endIndex - node.startIndex > 120) return;
+  const m = /@var\s+(\S+)\s+\$(\w+)/.exec(node.text);
+  if (m) ctx.typeHint(m[2], docType(m[1]!));
+};
+
 const functionDef: Visitor = (node, ctx) => {
   const name = field(node, 'name');
   if (!name) return;
   ctx.def(node, { name: name.text, kind: 'function', sig: signature(node, ctx), exported: true });
+  signatureHints(node, ctx);
 };
 
 const methodDecl: Visitor = (node, ctx) => {
   const name = field(node, 'name');
   if (!name) return;
   ctx.def(node, { name: name.text, kind: 'method', sig: signature(node, ctx), exported: isPublic(node) });
+  signatureHints(node, ctx);
 };
 
 /** `protected static ?string $a = 1, $b;` -> one property per element. */
 const propertyDecl: Visitor = (node, ctx) => {
   const exported = isPublic(node);
+  // Declared type, else a `@var Foo` docblock (the usual style in pre-7.4 code).
+  let type: string | null = field(node, 'type')?.text ?? null;
+  if (type === null) {
+    const doc = node.previousSibling;
+    if (doc && doc.type === 'comment') {
+      const m = /@var\s+(\S+)/.exec(doc.text);
+      if (m) type = docType(m[1]!);
+    }
+  }
   let prefix: string | null = null;
   for (const el of node.namedChildren) {
     if (!el || el.type !== 'property_element') continue;
     const v = field(el, 'name') ?? el.namedChild(0);
     if (!v) continue;
+    if (type) ctx.typeHint(varName(v), type);
     if (prefix === null) prefix = ctx.src.slice(declStart(node), el.startIndex);
     ctx.def(el, {
       name: v.text.replace(/^&?\s*\$/, ''),
@@ -200,11 +304,37 @@ const functionCall: Visitor = (node, ctx) => {
   ctx.call(name, node);
 };
 
-/** Receiver text when it is short: `$this`, `$this->repo`, `$user`. */
-function receiverOf(node: Node | null): string | null {
-  if (!node || node.endIndex - node.startIndex > 40) return null;
-  const t = node.text;
-  return /[\s(]/.test(t) ? null : t;
+/**
+ * Receiver of a member call: `$user`, `$this`, `$this->repo` as text;
+ * `(new Foo(...))->bar()` -> `Foo` (resolves like a static-style call);
+ * anything else (call chains, indexing, ...) -> COMPLEX_RECEIVER. Never null:
+ * a member call must not be mistaken for a bare `foo()` call.
+ */
+function receiverOf(node: Node | null): string {
+  if (!node) return COMPLEX_RECEIVER;
+  switch (node.type) {
+    case 'variable_name':
+    case 'member_access_expression':
+    case 'nullsafe_member_access_expression':
+    case 'scoped_property_access_expression':
+    case 'relative_scope': {
+      if (node.endIndex - node.startIndex > 48) return COMPLEX_RECEIVER;
+      const t = node.text.replace('?->', '->');
+      return /[\s(\[{'"]/.test(t) ? COMPLEX_RECEIVER : t;
+    }
+    case 'name':
+    case 'qualified_name':
+      return shortName(node) ?? COMPLEX_RECEIVER;
+    case 'parenthesized_expression': {
+      const inner = node.namedChild(0);
+      return (inner && inner.type === 'object_creation_expression' && createdClass(inner)) || COMPLEX_RECEIVER;
+    }
+    case 'object_creation_expression':
+      // PHP 8.4: `new Foo()->bar()`.
+      return createdClass(node) || COMPLEX_RECEIVER;
+    default:
+      return COMPLEX_RECEIVER;
+  }
 }
 
 const memberCall: Visitor = (node, ctx) => {
@@ -218,7 +348,7 @@ const scopedCall: Visitor = (node, ctx) => {
   if (!name || name.type !== 'name') return;
   const scope = field(node, 'scope');
   // `Foo::bar()`, `\A\Foo::bar()` -> receiver Foo; parent/self/static kept as is.
-  ctx.call(name.text, node, shortName(scope) ?? receiverOf(scope));
+  ctx.call(name.text, node, receiverOf(scope));
 };
 
 const RELATIVE = new Set(['static', 'self', 'parent']);
@@ -291,6 +421,11 @@ export const php: LangSpec = {
     anonymous_class: anonymousClass,
     function_definition: functionDef,
     method_declaration: methodDecl,
+    simple_parameter: parameter,
+    property_promotion_parameter: parameter,
+    assignment_expression: assignmentExpr,
+    catch_clause: catchClause,
+    comment,
     property_declaration: propertyDecl,
     const_declaration: constDecl,
     enum_case: enumCase,

@@ -1,6 +1,6 @@
 import type { Node } from 'web-tree-sitter';
 import type { Ctx, LangSpec, Visitor } from '../spec.js';
-import { field, stripQuotes } from '../spec.js';
+import { field, simpleReceiver, stripQuotes } from '../spec.js';
 
 /** Builtin functions and predeclared types: calls/conversions that never resolve to a user symbol. */
 const BUILTINS = new Set([
@@ -56,10 +56,136 @@ function slice(ctx: Ctx, start: number, end: number): string {
   return ctx.src.slice(start, Math.min(end, start + MAX_SIG_SLICE));
 }
 
-function shortText(node: Node | null | undefined, max = 40): string | null {
-  if (!node || node.endIndex - node.startIndex > max) return null;
-  const t = node.text;
-  return /[\s(]/.test(t) ? null : t;
+/** True for a (pointer to a / generic) type qualified by a package: `http.Handler`, `*pkg.Base`. */
+function isQualified(node: Node | null | undefined): boolean {
+  for (let i = 0; node && i < 6; i++) {
+    switch (node.type) {
+      case 'qualified_type':
+        return true;
+      case 'generic_type':
+        node = field(node, 'type');
+        break;
+      case 'pointer_type':
+      case 'parenthesized_type':
+      case 'type_elem':
+        node = node.namedChildren[0];
+        break;
+      default:
+        return false;
+    }
+  }
+  return false;
+}
+
+/**
+ * Per-file state (a fresh `Ctx` is created for every extraction): type
+ * symbols and interface satisfaction assertions (`var _ I = (*T)(nil)`),
+ * which may come before or after the declaration of `T`.
+ */
+interface FileState {
+  types: Map<string, number>;
+  /** Type name -> interfaces asserted before the type was declared. */
+  asserted: Map<string, string[]>;
+}
+const states = new WeakMap<Ctx, FileState>();
+function state(ctx: Ctx): FileState {
+  let s = states.get(ctx);
+  if (!s) states.set(ctx, (s = { types: new Map(), asserted: new Map() }));
+  return s;
+}
+
+/**
+ * Type of the value an expression obviously constructs: `Foo{..}`, `&Foo{..}`,
+ * `new(Foo)`, and the constructor convention `NewFoo(..)` / `pkg.NewFoo(..)`.
+ * Other calls are not guessed.
+ */
+function valueType(value: Node | null | undefined): string | null {
+  if (!value) return null;
+  if (value.type === 'unary_expression') {
+    value = field(value, 'operand');
+    if (!value || value.type !== 'composite_literal') return null;
+  }
+  if (value.type === 'composite_literal') return typeName(field(value, 'type'));
+  if (value.type !== 'call_expression') return null;
+  let fn = field(value, 'function');
+  if (!fn) return null;
+  if (fn.type === 'selector_expression') fn = field(fn, 'field');
+  if (!fn || (fn.type !== 'identifier' && fn.type !== 'field_identifier')) return null;
+  const name = fn.text;
+  if (name === 'new') return typeName(field(value, 'arguments')?.namedChildren[0]);
+  const m = /^New([A-Z]\w*)$/.exec(name);
+  return m ? m[1]! : null;
+}
+
+/** Parameters, method receivers and named results: `a, b Foo`, `s *Site`. */
+const parameterDecl: Visitor = (node, ctx) => {
+  const owner = node.parent?.parent?.type;
+  if (owner !== 'function_declaration' && owner !== 'method_declaration' && owner !== 'func_literal') return;
+  const type = typeName(field(node, 'type'));
+  if (!type) return;
+  for (const n of node.childrenForFieldName('name')) {
+    if (n) ctx.typeHint(n.text, type);
+  }
+};
+
+/** `x := Foo{}`, `a, b := &Foo{}, new(Bar)` */
+const shortVarDecl: Visitor = (node, ctx) => {
+  const left = field(node, 'left');
+  const right = field(node, 'right');
+  if (!left || !right || left.namedChildCount !== right.namedChildCount) return;
+  for (let i = 0; i < left.namedChildCount; i++) {
+    const type = valueType(right.namedChildren[i]);
+    if (!type) continue;
+    const name = left.namedChildren[i];
+    if (name && name.type === 'identifier') ctx.typeHint(name.text, type);
+  }
+};
+
+/** Type hints of `var x Foo` / `var x = Foo{}` (locals and package level). */
+function varHints(node: Node, names: Node[], ctx: Ctx): void {
+  const declared = field(node, 'type');
+  if (declared) {
+    const type = typeName(declared);
+    if (type) for (const n of names) ctx.typeHint(n.text, type);
+    return;
+  }
+  const values = field(node, 'value');
+  if (!values || values.namedChildCount !== names.length) return;
+  for (let i = 0; i < names.length; i++) {
+    const type = valueType(values.namedChildren[i]);
+    if (type) ctx.typeHint(names[i]!.text, type);
+  }
+}
+
+/** Record `type implements iface` now, or when the type is declared later in the file. */
+function assertImplements(type: string, iface: string, ctx: Ctx): void {
+  if (type === iface) return;
+  const st = state(ctx);
+  const sym = st.types.get(type);
+  if (sym !== undefined) {
+    ctx.inherit(sym, iface, 'implements');
+    return;
+  }
+  const list = st.asserted.get(type);
+  if (list) list.push(iface);
+  else st.asserted.set(type, [iface]);
+}
+
+/** `(*Engine)(nil)`, `&Engine{}`, `Engine{}`, `new(Engine)` -> Engine */
+function assertedType(value: Node | null | undefined): string | null {
+  if (!value) return null;
+  if (value.type === 'call_expression') {
+    let fn = field(value, 'function');
+    if (fn && fn.type === 'parenthesized_expression') {
+      fn = fn.namedChildren[0] ?? null;
+      if (fn && fn.type === 'unary_expression') fn = field(fn, 'operand');
+      if (fn && fn.type === 'selector_expression') fn = field(fn, 'field');
+      return fn && (fn.type === 'identifier' || fn.type === 'field_identifier') ? fn.text : null;
+    }
+    return fn && fn.type === 'identifier' && fn.text === 'new' ? valueType(value) : null;
+  }
+  if (value.type === 'type_conversion_expression') return typeName(field(value, 'type'));
+  return value.type === 'unary_expression' || value.type === 'composite_literal' ? valueType(value) : null;
 }
 
 const functionDecl: Visitor = (node, ctx) => {
@@ -81,7 +207,7 @@ const methodDecl: Visitor = (node, ctx) => {
   });
 };
 
-function structFields(struct: Node, sym: number, ctx: Ctx): void {
+function structFields(struct: Node, sym: number, own: string, ctx: Ctx): void {
   const list = struct.namedChildren.find(c => c && c.type === 'field_declaration_list');
   if (!list) return;
   for (const fd of list.namedChildren) {
@@ -89,20 +215,30 @@ function structFields(struct: Node, sym: number, ctx: Ctx): void {
     const names = fd.childrenForFieldName('name');
     if (names.length === 0) {
       // Embedded field: `Base`, `*Base`, `pkg.Other`, `Gen[T]`
-      const name = typeName(field(fd, 'type'));
+      const type = field(fd, 'type');
+      const name = typeName(type);
       if (!name) continue;
       ctx.def(fd, { name, kind: 'field', body: null, scope: false, exported: isExported(name) });
-      ctx.inherit(sym, name, 'extends');
+      ctx.typeHint(name, name);
+      // `type ResponseWriter struct { http.ResponseWriter }` does not extend itself.
+      if (name !== own || !isQualified(type)) ctx.inherit(sym, name, 'extends');
       continue;
     }
+    const type = typeName(field(fd, 'type'));
     for (const n of names) {
       if (!n) continue;
       ctx.def(fd, { name: n.text, kind: 'field', body: null, scope: false, exported: isExported(n.text) });
+      if (type) ctx.typeHint(n.text, type);
     }
   }
 }
 
-function interfaceMembers(iface: Node, sym: number, ctx: Ctx): void {
+function interfaceMembers(iface: Node, sym: number, own: string, ctx: Ctx): void {
+  // `type ResponseWriter interface { http.ResponseWriter }` does not extend itself.
+  const embed = (t: Node): void => {
+    const name = typeName(t);
+    if (name && (name !== own || !isQualified(t))) ctx.inherit(sym, name, 'extends');
+  };
   for (const m of iface.namedChildren) {
     if (!m) continue;
     if (m.type === 'method_elem' || m.type === 'method_spec') {
@@ -112,11 +248,22 @@ function interfaceMembers(iface: Node, sym: number, ctx: Ctx): void {
       // A single named type is an embedded interface; unions / ~T are constraints.
       if (m.namedChildCount !== 1) continue;
       const t = m.namedChildren[0];
-      if (t && t.type !== 'negated_type') ctx.inherit(sym, typeName(t), 'extends');
+      if (t && t.type !== 'negated_type') embed(t);
     } else if (m.type === 'type_identifier' || m.type === 'qualified_type' || m.type === 'generic_type') {
-      ctx.inherit(sym, typeName(m), 'extends');
+      embed(m);
     }
   }
+}
+
+/** Remember a type symbol and apply interface assertions seen before its declaration. */
+function registerType(name: string, sym: number, ctx: Ctx): void {
+  if (ctx.inCallable()) return; // local type
+  const st = state(ctx);
+  if (!st.types.has(name)) st.types.set(name, sym);
+  const pending = st.asserted.get(name);
+  if (!pending) return;
+  st.asserted.delete(name);
+  for (const iface of pending) ctx.inherit(sym, iface, 'implements');
 }
 
 const typeSpec: Visitor = (node, ctx) => {
@@ -132,25 +279,38 @@ const typeSpec: Visitor = (node, ctx) => {
     const isStruct = type.type === 'struct_type';
     const sig = prefix + ctx.src.slice(range.startIndex, type.startIndex) + (isStruct ? 'struct' : 'interface');
     const sym = ctx.def(node, { name, kind: isStruct ? 'struct' : 'interface', range, sig, exported });
-    if (isStruct) structFields(type, sym, ctx);
-    else interfaceMembers(type, sym, ctx);
+    if (isStruct) {
+      registerType(name, sym, ctx);
+      structFields(type, sym, name, ctx);
+    } else {
+      interfaceMembers(type, sym, name, ctx);
+    }
     return;
   }
-  ctx.def(node, { name, kind: 'type', range, sig: prefix + slice(ctx, range.startIndex, range.endIndex), exported });
+  const sym = ctx.def(node, { name, kind: 'type', range, sig: prefix + slice(ctx, range.startIndex, range.endIndex), exported });
+  if (node.type === 'type_spec') registerType(name, sym, ctx);
 };
 
 /** Package-level `const` / `var` specs. Locals are never symbols. */
 const valueSpec = (kind: 'constant' | 'variable'): Visitor => (node, ctx) => {
   let decl = node.parent;
   if (decl && decl.type === 'var_spec_list') decl = decl.parent;
-  if (!decl || decl.parent?.type !== 'source_file') return;
-  const names = node.childrenForFieldName('name');
+  const names = node.childrenForFieldName('name').filter((n): n is Node => !!n);
   if (names.length === 0) return;
+  if (kind === 'variable') varHints(node, names, ctx);
+  if (!decl || decl.parent?.type !== 'source_file') return;
   const range = specRange(node);
   const prefix = range === node ? (kind === 'constant' ? 'const ' : 'var ') : '';
 
   const values = field(node, 'value');
   const value = names.length === 1 && values && values.namedChildCount === 1 ? values.namedChildren[0] : null;
+  if (kind === 'variable' && value && names[0]!.text === '_') {
+    // Interface satisfaction assertion: `var _ IRouter = (*Engine)(nil)` / `= &Engine{}`
+    const iface = typeName(field(node, 'type'));
+    const type = iface ? assertedType(value) : null;
+    if (iface && type && !BUILTINS.has(iface)) assertImplements(type, iface, ctx);
+    return;
+  }
   if (value && value.type === 'func_literal' && names[0]) {
     const name = names[0].text;
     const body = field(value, 'body');
@@ -177,7 +337,8 @@ function recordCall(fn: Node | null, node: Node, ctx: Ctx): void {
         return;
       }
       case 'selector_expression':
-        ctx.call(field(fn, 'field')?.text, node, shortText(field(fn, 'operand')));
+        // Always a receiver ('?' for call chains etc.): a member call is never a bare call.
+        ctx.call(field(fn, 'field')?.text, node, simpleReceiver(field(fn, 'operand')) ?? '?');
         return;
       case 'qualified_type':
         ctx.call(field(fn, 'name')?.text, node, field(fn, 'package')?.text);
@@ -225,6 +386,7 @@ const importSpec: Visitor = (node, ctx) => {
 
 export const go: LangSpec = {
   id: 'go',
+  lowercaseTypes: true,
   grammar: 'go',
   extensions: ['.go'],
   identifiers: ['identifier', 'type_identifier', 'field_identifier', 'package_identifier'],
@@ -240,5 +402,7 @@ export const go: LangSpec = {
     type_conversion_expression: typeConversion,
     composite_literal: compositeLiteral,
     import_spec: importSpec,
+    parameter_declaration: parameterDecl,
+    short_var_declaration: shortVarDecl,
   },
 };

@@ -1,6 +1,6 @@
 import type { Node } from 'web-tree-sitter';
 import type { Ctx, LangSpec, Visitor } from '../spec.js';
-import { field, isConstName, lastSegment } from '../spec.js';
+import { field, isConstName, lastSegment, simpleReceiver } from '../spec.js';
 
 const MAX_SIG_SLICE = 400;
 const TYPE_DECLS = [
@@ -78,11 +78,77 @@ function typeName(node: Node | null | undefined): string | null {
   return null;
 }
 
-function shortReceiver(node: Node | null): string | null {
-  if (!node || node.endIndex - node.startIndex > 40) return null;
-  const t = node.text;
-  return /[\s(]/.test(t) ? null : t;
+const MAX_TYPE_TEXT = 120;
+
+/**
+ * Raw text of a declared type for ctx.typeHint (which normalises it), or null
+ * for types that never name the class of the variable: arrays, primitives.
+ */
+function hintType(type: Node | null | undefined): string | null {
+  let n = type ?? null;
+  if (n && n.type === 'annotated_type') n = n.namedChild(n.namedChildCount - 1);
+  if (!n) return null;
+  switch (n.type) {
+    case 'type_identifier':
+    case 'scoped_type_identifier':
+      return n.endIndex - n.startIndex > MAX_TYPE_TEXT ? null : n.text;
+    case 'generic_type':
+      // Long generic types: the outer name is enough (wrappers are not unwrapped then).
+      return n.endIndex - n.startIndex > MAX_TYPE_TEXT ? typeName(n) : n.text;
+    default:
+      return null; // array_type, integral_type, boolean_type, void_type, ...
+  }
 }
+
+/** Declared type of a declarator: the written type, or the constructed class for `var x = new Foo()`. */
+function declaredType(type: Node | null, value: Node | null): string | null {
+  if (!type) return null;
+  if (type.type === 'type_identifier' && type.endIndex - type.startIndex === 3 && type.text === 'var') {
+    return value && value.type === 'object_creation_expression' ? hintType(field(value, 'type')) : null;
+  }
+  return hintType(type);
+}
+
+/** Parameters, lambda parameters with explicit types and record components. */
+const formalParameter: Visitor = (node, ctx) => {
+  if (field(node, 'dimensions')) return;
+  ctx.typeHint(field(node, 'name')?.text, hintType(field(node, 'type')));
+};
+
+/** Varargs `Foo... rest`: the type is the first non-modifier child, the name sits in a variable_declarator. */
+const spreadParameter: Visitor = (node, ctx) => {
+  let type: Node | null = null;
+  let name: Node | null = null;
+  for (const c of node.namedChildren) {
+    if (!c) continue;
+    if (c.type === 'variable_declarator') name = field(c, 'name');
+    else if (c.type !== 'modifiers' && !type) type = c;
+  }
+  if (name) ctx.typeHint(name.text, hintType(type));
+};
+
+/** `catch (IOException e)`; multi-catch `A | B e` has no single type. */
+const catchParameter: Visitor = (node, ctx) => {
+  const name = field(node, 'name');
+  if (!name) return;
+  for (const c of node.namedChildren) {
+    if (!c || c.type !== 'catch_type') continue;
+    if (c.namedChildCount === 1) ctx.typeHint(name.text, hintType(c.namedChild(0)));
+    return;
+  }
+};
+
+/** `for (Item it : items)` and try-with-resources `Reader r = open()`. */
+const typedName: Visitor = (node, ctx) => {
+  const name = field(node, 'name');
+  if (name && name.type === 'identifier') ctx.typeHint(name.text, declaredType(field(node, 'type'), field(node, 'value')));
+};
+
+/** Pattern variable: `o instanceof Foo f`. */
+const instanceofExpression: Visitor = (node, ctx) => {
+  const name = field(node, 'name');
+  if (name) ctx.typeHint(name.text, hintType(field(node, 'right')));
+};
 
 /** True when a member sits in an anonymous class body (`new Foo() { ... }`). */
 function inAnonymousClass(member: Node): boolean {
@@ -162,16 +228,24 @@ const enumConstant: Visitor = (node, ctx) => {
   });
 };
 
-/** Fields and interface constants: one symbol per declarator. Locals are ignored. */
+/**
+ * Fields and interface constants: one symbol per declarator. Locals are not
+ * symbols; they only contribute a receiver type hint.
+ */
 const variableDeclarator: Visitor = (node, ctx) => {
   const decl = node.parent;
   if (!decl) return;
   const isInterfaceConst = decl.type === 'constant_declaration';
-  if (!isInterfaceConst && decl.type !== 'field_declaration') return;
-  if (inAnonymousClass(decl)) return;
+  const isField = isInterfaceConst || decl.type === 'field_declaration';
+  if (!isField && decl.type !== 'local_variable_declaration') return;
   const nameNode = field(node, 'name');
   if (!nameNode) return;
   const name = nameNode.text;
+  const type = field(node, 'dimensions') ? null : declaredType(field(decl, 'type'), field(node, 'value'));
+  if (!isField || inAnonymousClass(decl)) {
+    if (type) ctx.typeHint(name, type);
+    return;
+  }
   const mods = modifiersOf(decl);
 
   // Signature: modifiers + type + this declarator (with a short initializer).
@@ -196,12 +270,21 @@ const variableDeclarator: Visitor = (node, ctx) => {
     sig,
     exported: memberExported(mods, ctx),
   });
+  // The field symbol is not a container, so the hint lands on the enclosing class.
+  if (type) ctx.typeHint(name, type);
 };
 
 const methodInvocation: Visitor = (node, ctx) => {
   const name = field(node, 'name');
   if (!name) return;
-  ctx.call(name.text, node, shortReceiver(field(node, 'object')));
+  const object = field(node, 'object');
+  if (!object) {
+    ctx.call(name.text, node);
+    return;
+  }
+  // `Outer.super.foo()`: object is `Outer`, followed by `.` and `super`.
+  const qualifiedSuper = object.nextSibling?.nextSibling?.type === 'super';
+  ctx.call(name.text, node, qualifiedSuper ? 'super' : simpleReceiver(object));
 };
 
 const objectCreation: Visitor = (node, ctx) => {
@@ -228,7 +311,7 @@ const methodReference: Visitor = (node, ctx) => {
   const target = node.child(0);
   const member = node.child(node.childCount - 1);
   if (!target || !member) return;
-  if (member.type === 'identifier') ctx.call(member.text, node, shortReceiver(target));
+  if (member.type === 'identifier') ctx.call(member.text, node, simpleReceiver(target));
   else if (member.type === 'new') ctx.call(typeName(target), node);
 };
 
@@ -263,6 +346,12 @@ export const java: LangSpec = {
     compact_constructor_declaration: method,
     annotation_type_element_declaration: annotationElement,
     variable_declarator: variableDeclarator,
+    formal_parameter: formalParameter,
+    spread_parameter: spreadParameter,
+    catch_formal_parameter: catchParameter,
+    enhanced_for_statement: typedName,
+    resource: typedName,
+    instanceof_expression: instanceofExpression,
     method_invocation: methodInvocation,
     object_creation_expression: objectCreation,
     explicit_constructor_invocation: explicitConstructorInvocation,

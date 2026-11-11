@@ -79,6 +79,8 @@ export interface Extraction {
   calls: ExCall[];
   imports: ExImport[];
   heritage: ExHeritage[];
+  /** Declared field types of class-like symbols: [container, field, type]. */
+  fieldTypes: Array<[string, string, string]>;
   /** Identifier occurrences: [name, "12,40,41"] (1-based lines, capped per file). */
   occ: Array<[string, string]>;
   hadError: boolean;

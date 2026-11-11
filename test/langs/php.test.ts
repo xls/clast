@@ -388,4 +388,134 @@ return new class extends Migration
     const htmlOnly = await extractSource('html.php', '<html><body>class X {}</body></html>\n');
     assert.deepEqual(htmlOnly.symbols, []);
   });
+
+  it('resolves receiver types from declarations', async () => {
+    const ex = await extractSource('t.php', `<?php
+namespace App\\Http;
+
+class Router
+{
+    protected Container $container;
+    protected ?Dispatcher $events = null;
+    /**
+     * The route collection.
+     *
+     * @var \\Illuminate\\Routing\\RouteCollection
+     */
+    protected $routes;
+    /** @var array<string, Foo> */
+    protected $map;
+    /** @var string[] */
+    protected $names;
+    protected $untyped;
+
+    public function __construct(private Registry $registry, protected ?Cache $cache = null, int $n = 0)
+    {
+        $registry->boot();
+        $this->clock = new \\App\\Support\\Clock();
+        $this->registry->load();
+        $this->cache?->flush();
+        $this->clock->now();
+    }
+
+    /**
+     * @param  \\Illuminate\\Http\\Request  $request
+     * @param  string|int  $id
+     * @param  \\App\\Other[]  $list
+     * @param  \\App\\Wrong  $route
+     */
+    public function run($request, Route $route, $id, $list, Logger|null $log = null, ?\\App\\Models\\User $user = null, string $s = '')
+    {
+        $request->path();
+        $route->bind();
+        $id->nope();
+        $list->nope2();
+        $log?->info();
+        $user->save();
+        $s->x();
+        $this->container->make();
+        $this->events->dispatch();
+        $this->routes->match();
+        $this->map->get();
+        $this->names->get2();
+        $this->untyped->thing();
+        $this->container->a->b();
+        $p = new Pipeline($this->container);
+        $p->send();
+        (new Pipeline($this->container))->send($request)->through([])->then(fn (Response $r) => $r->prepare());
+        (new \\App\\Builder)->build();
+        $this->make()->chained();
+        $arr[0]->indexed();
+        static::$app->boot();
+        Facade::call();
+        \\App\\Facade::call2();
+        $cb = function (Blueprint $table) { $table->id(); };
+        try {
+            risky();
+        } catch (QueryException $e) {
+            $e->getSql();
+        } catch (A | B $multi) {
+            $multi->getMessage();
+        }
+        /** @var \\App\\Models\\Post $post */
+        $post = resolve('post');
+        $post->publish();
+    }
+}
+
+function helper(Request $request) { return $request->all(); }
+`);
+    assert.equal(ex.hadError, false);
+    const call = (name: string) => {
+      const c = ex.calls.find(x => x.name === name);
+      assert.ok(c, `no call to ${name}`);
+      return [c.receiver, c.rtype];
+    };
+    // Constructor promotion: local parameter and field.
+    assert.deepEqual(call('boot'), ['$registry', 'Registry']);
+    assert.deepEqual(call('load'), ['$this->registry', 'Registry']);
+    assert.deepEqual(call('flush'), ['$this->cache', 'Cache']);
+    // `$this->x = new Foo` declares a field type.
+    assert.deepEqual(call('now'), ['$this->clock', 'Clock']);
+    // Parameters: declared types win over the docblock, docblock fills the gaps.
+    assert.deepEqual(call('path'), ['$request', 'Request']);
+    assert.deepEqual(call('bind'), ['$route', 'Route']);
+    assert.deepEqual(call('nope'), ['$id', null]);
+    assert.deepEqual(call('nope2'), ['$list', null]);
+    assert.deepEqual(call('info'), ['$log', 'Logger']);
+    assert.deepEqual(call('save'), ['$user', 'User']);
+    assert.deepEqual(call('x'), ['$s', null]);
+    // Typed and @var-documented properties.
+    assert.deepEqual(call('make'), ['$this->container', 'Container']);
+    assert.deepEqual(call('dispatch'), ['$this->events', 'Dispatcher']);
+    assert.deepEqual(call('match'), ['$this->routes', 'RouteCollection']);
+    assert.deepEqual(call('get'), ['$this->map', null]);
+    assert.deepEqual(call('get2'), ['$this->names', null]);
+    assert.deepEqual(call('thing'), ['$this->untyped', null]);
+    assert.deepEqual(call('b'), ['$this->container->a', null]);
+    // Locals assigned from `new`.
+    const sends = ex.calls.filter(c => c.name === 'send');
+    assert.equal(sends.find(c => c.receiver === '$p')?.rtype, 'Pipeline');
+    // `(new Foo(...))->method()` resolves like a static-style call; the rest of the chain is complex.
+    assert.ok(sends.some(c => c.receiver === 'Pipeline'));
+    assert.deepEqual(call('through'), ['?', null]);
+    assert.deepEqual(call('then'), ['?', null]);
+    assert.deepEqual(call('build'), ['Builder', null]);
+    assert.deepEqual(call('chained'), ['?', null]);
+    assert.deepEqual(call('indexed'), ['?', null]);
+    assert.deepEqual(call('call'), ['Facade', null]);
+    assert.deepEqual(call('call2'), ['Facade', null]);
+    // Closure / arrow-function parameters, catch clauses, inline @var.
+    assert.deepEqual(call('prepare'), ['$r', 'Response']);
+    assert.deepEqual(call('id'), ['$table', 'Blueprint']);
+    assert.deepEqual(call('getSql'), ['$e', 'QueryException']);
+    assert.deepEqual(call('getMessage'), ['$multi', null]);
+    assert.deepEqual(call('publish'), ['$post', 'Post']);
+    // Hints are scoped to their function.
+    assert.deepEqual(call('all'), ['$request', 'Request']);
+    // A member call always has a receiver.
+    for (const c of ex.calls) {
+      if (['chained', 'indexed', 'through', 'then'].includes(c.name)) assert.equal(c.receiver, '?');
+    }
+  });
 });

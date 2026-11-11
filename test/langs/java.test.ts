@@ -185,8 +185,8 @@ describe('java extraction', () => {
       'Circle.Circle -> Circle', // this(1)
       'Circle.area -> helper', // inside a lambda
       'Circle.area -> list.stream',
-      'Circle.area -> map',
-      'Circle.area -> forEach',
+      'Circle.area -> ?.map', // chained: receiver is a call
+      'Circle.area -> ?.forEach',
       'Circle.area -> String.valueOf', // method reference
       'Circle.area -> System.out.println',
       'Circle.area -> ArrayList', // qualified + generic constructor
@@ -194,9 +194,9 @@ describe('java extraction', () => {
       'Circle.area -> Thread',
       'Circle.area -> Runnable',
       'Circle.area -> inner', // inside an anonymous class
-      'Circle.area -> start',
+      'Circle.area -> ?.start',
       'Circle.area -> this.foo.bar',
-      'Circle.area -> baz',
+      'Circle.area -> ?.baz',
       'Circle.area -> super.area',
       'Circle.Inner.m.Local.deep -> go',
     ]) {
@@ -315,5 +315,114 @@ public class Broken {
     assert.equal(cut.hadError, true);
     assert.ok(cut.symbols.some(s => s.name === 'ok' && s.kind === 'method'));
     assert.ok(cut.calls.some(c => c.name === 'run'));
+  });
+
+  it('resolves receivers to declared types', async () => {
+    const ex = await extractSource('F.java', `
+record Pair(Left left, java.util.Optional<Right> right) {
+    void use() { left.l(); right.r(); }
+}
+class Sender<K, V> extends Base {
+    private final OwnerRepository owners;
+    private Plugin<Partitioner> partitionerPlugin, other;
+    private int count;
+    private Foo[] many;
+
+    void send(final ProducerRecord<K, V> record, @Nullable Callback cb, int n, Extra... extras) {
+        record.topic();
+        cb.done();
+        this.owners.findById(1);
+        owners.save(null);
+        partitionerPlugin.get().partition(record);
+        StringBuilder sb = new StringBuilder();
+        sb.append("x");
+        var acc = new RecordAccumulator<String>(1);
+        acc.append(1);
+        var unknown = make();
+        unknown.go();
+        many.clone();
+        for (Item it : items()) { it.run(); }
+        try (Reader r = open(); Writer w = sink()) { r.read(); w.write(); }
+        catch (IOException e) { e.log(); }
+        catch (A | B multi) { multi.log(); }
+        each((Node node) -> node.visit());
+        each(x -> x.visit());
+        if (n instanceof Leaf leaf) leaf.fall();
+        super.send(record);
+        Outer.super.hello();
+        helper();
+        ((Foo) record).cast();
+        new Thread(() -> {}).start();
+        a.b.c.deep();
+    }
+    void shadow(Other owners) { owners.save(null); }
+}
+`);
+    const call = (name: string) => {
+      const c = ex.calls.find(x => x.name === name);
+      assert.ok(c, `call ${name} not found`);
+      return [c.receiver, c.rtype];
+    };
+    const all = (name: string) => ex.calls.filter(c => c.name === name).map(c => [c.receiver, c.rtype]);
+    // Record components act like fields of the record.
+    assert.deepEqual(call('l'), ['left', 'Left']);
+    assert.deepEqual(call('r'), ['right', 'Right']); // Optional<T> is unwrapped
+    // Parameters (generic, annotated).
+    assert.deepEqual(call('topic'), ['record', 'ProducerRecord']);
+    assert.deepEqual(call('done'), ['cb', 'Callback']);
+    // Fields: qualified with this and unqualified; a parameter shadows the field.
+    assert.deepEqual(call('findById'), ['this.owners', 'OwnerRepository']);
+    const saves = ex.calls.filter(c => c.name === 'save').map(c => [ex.symbols[c.caller]!.name, c.rtype]);
+    assert.deepEqual(saves, [['send', 'OwnerRepository'], ['shadow', 'Other']]);
+    assert.deepEqual(call('get'), ['partitionerPlugin', 'Plugin']);
+    // Call chains keep a receiver marker so they are not mistaken for bare calls.
+    assert.deepEqual(call('partition'), ['?', null]);
+    assert.deepEqual(call('cast'), ['?', null]);
+    assert.deepEqual(call('start'), ['?', null]);
+    // Locals: explicit type and var + new.
+    assert.deepEqual(all('append'), [['sb', 'StringBuilder'], ['acc', 'RecordAccumulator']]);
+    assert.deepEqual(call('go'), ['unknown', null]);
+    assert.deepEqual(call('clone'), ['many', null]); // arrays have no class type
+    // Enhanced for, resources, catch, typed lambda parameter, pattern variable.
+    assert.deepEqual(call('run'), ['it', 'Item']);
+    assert.deepEqual(call('read'), ['r', 'Reader']);
+    assert.deepEqual(call('write'), ['w', 'Writer']);
+    assert.deepEqual(all('log'), [['e', 'IOException'], ['multi', null]]);
+    assert.deepEqual(all('visit'), [['node', 'Node'], ['x', null]]);
+    assert.deepEqual(call('fall'), ['leaf', 'Leaf']);
+    // super / qualified super / bare / long receivers.
+    assert.deepEqual(call('send'), ['super', null]);
+    assert.deepEqual(call('hello'), ['super', null]);
+    assert.deepEqual(call('helper'), [null, null]);
+    assert.deepEqual(call('deep'), ['a.b.c', null]);
+    // Hints do not create symbols.
+    assert.deepEqual(symbolList(ex), [
+      'class Pair', 'field Pair.left', 'field Pair.right', 'method Pair.use',
+      'class Sender', 'field Sender.owners', 'field Sender.partitionerPlugin', 'field Sender.other',
+      'field Sender.count', 'field Sender.many', 'method Sender.send', 'method Sender.shadow',
+    ]);
+  });
+
+  it('types varargs parameters, anonymous class fields and nested class fields', async () => {
+    const ex = await extractSource('G.java', `
+class Outer {
+    private final Service service;
+    void go(Part... parts) {
+        parts.first();
+        new Runnable() {
+            private Inner inner;
+            public void run() { inner.tick(); service.call(); }
+        };
+    }
+    static class Nested {
+        private Other service;
+        void m() { service.call(); }
+    }
+}
+`);
+    const all = (name: string) => ex.calls.filter(c => c.name === name).map(c => [c.receiver, c.rtype]);
+    assert.deepEqual(all('first'), [['parts', 'Part']]);
+    assert.deepEqual(all('tick'), [['inner', 'Inner']]);
+    assert.deepEqual(all('call'), [['service', 'Service'], ['service', 'Other']]);
   });
 });

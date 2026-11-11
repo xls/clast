@@ -3,13 +3,13 @@ import { existsSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import type { DatabaseSync, StatementSync } from 'node:sqlite';
 import type { Extraction, FileRow, SymbolRow } from '../types.js';
-import { ftsWords, splitIdentifier } from '../query/words.js';
+import { ftsWords, initials, splitIdentifier } from '../query/words.js';
 
 /**
  * Bump whenever the schema or the extraction output changes shape. The index
  * is a cache: a version mismatch simply drops and rebuilds it.
  */
-export const SCHEMA_VERSION = 6;
+export const SCHEMA_VERSION = 7;
 
 /** Kinds that get a full-text row (concept search). Others are found by name. */
 const FTS_KINDS = new Set(['function', 'method', 'class', 'interface', 'struct', 'trait', 'enum', 'type', 'namespace', 'macro']);
@@ -57,6 +57,7 @@ const SCHEMA = `
     file_id INTEGER NOT NULL,
     name TEXT NOT NULL,
     name_lc TEXT NOT NULL,
+    abbr TEXT NOT NULL DEFAULT '',
     qname TEXT NOT NULL,
     kind TEXT NOT NULL,
     signature TEXT NOT NULL DEFAULT '',
@@ -72,7 +73,7 @@ const SCHEMA = `
   CREATE VIRTUAL TABLE symbols_fts USING fts5(
     words, sig, doc, path,
     content='', contentless_delete=1,
-    tokenize='unicode61'
+    tokenize='porter unicode61'
   );
 
   CREATE TABLE names (id INTEGER PRIMARY KEY, name TEXT NOT NULL UNIQUE);
@@ -109,6 +110,13 @@ const SCHEMA = `
     kind TEXT NOT NULL
   );
 
+  CREATE TABLE field_types (
+    container TEXT NOT NULL,
+    field TEXT NOT NULL,
+    type TEXT NOT NULL,
+    file_id INTEGER NOT NULL
+  );
+
   CREATE TABLE gen_docs (
     path TEXT NOT NULL,
     qname TEXT NOT NULL,
@@ -122,6 +130,7 @@ const SCHEMA = `
 const INDEXES = `
   CREATE INDEX IF NOT EXISTS idx_symbols_name ON symbols(name);
   CREATE INDEX IF NOT EXISTS idx_symbols_name_lc ON symbols(name_lc);
+  CREATE INDEX IF NOT EXISTS idx_symbols_abbr ON symbols(abbr) WHERE abbr <> '';
   CREATE INDEX IF NOT EXISTS idx_symbols_file ON symbols(file_id, start_line);
   CREATE INDEX IF NOT EXISTS idx_symbols_parent ON symbols(parent_id) WHERE parent_id IS NOT NULL;
   CREATE INDEX IF NOT EXISTS idx_occ_file ON occ(file_id);
@@ -133,9 +142,11 @@ const INDEXES = `
   CREATE INDEX IF NOT EXISTS idx_heritage_name ON heritage(name);
   CREATE INDEX IF NOT EXISTS idx_heritage_symbol ON heritage(symbol_id);
   CREATE INDEX IF NOT EXISTS idx_heritage_file ON heritage(file_id);
+  CREATE INDEX IF NOT EXISTS idx_field_types ON field_types(container, field);
+  CREATE INDEX IF NOT EXISTS idx_field_types_file ON field_types(file_id);
 `;
 
-const INDEX_NAMES = ['idx_symbols_name', 'idx_symbols_name_lc', 'idx_symbols_file', 'idx_symbols_parent', 'idx_occ_file', 'idx_calls_name', 'idx_calls_caller', 'idx_calls_file', 'idx_imports_file', 'idx_imports_resolved', 'idx_heritage_name', 'idx_heritage_symbol', 'idx_heritage_file'];
+const INDEX_NAMES = ['idx_symbols_name', 'idx_symbols_name_lc', 'idx_symbols_abbr', 'idx_symbols_file', 'idx_symbols_parent', 'idx_occ_file', 'idx_calls_name', 'idx_calls_caller', 'idx_calls_file', 'idx_imports_file', 'idx_imports_resolved', 'idx_heritage_name', 'idx_heritage_symbol', 'idx_heritage_file', 'idx_field_types', 'idx_field_types_file'];
 
 export const SYMBOL_COLUMNS =
   's.id, s.file_id, s.name, s.name_lc, s.qname, s.kind, s.signature, s.doc, s.start_line, s.end_line, ' +
@@ -238,7 +249,7 @@ export class ClastDb {
   /** Drop all indexed data (generated docs are kept). Used by forced rebuilds. */
   clearIndex(): void {
     this.transaction(() => {
-      for (const table of ['symbols', 'occ', 'calls', 'imports', 'heritage', 'names', 'files']) {
+      for (const table of ['symbols', 'occ', 'calls', 'imports', 'heritage', 'field_types', 'names', 'files']) {
         this.db.exec(`DELETE FROM ${table}`);
       }
       this.db.exec(`INSERT INTO symbols_fts(symbols_fts) VALUES('delete-all')`);
@@ -342,6 +353,7 @@ export class ClastDb {
     this.run(`DELETE FROM calls WHERE file_id = ?`, fileId);
     this.run(`DELETE FROM imports WHERE file_id = ?`, fileId);
     this.run(`DELETE FROM heritage WHERE file_id = ?`, fileId);
+    this.run(`DELETE FROM field_types WHERE file_id = ?`, fileId);
   }
 
   /** Remove a file and everything derived from it. Call inside a transaction. */
@@ -377,8 +389,8 @@ export class ClastDb {
     }
 
     const insertSymbol = this.stmt(
-      `INSERT INTO symbols (file_id, name, name_lc, qname, kind, signature, doc, start_line, end_line, start_col, doc_line, parent_id, exported)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+      `INSERT INTO symbols (file_id, name, name_lc, abbr, qname, kind, signature, doc, start_line, end_line, start_col, doc_line, parent_id, exported)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
     );
     const insertFts = this.stmt(`INSERT INTO symbols_fts (rowid, words, sig, doc, path) VALUES (?, ?, ?, ?, ?)`);
     const pathWords = splitIdentifier(meta.path).join(' ');
@@ -387,7 +399,7 @@ export class ClastDb {
       const s = ex.symbols[i]!;
       const parentId = s.parent >= 0 ? ids[s.parent] ?? null : null;
       const r = insertSymbol.run(
-        fileId, s.name, s.name.toLowerCase(), s.qname, s.kind, s.signature, s.doc,
+        fileId, s.name, s.name.toLowerCase(), initials(s.name), s.qname, s.kind, s.signature, s.doc,
         s.startLine, s.endLine, s.startCol, s.docLine, parentId, s.exported ? 1 : 0
       );
       const id = Number(r.lastInsertRowid);
@@ -421,6 +433,9 @@ export class ClastDb {
       const sid = ids[h.symbol];
       if (sid !== undefined) insertHeritage.run(sid, fileId, h.name, h.kind);
     }
+
+    const insertFieldType = this.stmt(`INSERT INTO field_types (container, field, type, file_id) VALUES (?, ?, ?, ?)`);
+    for (const [container, field, type] of ex.fieldTypes) insertFieldType.run(container, field, type, fileId);
 
     return fileId;
   }

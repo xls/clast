@@ -1,6 +1,6 @@
 import type { Node } from 'web-tree-sitter';
 import type { Ctx, LangSpec, Visitor } from '../spec.js';
-import { field, lastSegment } from '../spec.js';
+import { COMPLEX_RECEIVER, field, lastSegment, simpleReceiver } from '../spec.js';
 import type { SymbolKind } from '../../types.js';
 
 const MAX_SIG_SLICE = 400;
@@ -97,11 +97,96 @@ function simpleName(node: Node | null | undefined): string | null {
   return null;
 }
 
-function shortReceiver(node: Node | null): string | null {
-  if (!node || node.endIndex - node.startIndex > 40) return null;
-  const t = node.text;
-  return /[\s(]/.test(t) ? null : t;
+/**
+ * Receiver text of a member call: `_next`, `this._next`, `base`, `app.Services`.
+ * Null-conditional and null-forgiving operators are dropped (`x?.Inner` ->
+ * `x.Inner`, `x!` -> `x`); call chains and other expressions yield '?'.
+ * Never null: a member call always has a receiver.
+ */
+function receiverOf(node: Node | null): string {
+  if (!node) return COMPLEX_RECEIVER;
+  if (node.type === 'generic_name') return node.namedChild(0)?.text ?? COMPLEX_RECEIVER; // `Foo<int>.Create()`
+  const r = simpleReceiver(node);
+  if (!r || r === COMPLEX_RECEIVER) return COMPLEX_RECEIVER;
+  return r.includes('?') || r.includes('!') ? r.replace(/[?!]/g, '') || COMPLEX_RECEIVER : r;
 }
+
+const MAX_TYPE_TEXT = 120;
+
+/**
+ * Raw text of a declared type for ctx.typeHint (which normalises it), or null
+ * for types that never name the class of the variable: `var`, arrays, tuples,
+ * predefined types.
+ */
+function hintType(type: Node | null | undefined): string | null {
+  let n = type ?? null;
+  if (n && n.type === 'nullable_type') n = field(n, 'type') ?? n.namedChild(0);
+  if (!n) return null;
+  switch (n.type) {
+    case 'identifier':
+    case 'qualified_name':
+    case 'alias_qualified_name':
+      return n.endIndex - n.startIndex > MAX_TYPE_TEXT ? null : n.text;
+    case 'generic_name':
+      // Long generic types: the outer name is enough (wrappers are not unwrapped then).
+      return n.endIndex - n.startIndex > MAX_TYPE_TEXT ? simpleName(n) : n.text;
+    default:
+      return null; // implicit_type, predefined_type, array_type, tuple_type, pointer_type, ...
+  }
+}
+
+/**
+ * Declared type of a declarator: the written type, or for `var` the class
+ * named by the initializer: `new Foo(...)`, `(Foo)x`, `x as Foo`.
+ */
+function declaredType(type: Node | null, declarator: Node): string | null {
+  if (!type) return null;
+  if (type.type !== 'implicit_type') return hintType(type);
+  if (declarator.namedChildCount < 2) return null;
+  const value = declarator.namedChild(declarator.namedChildCount - 1);
+  if (!value) return null;
+  switch (value.type) {
+    case 'object_creation_expression':
+    case 'cast_expression':
+      return hintType(field(value, 'type'));
+    case 'as_expression':
+      return hintType(field(value, 'right'));
+    default:
+      return null;
+  }
+}
+
+/** Node types that declare one typed name through `type` and `name` fields. */
+const typedName: Visitor = (node, ctx) => {
+  const name = field(node, 'name');
+  if (name && name.type === 'identifier') ctx.typeHint(name.text, hintType(field(node, 'type')));
+};
+
+/**
+ * Method, lambda and local function parameters (incl. `this Foo x`, `out`,
+ * `ref`, `in`). Primary-constructor parameters of classes, structs and records
+ * act like fields and are attached to the type.
+ */
+const parameter: Visitor = (node, ctx) => {
+  const type = field(node, 'type');
+  const name = field(node, 'name');
+  if (!type || !name) return;
+  const owner = node.parent?.parent;
+  if (!owner || owner.type === 'delegate_declaration') return;
+  ctx.typeHint(name.text, hintType(type), TYPE_DECLS.includes(owner.type));
+};
+
+/** `foreach (Item it in items)`. */
+const foreachStatement: Visitor = (node, ctx) => {
+  const left = field(node, 'left');
+  if (left && left.type === 'identifier') ctx.typeHint(left.text, hintType(field(node, 'type')));
+};
+
+/** `[Authorize]` refers to the class `AuthorizeAttribute`. */
+const attribute: Visitor = (node, ctx) => {
+  const name = simpleName(field(node, 'name'));
+  if (name && !name.endsWith('Attribute')) ctx.ref(name + 'Attribute', node);
+};
 
 function memberExported(node: Node, ctx: Ctx): boolean {
   if (hasModifier(node, 'public')) return true;
@@ -252,7 +337,7 @@ function autoAccessors(accessors: Node): boolean {
   return true;
 }
 
-const propertyLike = (nameOf: (node: Node) => string | undefined): Visitor => (node, ctx) => {
+const propertyLike = (nameOf: (node: Node) => string | undefined, typed = false): Visitor => (node, ctx) => {
   const name = nameOf(node);
   if (!name) return;
   const accessors = field(node, 'accessors');
@@ -271,14 +356,25 @@ const propertyLike = (nameOf: (node: Node) => string | undefined): Visitor => (n
     doc: xmlDoc(node),
     exported: memberExported(node, ctx),
   });
+  // The property symbol is not a container, so the hint lands on the enclosing type.
+  if (typed) ctx.typeHint(name, hintType(field(node, 'type')));
 };
 
-/** Fields and field-like events: one symbol per declarator. Locals are ignored. */
+/**
+ * Fields and field-like events: one symbol per declarator. Locals (also in
+ * `using` / `for` / `fixed` statements) are not symbols; they only contribute
+ * a receiver type hint.
+ */
 const variableDeclarator: Visitor = (node, ctx) => {
-  const decl = node.parent?.parent;
-  if (!decl || (decl.type !== 'field_declaration' && decl.type !== 'event_field_declaration')) return;
+  const declaration = node.parent;
+  const decl = declaration?.parent;
+  if (!declaration || !decl || declaration.type !== 'variable_declaration') return;
   const nameNode = field(node, 'name') ?? node.namedChild(0);
   if (!nameNode || nameNode.type !== 'identifier') return;
+  if (decl.type !== 'field_declaration' && decl.type !== 'event_field_declaration') {
+    ctx.typeHint(nameNode.text, declaredType(field(declaration, 'type'), node));
+    return;
+  }
 
   // Signature: modifiers + type + this declarator (with a short initializer).
   const start = sigStart(decl);
@@ -295,6 +391,8 @@ const variableDeclarator: Visitor = (node, ctx) => {
     doc: xmlDoc(decl),
     exported: memberExported(decl, ctx),
   });
+  // The field symbol is not a container, so the hint lands on the enclosing type.
+  if (decl.type === 'field_declaration') ctx.typeHint(nameNode.text, declaredType(field(declaration, 'type'), node));
 };
 
 /** Name and receiver of the callee expression of an invocation. */
@@ -309,12 +407,17 @@ function callee(fn: Node | null, ctx: Ctx, node: Node): void {
         return;
       case 'member_access_expression': {
         const recv = field(fn, 'expression');
-        // `x?.Foo.Bar()` parses with a member_binding_expression receiver.
-        ctx.call(simpleName(field(fn, 'name')), node, recv && recv.type !== 'member_binding_expression' ? shortReceiver(recv) : null);
+        // `x?.Foo.Bar()` may parse with a member_binding_expression receiver (`.Foo`).
+        ctx.call(
+          simpleName(field(fn, 'name')),
+          node,
+          recv && recv.type === 'member_binding_expression' ? COMPLEX_RECEIVER : receiverOf(recv)
+        );
         return;
       }
       case 'member_binding_expression':
-        ctx.call(simpleName(field(fn, 'name')), node, shortReceiver(field(fn.parent, 'condition')));
+        // `x?.Foo()`: the receiver is the condition of the conditional access.
+        ctx.call(simpleName(field(fn, 'name')), node, receiverOf(field(fn.parent, 'condition')));
         return;
       case 'conditional_access_expression':
         fn = fn.namedChild(fn.namedChildCount - 1);
@@ -396,10 +499,17 @@ export const csharp: LangSpec = {
     operator_declaration: callable(operatorName),
     conversion_operator_declaration: callable(conversionOperatorName),
     local_function_statement: localFunction,
-    property_declaration: propertyLike(fieldName),
+    property_declaration: propertyLike(fieldName, true),
     event_declaration: propertyLike(fieldName),
     indexer_declaration: propertyLike(() => 'this[]'),
     variable_declarator: variableDeclarator,
+    parameter,
+    foreach_statement: foreachStatement,
+    catch_declaration: typedName,
+    declaration_pattern: typedName, // `o is Foo f`, `case Foo f:`
+    recursive_pattern: typedName, // `o is Foo { X: 1 } f`
+    declaration_expression: typedName, // `TryGet(out Foo f)`
+    attribute,
     invocation_expression: invocation,
     object_creation_expression: objectCreation,
     constructor_initializer: constructorInitializer,

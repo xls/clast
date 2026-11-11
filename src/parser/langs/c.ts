@@ -5,6 +5,7 @@ import type { Ctx, DefOpts, LangSpec, Visitor } from '../spec.js';
 import { childOfType, field, isConstName, simpleReceiver, stripQuotes } from '../spec.js';
 
 const MAX_SIG_SOURCE = 400;
+const MAX_TYPE_TEXT = 100;
 const IDENT = /^[A-Za-z_$][\w$]*$/;
 
 /** struct/union/enum/class specifier node type -> symbol kind. */
@@ -259,6 +260,119 @@ function define(ctx: Ctx, node: Node, opts: DefOpts): number {
 }
 
 // ---------------------------------------------------------------------------
+// Receiver type hints
+// ---------------------------------------------------------------------------
+
+/**
+ * Raw text of a declared type worth a hint, or null for primitives, `auto`,
+ * decltype and anything large. Normalisation is left to ctx.typeHint().
+ */
+function typeText(type: Node | null): string | null {
+  if (!type) return null;
+  switch (type.type) {
+    case 'type_identifier':
+      return type.text;
+    case 'qualified_identifier':
+    case 'template_type':
+      return type.endIndex - type.startIndex <= MAX_TYPE_TEXT ? type.text : null;
+    case 'struct_specifier':
+    case 'class_specifier':
+    case 'union_specifier': {
+      const name = field(type, 'name'); // `struct Foo *p`; never the text of a body
+      return name && name.type === 'type_identifier' ? name.text : null;
+    }
+    default:
+      return null;
+  }
+}
+
+/** Templates whose first type argument is the type of the result. */
+const TYPE_MAKERS = new Set([
+  'make_unique', 'make_shared', 'static_cast', 'dynamic_cast', 'reinterpret_cast', 'const_cast',
+  'static_pointer_cast', 'dynamic_pointer_cast', 'down_cast', 'MakeUnique', 'MakeShared',
+]);
+
+/** Type of an `auto` variable from its initializer: `new Foo(...)`, `std::make_unique<Foo>(...)`, `static_cast<Foo*>(p)`. */
+function inferredType(value: Node | null): string | null {
+  if (!value) return null;
+  if (value.type === 'new_expression') return typeText(field(value, 'type'));
+  if (value.type !== 'call_expression') return null;
+  let fn = field(value, 'function');
+  for (let i = 0; fn && fn.type === 'qualified_identifier' && i < 4; i++) fn = field(fn, 'name');
+  if (!fn || fn.type !== 'template_function') return null;
+  const name = field(fn, 'name');
+  if (!name || !TYPE_MAKERS.has(name.text)) return null;
+  const arg = field(fn, 'arguments')?.firstNamedChild;
+  return arg && arg.endIndex - arg.startIndex <= MAX_TYPE_TEXT ? arg.text : null;
+}
+
+/** Name node of a plain / pointer / reference declarator; null for functions, arrays, bindings. */
+function hintTarget(d: Node | null): Node | null {
+  let cur = d;
+  for (let i = 0; cur && i < 6; i++) {
+    switch (cur.type) {
+      case 'identifier':
+      case 'field_identifier':
+        return cur;
+      case 'init_declarator':
+      case 'pointer_declarator':
+        cur = field(cur, 'declarator');
+        break;
+      case 'reference_declarator':
+        cur = field(cur, 'declarator') ?? cur.lastNamedChild;
+        break;
+      default:
+        return null;
+    }
+  }
+  return null;
+}
+
+/** Hints for `Foo x;`, `Foo* p = ...`, `auto p = new Foo(...)`, `MemTable* mem_;` (declaration / field_declaration). */
+function hintDeclaration(node: Node, ctx: Ctx): void {
+  const type = field(node, 'type');
+  if (!type) return;
+  const auto = type.type === 'placeholder_type_specifier';
+  const text = auto ? null : typeText(type);
+  if (!auto && !text) return;
+  for (const decl of node.childrenForFieldName('declarator')) {
+    if (!decl) continue;
+    const name = hintTarget(decl);
+    if (!name) continue;
+    if (!auto) ctx.typeHint(name.text, text);
+    // `if (auto* p = new Foo)` keeps the value on the declaration itself.
+    else ctx.typeHint(name.text, inferredType(field(decl.type === 'init_declarator' ? decl : node, 'value')));
+  }
+}
+
+/** True for parameters of a function definition or lambda (not of prototypes or function pointer types). */
+function ownedByDefinition(param: Node): boolean {
+  let p = param.parent?.parent; // parameter_list > (abstract_)function_declarator
+  if (!p) return false;
+  if (p.type === 'abstract_function_declarator') return p.parent?.type === 'lambda_expression';
+  for (let i = 0; p && i < 8; i++, p = p.parent) {
+    if (p.type === 'function_definition') return true;
+    if (!p.type.endsWith('_declarator')) return false;
+  }
+  return false;
+}
+
+const parameter: Visitor = (node, ctx) => {
+  const text = typeText(field(node, 'type'));
+  if (!text) return;
+  const name = hintTarget(field(node, 'declarator'));
+  if (name && ownedByDefinition(node)) ctx.typeHint(name.text, text);
+};
+
+/** `for (const Item& it : items)` */
+const forRange: Visitor = (node, ctx) => {
+  const text = typeText(field(node, 'type'));
+  if (!text) return;
+  const name = hintTarget(field(node, 'declarator'));
+  if (name) ctx.typeHint(name.text, text);
+};
+
+// ---------------------------------------------------------------------------
 // Visitors
 // ---------------------------------------------------------------------------
 
@@ -302,6 +416,25 @@ function isTrailingAnnotation(node: Node, name: string): boolean {
 function missingSemicolon(decl: Node): boolean {
   const last = decl.lastChild;
   return !!last && last.type === ';' && last.endIndex === last.startIndex;
+}
+
+/**
+ * 'MemTable* imm_ GUARDED_BY(mutex_);' with a non-primitive type is parsed as a
+ * function GUARDED_BY whose real name sits in an ERROR node in front of the
+ * function declarator. Returns that name node.
+ */
+function annotatedField(decl: Node): Node | null {
+  let cur: Node | null = decl;
+  for (let i = 0; cur && i < 6; i++) {
+    const prev: Node | null = cur.previousSibling;
+    if (prev && prev.type === 'ERROR') {
+      const only = prev.namedChildCount === 1 ? prev.firstNamedChild : null;
+      return only && only.type === 'identifier' ? only : null;
+    }
+    if (cur.type !== 'pointer_declarator' && cur.type !== 'reference_declarator') return null;
+    cur = field(cur, 'declarator') ?? cur.lastNamedChild;
+  }
+  return null;
 }
 
 /** Signature of a declaration with parse errors: never run into a body. */
@@ -376,6 +509,7 @@ const functionDefinition: Visitor = (node, ctx) => {
 
 /** Shared by `declaration` (file / namespace / class level) and `field_declaration`. */
 function declare(node: Node, ctx: Ctx, isField: boolean): void {
+  if (!isField) hintDeclaration(node, ctx); // locals too
   if (ctx.inCallable()) return;
   const decls = node.childrenForFieldName('declarator');
   if (decls.length === 0) return;
@@ -389,6 +523,10 @@ function declare(node: Node, ctx: Ctx, isField: boolean): void {
   // Macro-heavy code: a declaration with parse errors is only trusted for prototypes.
   // (A lone missing ';' is harmless: 'int n_ GUARDED_BY(mu_);'.)
   const broken = node.hasError && !missingSemicolon(node);
+  if (isField) hintDeclaration(node, ctx);
+  // `int a, b, c;` members: one symbol each with signature `int a`, not the whole line.
+  const type = decls.length > 1 && member ? field(node, 'type') : null;
+  const head = type && !(CONTAINER_KIND[type.type] && field(type, 'body')) ? sigText(ctx, range, decls[0]!.startIndex) : '';
 
   for (const decl of decls) {
     if (!decl) continue;
@@ -398,6 +536,12 @@ function declare(node: Node, ctx: Ctx, isField: boolean): void {
       if (isTrailingAnnotation(node, d.name)) continue;
       let sig = sigText(ctx, range, range.endIndex);
       if (node.hasError) sig = cutAtBrace(sig);
+      const real = isField && node.hasError && isConstName(d.name) ? annotatedField(decl) : null;
+      if (real) {
+        define(ctx, node, { name: real.text, kind: 'field', range, sig, exported, scope: false });
+        ctx.typeHint(real.text, typeText(field(node, 'type')));
+        continue;
+      }
       define(ctx, node, {
         name: d.qualifier ? d.name : nameBehindMacros(d.name, sig),
         kind: member ? 'method' : 'declaration',
@@ -414,7 +558,10 @@ function declare(node: Node, ctx: Ctx, isField: boolean): void {
     if (broken || inner?.type === 'parenthesized_declarator') continue;
     const value = decl.type === 'init_declarator' ? field(decl, 'value') : null;
     if (member) {
-      define(ctx, node, { name: d.name, kind: 'field', range, sig: declSig(ctx, node, range, d.name, null), exported, scope: false });
+      const sig = head && inner
+        ? head + ' ' + (inner.endIndex - inner.startIndex <= 80 ? inner.text.replace(/\s+/g, ' ') : d.name)
+        : declSig(ctx, node, range, d.name, null);
+      define(ctx, node, { name: d.name, kind: 'field', range, sig, exported, scope: false });
       continue;
     }
     if (!value && isExtern(node)) continue; // forward declaration of a global defined elsewhere
@@ -561,7 +708,8 @@ const macro: Visitor = (node, ctx) => {
 const include: Visitor = (node, ctx) => {
   const path = field(node, 'path');
   if (!path || (path.type !== 'string_literal' && path.type !== 'system_lib_string')) return;
-  ctx.imp(stripQuotes(path.text), node);
+  // System includes keep their brackets (`<math.h>`) so they are never matched to project files.
+  ctx.imp(path.type === 'system_lib_string' ? path.text : stripQuotes(path.text), node);
 };
 
 const callExpression: Visitor = (node, ctx) => {
@@ -614,6 +762,7 @@ const cVisitors: Record<string, Visitor> = {
   preproc_function_def: macro,
   preproc_include: include,
   call_expression: callExpression,
+  parameter_declaration: parameter,
 };
 
 const cppVisitors: Record<string, Visitor> = {
@@ -622,6 +771,8 @@ const cppVisitors: Record<string, Visitor> = {
   alias_declaration: aliasDeclaration,
   namespace_definition: namespaceDefinition,
   new_expression: newExpression,
+  optional_parameter_declaration: parameter,
+  for_range_loop: forRange,
 };
 
 const C_IDENTIFIERS = ['identifier', 'type_identifier', 'field_identifier'];
@@ -641,6 +792,7 @@ const CPP_HINT = new RegExp(
 
 export const c: LangSpec = {
   id: 'c',
+  lowercaseTypes: true,
   grammar: 'c',
   extensions: ['.c', '.h'],
   identifiers: C_IDENTIFIERS,
@@ -655,6 +807,7 @@ export const c: LangSpec = {
 
 export const cpp: LangSpec = {
   id: 'cpp',
+  lowercaseTypes: true,
   grammar: 'cpp',
   extensions: ['.cpp', '.hpp', '.cc', '.hh', '.cxx', '.hxx', '.inl', '.ipp'],
   identifiers: [...C_IDENTIFIERS, 'namespace_identifier'],

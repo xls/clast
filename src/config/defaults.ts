@@ -53,9 +53,6 @@ export const DEFAULT_IGNORED = [
   '*.min.css',
   '*.bundle.js',
   '*.d.ts.map',
-  '*.pb.go',
-  '*_pb2.py',
-  '*.generated.*',
 ];
 
 export const DEFAULT_CONFIG: ClastConfig = {

@@ -227,9 +227,9 @@ describe('csharp extraction', () => {
       'Circle.Area -> StringBuilder', // qualified constructor
       'Circle.Area -> Foo', // generic invocation
       'Circle.Area -> this.foo.Bar',
-      'Circle.Area -> Baz',
+      'Circle.Area -> ?.Baz', // chained: receiver is a call
       'Circle.Area -> x.Maybe', // null-conditional
-      'Circle.Area -> y?.Inner.Deep',
+      'Circle.Area -> y.Inner.Deep', // null-conditional operators are dropped
       'Circle.Area -> Task.Run',
       'Circle.Area -> Helper', // inside a lambda
       'Circle.Area -> Open',
@@ -395,7 +395,7 @@ namespace N
     assert.ok(calls.includes('Repo.Load -> Fetch'));
     assert.ok(calls.includes('RepoExtensions.Any -> predicate'));
     assert.ok(calls.includes('RepoExtensions.Any -> source.Where'));
-    assert.ok(calls.includes('RepoExtensions.Any -> Count'));
+    assert.ok(calls.includes('RepoExtensions.Any -> ?.Count'));
     assert.ok(calls.includes('Money.operator == -> a.Equals'));
   });
 
@@ -433,5 +433,171 @@ public class Broken
     assert.ok(symbolList(broken).includes('class Broken'));
     assert.ok(symbolList(broken).includes('method Broken.Ok'));
     assert.ok(callList(broken).includes('Broken.Ok -> Run'));
+  });
+
+  it('resolves receivers to declared types', async () => {
+    const ex = await extractSource('E.cs', `
+namespace N;
+
+public class Middleware(ILogger<Middleware> logger, int size) : Base(size)
+{
+    private readonly RequestDelegate _next;
+    private readonly Foo[] _many;
+    private static readonly Cache Shared = new();
+    public IOptions Options { get; }
+    public Store? Store { get; set; }
+    public event EventHandler Changed;
+
+    public Middleware(RequestDelegate next) { _next = next; }
+
+    public async Task Invoke(HttpContext context, out Bar bar, ref Baz baz, in Qux qux, params Extra[] extras)
+    {
+        logger.LogInformation("x");
+        _next.Invoke(context);
+        this._next.Begin();
+        context.GetEndpoint();
+        bar.B(); baz.Z(); qux.Q();
+        Options.Validate();
+        Store?.Save();
+        Store!.Load();
+        Shared.Clear();
+        _many.Each();
+        Thing a = new();
+        a.Start();
+        var sb = new System.Text.StringBuilder();
+        sb.Append("x");
+        var unknown = Make();
+        unknown.Go();
+        var casted = (Widget)unknown;
+        casted.Spin();
+        var soft = unknown as Gadget;
+        soft.Buzz();
+        foreach (Item it in Items()) { it.Run(); }
+        foreach (var v in Items()) { v.Run(); }
+        if (unknown is Leaf leaf) leaf.Fall();
+        if (unknown is Tree { Height: 1 } tree) tree.Grow();
+        switch (unknown) { case Rock rock: rock.Roll(); break; }
+        try { } catch (IOException e) { e.Log(); }
+        using var s1 = new MemoryStream();
+        s1.Flush();
+        using (Reader r = Open()) { r.Read(); }
+        if (map.TryGetValue(1, out Entry entry)) entry.Touch();
+        Each((Node node) => node.Visit());
+        Each(x => x.Visit());
+        new WebApplicationBuilder(1).Build();
+        app.Services.GetService();
+        context.Inner?.Deep();
+        Pool<int>.Rent();
+        base.Invoke();
+        Helper();
+        void Local(Part part) { part.Fit(); logger.LogDebug("y"); }
+    }
+}
+
+public static class Ext
+{
+    public static void Use(this IApplicationBuilder app) => app.UseRouting();
+}
+
+public record Order(Customer Customer, int Total)
+{
+    public void Ship() { Customer.Notify(); }
+}
+
+public delegate void Handler(Sender sender);
+`);
+    assert.equal(ex.hadError, false);
+    const call = (name: string) => {
+      const c = ex.calls.find(x => x.name === name);
+      assert.ok(c, `call ${name} not found`);
+      return [c.receiver, c.rtype];
+    };
+    const all = (name: string) => ex.calls.filter(c => c.name === name).map(c => [c.receiver, c.rtype]);
+    // Primary-constructor parameters act like fields, also inside local functions.
+    assert.deepEqual(call('LogInformation'), ['logger', 'ILogger']);
+    assert.deepEqual(call('LogDebug'), ['logger', 'ILogger']);
+    // Fields, with and without this.
+    assert.deepEqual(all('Invoke'), [['_next', 'RequestDelegate'], ['base', null]]);
+    assert.deepEqual(call('Begin'), ['this._next', 'RequestDelegate']);
+    assert.deepEqual(call('Clear'), ['Shared', 'Cache']);
+    assert.deepEqual(call('Each'), ['_many', null]); // arrays have no class type
+    // Parameters incl. out / ref / in and extension receivers.
+    assert.deepEqual(call('GetEndpoint'), ['context', 'HttpContext']);
+    assert.deepEqual(call('B'), ['bar', 'Bar']);
+    assert.deepEqual(call('Z'), ['baz', 'Baz']);
+    assert.deepEqual(call('Q'), ['qux', 'Qux']);
+    assert.deepEqual(call('UseRouting'), ['app', 'IApplicationBuilder']);
+    assert.deepEqual(call('Fit'), ['part', 'Part']);
+    // Properties; ?. and ! do not change the receiver.
+    assert.deepEqual(call('Validate'), ['Options', 'IOptions']);
+    assert.deepEqual(call('Save'), ['Store', 'Store']);
+    assert.deepEqual(call('Load'), ['Store', 'Store']);
+    assert.deepEqual(call('Notify'), ['Customer', 'Customer']); // positional record parameter
+    // Locals: explicit type with target-typed new, var + new / cast / as.
+    assert.deepEqual(call('Start'), ['a', 'Thing']);
+    assert.deepEqual(call('Append'), ['sb', 'StringBuilder']);
+    assert.deepEqual(call('Go'), ['unknown', null]);
+    assert.deepEqual(call('Spin'), ['casted', 'Widget']);
+    assert.deepEqual(call('Buzz'), ['soft', 'Gadget']);
+    // foreach, patterns, catch, using, out variables, typed lambda parameters.
+    assert.deepEqual(all('Run'), [['it', 'Item'], ['v', null]]);
+    assert.deepEqual(call('Fall'), ['leaf', 'Leaf']);
+    assert.deepEqual(call('Grow'), ['tree', 'Tree']);
+    assert.deepEqual(call('Roll'), ['rock', 'Rock']);
+    assert.deepEqual(call('Log'), ['e', 'IOException']);
+    assert.deepEqual(call('Flush'), ['s1', 'MemoryStream']);
+    assert.deepEqual(call('Read'), ['r', 'Reader']);
+    assert.deepEqual(call('Touch'), ['entry', 'Entry']);
+    assert.deepEqual(all('Visit'), [['node', 'Node'], ['x', null]]);
+    // Receivers: chains, nested member access, generic static class, bare calls.
+    assert.deepEqual(call('Build'), ['?', null]);
+    assert.deepEqual(call('GetService'), ['app.Services', null]);
+    assert.deepEqual(call('Deep'), ['context.Inner', null]);
+    assert.deepEqual(call('Rent'), ['Pool', null]);
+    assert.deepEqual(call('Helper'), [null, null]);
+  });
+
+  it('resolves members through a typed receiver whose class is in the same file', async () => {
+    const ex = await extractSource('F.cs', `
+class App { public IServiceProvider Services { get; } public Router Router; }
+class Runner
+{
+    void Run(App app) { app.Services.GetService(); app.Router.Map(); app.Missing.Call(); }
+}
+delegate void Handler(Sender sender);
+class Late { void M() { sender.Send(); } }
+`);
+    const all = (name: string) => ex.calls.filter(c => c.name === name).map(c => [c.receiver, c.rtype]);
+    assert.deepEqual(all('GetService'), [['app.Services', 'IServiceProvider']]);
+    assert.deepEqual(all('Map'), [['app.Router', 'Router']]);
+    assert.deepEqual(all('Call'), [['app.Missing', null]]);
+    // Delegate parameters are not variables.
+    assert.deepEqual(all('Send'), [['sender', null]]);
+  });
+
+  it('records attribute usages as references to the Attribute class', async () => {
+    const ex = await extractSource('G.cs', `using System;
+[Serializable]
+public class AuthorizeAttribute : Attribute { }
+
+[Authorize]
+[Authorize(Roles = "admin"), Mvc.Route("x")]
+public class Home
+{
+    [return: NotNull]
+    [ObsoleteAttribute("old")]
+    public string Index([FromBody] Model m) => "";
+}
+`);
+    assert.deepEqual(occLines(ex, 'AuthorizeAttribute'), [3, 5, 6]);
+    assert.deepEqual(occLines(ex, 'Authorize'), [5, 6]);
+    assert.deepEqual(occLines(ex, 'RouteAttribute'), [6]);
+    assert.deepEqual(occLines(ex, 'NotNullAttribute'), [9]);
+    assert.deepEqual(occLines(ex, 'FromBodyAttribute'), [11]);
+    assert.deepEqual(occLines(ex, 'SerializableAttribute'), [2]);
+    assert.deepEqual(occLines(ex, 'ObsoleteAttribute'), [10]);
+    assert.deepEqual(occLines(ex, 'ObsoleteAttributeAttribute'), []);
+    // Attributes are not calls.
+    assert.ok(!ex.calls.some(c => c.name.startsWith('Authorize')));
   });
 });

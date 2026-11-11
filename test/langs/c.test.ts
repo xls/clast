@@ -166,7 +166,8 @@ describe('c extraction', () => {
 
   it('extracts includes', async () => {
     const ex = await extractSource('a.c', SRC);
-    assert.deepEqual(importList(ex), ['stdio.h', 'server.h']);
+    // System includes keep their angle brackets; quoted includes are bare paths.
+    assert.deepEqual(importList(ex), ['<stdio.h>', 'server.h']);
   });
 
   it('records identifier occurrences with lines', async () => {
@@ -256,5 +257,73 @@ describe('c extraction', () => {
     assert.equal((await extractSource('f.c', 'int class_count; /* Foo::bar */\n')).lang, 'c');
     const ex = await extractSource('a.h', 'class Foo {\n public:\n  int bar();\n};\n');
     assert.deepEqual(symbolList(ex), ['class Foo', 'method Foo.bar']);
+  });
+
+  it('gives each declarator of a multi-declarator member its own signature', async () => {
+    const ex = await extractSource('m.c', [
+      'struct stats {',
+      '  long long microseconds, calls, rejected_calls;',
+      '  char *name, buf[4];',
+      '  unsigned a:1, b:2;',
+      '  struct { int v; } p, q;',
+      '  int single;',
+      '};',
+      '',
+    ].join('\n'));
+    assert.equal(sym(ex, 'stats.microseconds').signature, 'long long microseconds');
+    assert.equal(sym(ex, 'stats.calls').signature, 'long long calls');
+    assert.equal(sym(ex, 'stats.rejected_calls').signature, 'long long rejected_calls');
+    assert.equal(sym(ex, 'stats.name').signature, 'char *name');
+    assert.equal(sym(ex, 'stats.buf').signature, 'char buf[4]');
+    assert.equal(sym(ex, 'stats.a').signature, 'unsigned a');
+    assert.equal(sym(ex, 'stats.b').signature, 'unsigned b');
+    assert.equal(sym(ex, 'stats.p').signature, 'struct { ... } p');
+    assert.equal(sym(ex, 'stats.single').signature, 'int single');
+  });
+
+  it('keeps function-like macros as macros', async () => {
+    const ex = await extractSource('k.c', '#define serverAssert(_e) ((_e) ? (void)0 : _serverAssert(#_e))\n#define UNUSED(V) ((void) V)\n');
+    assert.deepEqual(symbolList(ex), ['macro serverAssert', 'macro UNUSED']);
+  });
+
+  it('records receivers and resolves them through capitalised type names', async () => {
+    const ex = await extractSource('r.c', [
+      'typedef struct Conn Conn;',
+      'struct Server { Conn *listener; };',
+      'static struct Server *global;',
+      'void serve(Conn *conn, struct Server *srv, client *c, int n, void (*cb)(Conn *inner)) {',
+      '  Conn *other = accept_conn(srv);',
+      '  conn->type->write(conn);',
+      '  conn->send(1);',
+      '  other->close(2);',
+      '  srv->listener->accept(3);',
+      '  c->handler(4);',
+      '  global->stop(5);',
+      '  get_conn()->read(6);',
+      '  inner->nope(7);',
+      '}',
+      'void proto(Conn *shadow);',
+      'void later(void) { shadow->x(); }',
+      '',
+    ].join('\n'));
+    const call = (name: string) => {
+      const c = ex.calls.find(x => x.name === name);
+      assert.ok(c, `no call ${name}`);
+      return c;
+    };
+    assert.equal(call('write').receiver, 'conn->type');
+    assert.equal(call('send').rtype, 'Conn'); // parameter
+    assert.equal(call('close').rtype, 'Conn'); // local declaration
+    assert.equal(call('accept').receiver, 'srv->listener');
+    assert.equal(call('accept').rtype, 'Conn'); // field of struct Server, declared in this file
+    assert.equal(call('stop').rtype, 'Server'); // file-level variable
+    assert.equal(call('read').receiver, '?'); // call chain: still a member call
+    assert.equal(call('accept_conn').receiver, null);
+    // Lowercase struct names are real types in C (the spec sets lowercaseTypes).
+    assert.equal(call('handler').receiver, 'c');
+    assert.equal(call('handler').rtype, 'client');
+    // Parameters of function pointer types and of prototypes are not hints.
+    assert.equal(call('nope').rtype, null);
+    assert.equal(call('x').rtype, null);
   });
 });

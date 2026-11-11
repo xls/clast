@@ -1,3 +1,4 @@
+import { existsSync, statSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { loadConfig, resolveDbPath, type ClastConfig } from './config/index.js';
 import { ClastDb } from './db/index.js';
@@ -15,6 +16,9 @@ export class Clast {
 
   constructor(root: string, config?: ClastConfig) {
     this.root = resolve(root);
+    if (!existsSync(this.root) || !statSync(this.root).isDirectory()) {
+      throw new Error(`project root does not exist or is not a directory: ${this.root}`);
+    }
     this.config = config ?? loadConfig(this.root);
     this.db = ClastDb.open(resolveDbPath(this.root, this.config));
     this.indexer = new Indexer(this.root, this.config, this.db);
