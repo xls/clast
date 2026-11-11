@@ -6,6 +6,7 @@ import { callersOf, calleesOf } from '../src/query/callgraph.js';
 import { directSubtypes, directSupertypes, goShape, structuralImplementers } from '../src/query/hierarchy.js';
 import { callGraph, hierarchy } from '../src/tools/search.js';
 import { fileSummary } from '../src/tools/explore.js';
+import { arityFits, paramRange } from '../src/query/arity.js';
 
 /**
  * Precision cases found by reviewer agents on real repositories (hugo, tokio,
@@ -429,5 +430,71 @@ void run_b(void) { helper(); }
   it('C static functions of the same name in different files are different functions', () => {
     assert.deepEqual(callers('c/a.c:helper'), ['run_a']);
     assert.deepEqual(callers('c/b.c:helper'), ['run_b']);
+  });
+});
+
+describe('argument counts', () => {
+  let q: Project;
+  before(async () => {
+    q = await createProject({
+      'java/ConfigDef.java': `public class ConfigDef {
+    public ConfigDef define(ConfigKey key) { return this; }
+    public ConfigDef define(String name, Type type, String doc) { return define(new ConfigKey(name, type, doc)); }
+    public void log(String fmt, Object... args) { }
+}
+`,
+      'java/Use.java': `public class Use {
+    void run(ConfigDef def) {
+        def.define("a", Type.INT, "doc");
+        def.log("x");
+        def.log("x", 1, 2);
+    }
+}
+`,
+      'java/PartitionInfo.java': `public class PartitionInfo {
+    public int partition() { return 0; }
+}
+`,
+      'java/Partitioner.java': `public interface Partitioner {
+    int partition(String topic, Object key);
+}
+`,
+      'java/Mock.java': `public class Mock {
+    int first(PartitionInfo info) { return info.partition(); }
+}
+`,
+    });
+  });
+  after(() => q.dispose());
+
+  it('reads parameter ranges from signatures', () => {
+    assert.deepEqual(paramRange('public ConfigDef define(ConfigKey key)', 'define', 'java'), { min: 1, max: 1, ext: false, voidable: false });
+    assert.equal(paramRange('void log(String fmt, Object... args)', 'log', 'java')!.max, Infinity);
+    assert.deepEqual(paramRange('def save(self, force=False, *args, using=None, **kwargs):', 'save', 'python'), { min: 0, max: Infinity, ext: false, voidable: false });
+    assert.equal(paramRange('pub fn spawn<F>(&self, future: F) -> JoinHandle<F::Output>', 'spawn', 'rust')!.min, 1);
+    assert.equal(paramRange('void old()', 'old', 'c'), null, 'unspecified parameters in C');
+    assert.equal(paramRange('void run(void)', 'run', 'c')!.max, 0);
+    assert.equal(paramRange('function f(a, b)', 'f', 'javascript'), null, 'JavaScript does not check counts');
+    const ext = paramRange('public static IApp UseRouting(this IApp builder)', 'UseRouting', 'csharp')!;
+    assert.ok(arityFits(ext, 0, 'csharp', false), 'extension method called as a member');
+    const fire = paramRange('fire(event: T): void', 'fire', 'typescript')!;
+    assert.ok(arityFits(fire, 0, 'typescript', false), 'Emitter<void>.fire()');
+    assert.ok(!arityFits(paramRange('get(key: string, scope: Scope): string', 'get', 'typescript'), 0, 'typescript', false));
+  });
+
+  it('tells overloads apart by argument count', () => {
+    const [one, three] = findSymbols(q.clast.db, 'ConfigDef.define').sort((a, b) => a.start_line - b.start_line);
+    const names = (s: typeof one) => callersOf(q.clast.db, q.ctx.resolver, s!).map(e => e.caller?.qname).sort();
+    assert.deepEqual(names(one), ['ConfigDef.define'], 'the 3-argument overload delegates to the 1-argument one');
+    assert.deepEqual(names(three), ['Use.run']);
+    const log = findSymbols(q.clast.db, 'ConfigDef.log')[0]!;
+    assert.equal(callersOf(q.clast.db, q.ctx.resolver, log).reduce((n, e) => n + e.count, 0), 2, 'varargs accept any count');
+  });
+
+  it('a call with another argument count is not a caller, even by name', () => {
+    const target = findSymbols(q.clast.db, 'Partitioner.partition')[0]!;
+    assert.equal(callersOf(q.clast.db, q.ctx.resolver, target).length, 0);
+    const info = findSymbols(q.clast.db, 'PartitionInfo.partition')[0]!;
+    assert.deepEqual(callersOf(q.clast.db, q.ctx.resolver, info).map(e => e.caller?.qname), ['Mock.first']);
   });
 });

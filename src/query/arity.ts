@@ -13,6 +13,8 @@ export interface ParamRange {
   max: number;
   /** C# extension method: the first (`this`) parameter is the receiver when called as a member. */
   ext: boolean;
+  /** TypeScript: the last required parameter has a type-parameter type (`fire(event: T)`), which may be `void`. */
+  voidable?: boolean;
 }
 
 /** Languages whose signatures are checked. Others (PHP, Ruby, JavaScript, Swift, Dart) accept any count. */
@@ -128,6 +130,7 @@ export function paramRange(signature: string, name: string, lang: string): Param
   let max = 0;
   let variadic = false;
   let ext = false;
+  let voidable = false;
   for (let k = 0; k < params.length; k++) {
     const p = params[k]!;
     if (lang === 'python') {
@@ -143,9 +146,12 @@ export function paramRange(signature: string, name: string, lang: string): Param
     const optional =
       hasDefault(p) ||
       ((lang === 'typescript' || lang === 'tsx') && /^[\w$]+\?\s*(:|$)/.test(p));
-    if (!optional) min++;
+    if (!optional) {
+      min++;
+      voidable = (lang === 'typescript' || lang === 'tsx') && /:\s*(?:[A-Z]|T[A-Z]\w*)\s*$/.test(p);
+    }
   }
-  return { min, max: variadic ? Infinity : max, ext };
+  return { min, max: variadic ? Infinity : max, ext, voidable };
 }
 
 /**
@@ -156,6 +162,8 @@ export function paramRange(signature: string, name: string, lang: string): Param
 export function arityFits(range: ParamRange | null, argc: number, lang: string, unbound: boolean): boolean {
   if (!range || argc < 0) return true;
   if (argc >= range.min && argc <= range.max) return true;
+  // `emitter.fire()` on an Emitter<void>: a parameter of type T can be left out when T is void.
+  if (range.voidable && argc === range.min - 1) return true;
   // Extension method called as a member: the receiver fills the `this` parameter.
   if (range.ext && argc + 1 >= range.min && argc + 1 <= range.max) return true;
   if (unbound && (lang === 'python' || lang === 'rust') && argc - 1 >= range.min && argc - 1 <= range.max) return true;
