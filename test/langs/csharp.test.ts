@@ -552,7 +552,7 @@ public delegate void Handler(Sender sender);
     // Receivers: chains, nested member access, generic static class, bare calls.
     assert.deepEqual(call('Build'), ['?', null]);
     assert.deepEqual(call('GetService'), ['app.Services', null]);
-    assert.deepEqual(call('Deep'), ['context.Inner', null]);
+    assert.deepEqual(call('Deep'), ['context.Inner', 'HttpContext#Inner']);
     assert.deepEqual(call('Rent'), ['Pool', null]);
     assert.deepEqual(call('Helper'), [null, null]);
   });

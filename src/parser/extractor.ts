@@ -583,7 +583,12 @@ export function extract(tree: Tree, source: string, compiled: CompiledSpec): Ext
           t = fieldType(containerOf(call.caller), field);
         } else {
           const ta = lookup(call.caller, a.replace(/^[$@]/, ''));
-          if (ta) t = fieldType(containerNamed(ta), field);
+          if (ta) {
+            t = fieldType(containerNamed(ta), field);
+            // `opts.logger.info()` with `opts: Options` declared in another file: the type of the
+            // field is not known here. Leave "Options#logger" for the resolver, which sees every file.
+            if (!t && containerNamed(ta) === undefined) t = ta + '#' + field;
+          }
         }
       }
       if (t) call.rtype = t;

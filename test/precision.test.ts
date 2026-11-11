@@ -572,3 +572,39 @@ def set_password_and_save(user, password):
     assert.ok(callees.every(c => !c.certain), 'user.set_password() could be either class');
   });
 });
+
+describe('fields of a type declared in another file', () => {
+  let q: Project;
+  before(async () => {
+    q = await createProject({
+      'src/options.ts': `import { Logger } from './logger.js';
+
+export interface Options {
+  logger: Logger;
+  retries: number;
+}
+`,
+      'src/logger.ts': `export class Logger {
+  info(message: string): void {}
+}
+
+export class Metrics {
+  info(name: string): void {}
+}
+`,
+      'src/run.ts': `import type { Options } from './options.js';
+
+export function run(opts: Options): void {
+  opts.logger.info('start');
+}
+`,
+    });
+  });
+  after(() => q.dispose());
+
+  it('resolves obj.field.method() through the declared field type', () => {
+    const edges = callersOf(q.clast.db, q.ctx.resolver, findSymbols(q.clast.db, 'Logger.info')[0]!);
+    assert.deepEqual(edges.map(e => [e.caller?.qname, e.certain]), [['run', true]]);
+    assert.equal(callersOf(q.clast.db, q.ctx.resolver, findSymbols(q.clast.db, 'Metrics.info')[0]!).length, 0);
+  });
+});

@@ -1283,6 +1283,12 @@ export class Resolver {
    * partial classes, Go structs elsewhere in the package).
    */
   private withFieldType(site: CallSite, depth = 0): CallSite {
+    if (site.rtype && site.rtype.includes('#')) {
+      // Deferred by the extractor: the declared type of field `f` of type `T` ("T#f"), defined in another file.
+      const cut = site.rtype.indexOf('#');
+      const t = this.fieldType(site.rtype.slice(0, cut), site.rtype.slice(cut + 1));
+      site = { ...site, rtype: t };
+    }
     if (site.rtype) {
       // The declared type may be written with an import alias (`const q: JobQueue`).
       const original = this.importedNames(site.fileId).aliases.get(site.rtype);
