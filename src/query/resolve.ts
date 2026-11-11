@@ -204,7 +204,7 @@ export function otherDefinitions(
       /\bpartial\b/.test(s.signature) && /\bpartial\b/.test(chosen.signature)
     ) continue;
     // A C / C++ prototype and its definition are one function, not two candidates.
-    else if (s.qname === chosen.qname && langFamily(s.lang) === 'c' && langFamily(chosen.lang) === 'c') continue;
+    else if (cTwins(s, chosen)) continue;
     else others.push(s);
   }
   return { others, overloads };
@@ -337,6 +337,34 @@ export interface Resolution {
 
 /** Languages where a bare field name inside a method means this.field. */
 const IMPLICIT_THIS = new Set(['java', 'csharp', 'cpp', 'kotlin', 'swift']);
+/** Language families where a class is written in one place: a same-named class in another file is another class. */
+const SINGLE_FILE_CLASS = new Set(['js', 'python', 'java', 'php', 'dart']);
+
+/** `super.m()`, `super().m()`, C# `base.M()`, PHP `parent::m()`: the inherited implementation, never the caller's own. */
+function isSuperReceiver(recv: string | null | undefined, lang: string): boolean {
+  if (!recv) return false;
+  return recv === 'super' || (recv === 'base' && lang === 'csharp') || (recv === 'parent' && lang === 'php');
+}
+
+const HEADER_RE = /\.(h|hh|hpp|hxx|inl|ipp)$/i;
+
+/** A C / C++ function with internal linkage: visible only in its own translation unit. */
+function isFileLocal(s: SymbolRow): boolean {
+  return /^(?:\w+\s+)*static\b/.test(s.signature) && !HEADER_RE.test(s.path) && s.qname === s.name;
+}
+
+/**
+ * C / C++: a prototype and its definition (or two declarations of one function) are one target.
+ * Two full definitions in different source files are different functions, as is anything `static`.
+ */
+export function cTwins(a: SymbolRow, b: SymbolRow): boolean {
+  if (a.qname !== b.qname || langFamily(a.lang) !== 'c' || langFamily(b.lang) !== 'c') return false;
+  if (a.file_id === b.file_id) return true;
+  if (isFileLocal(a) || isFileLocal(b)) return false;
+  // Class members (Foo::bar in a header and in a .cc) pair up by qualified name.
+  if (a.qname !== a.name) return true;
+  return a.kind === 'declaration' || b.kind === 'declaration' || HEADER_RE.test(a.path) || HEADER_RE.test(b.path);
+}
 const SELF_RECEIVERS = new Set(['this', 'self', 'super', '$this', 'cls', 'base', 'Self', 'static', 'parent', 'me']);
 const CONFIDENT_SCORE = 55;
 const CONFIDENT_GAP = 12;
@@ -516,6 +544,17 @@ export class Resolver {
     return set;
   }
 
+  /**
+   * True when the name `type`, as seen from the calling file, is a class defined in that file or in
+   * the file it is imported from, and `cand` is a member of a same-named class somewhere else.
+   */
+  private otherTypeInScope(type: string, cand: SymbolRow, site: CallSite): boolean {
+    const from = this.importedNames(site.fileId).names.get(type);
+    const home = from === undefined ? site.fileId : from;
+    if (home === null || home === cand.file_id) return false;
+    return this.db.symbolsByName(type).some(s => s.file_id === home && (CONTAINER_KINDS.has(s.kind) || s.kind === 'type'));
+  }
+
   /** Go: does the file import the package in directory `dir`? */
   private importsGoDir(fileId: number, dir: string): boolean {
     for (const d of this.goImports(fileId).values()) if (d === dir) return true;
@@ -564,9 +603,39 @@ export class Resolver {
 
   /** Can code in `fileId` plausibly refer to `target`: same file, imports its file, or names its class? */
   canSee(fileId: number, target: SymbolRow): boolean {
-    if (fileId === target.file_id || this.importsOf(fileId).has(target.file_id)) return true;
+    const imports = this.importsOf(fileId);
+    if (fileId === target.file_id || imports.has(target.file_id)) return true;
     const container = this.containerName(target);
-    return container !== null && !container.startsWith('(') && this.fileMentions(fileId, container);
+    if (container !== null && !container.startsWith('(') && this.fileMentions(fileId, container)) return true;
+    // Through a package that re-exports it: `from django.db import models` -> models.Model in base.py.
+    if (imports.size <= 60) {
+      for (const f of imports) if (this.importsOf(f).has(target.file_id)) return true;
+    }
+    return false;
+  }
+
+  /**
+   * A call at `rawSite` was bound to `bound`, a declaration of the same member on a supertype of
+   * `target`'s class. Can it run `target`? Not when the receiver is statically a class unrelated to
+   * the target's (a sibling subclass), and not for `super.m()`, which names one implementation.
+   */
+  reaches(target: SymbolRow, bound: SymbolRow, rawSite: CallSite): boolean {
+    const tc = this.containerName(target);
+    const bc = this.containerName(bound);
+    if (!tc || !bc || tc === bc) return true;
+    // Go interfaces are satisfied structurally: there is no declared relation to check against.
+    if (target.lang === 'go') return true;
+    if (isSuperReceiver(rawSite.receiver, rawSite.lang)) return false;
+    const site = this.goQualified(this.withFieldType(rawSite)) ?? rawSite;
+    const recv = site.receiver;
+    let type: string | null = null;
+    if (site.rtype && recv && !SELF_RECEIVERS.has(recv)) type = site.rtype;
+    else if (site.caller && ((recv && SELF_RECEIVERS.has(recv)) || (!recv && IMPLICIT_THIS.has(site.lang)))) {
+      type = this.enclosingContainer(site.caller)?.name ?? null;
+    }
+    if (!type || type === tc) return true;
+    const rel = this.relatedTo(tc);
+    return rel.anc.has(type) || rel.desc.has(type);
   }
 
   private aliasUseCache = new Map<string, Array<{ fileId: number; alias: string }>>();
@@ -788,7 +857,7 @@ export class Resolver {
       const sameKindOfThing = CALLABLE.has(other.kind) === CALLABLE.has(sym.kind);
       if (
         other.qname === sym.qname && sameKindOfThing &&
-        (other.file_id === sym.file_id || (cFamily && langFamily(other.lang) === 'c' && CALLABLE.has(sym.kind)))
+        (other.file_id === sym.file_id || (cFamily && CALLABLE.has(sym.kind) && cTwins(sym, other)))
       ) {
         // Overloads; in C/C++ also the header declaration of a definition.
         fam.add(other.id);
@@ -949,6 +1018,8 @@ export class Resolver {
     const isMember =
       cand.kind === 'method' ||
       (inContainer && (cand.kind === 'function' || cand.kind === 'declaration' || VALUE_KINDS.has(cand.kind)));
+    // C: a static function is callable only inside its own file (or a file that includes it).
+    if (fam === 'c' && !sameFile && isFileLocal(cand) && !this.importsOf(site.fileId).has(cand.file_id)) return null;
     // A module-level variable is only callable by its bare name; never through an object.
     if (VALUE_KINDS.has(cand.kind) && !inContainer && site.receiver) return null;
     // A field is only callable when it holds a function: `s.Conf.Watching()` is not the bool field `Watching`.
@@ -965,7 +1036,12 @@ export class Resolver {
     }
     const recv = site.receiver;
 
-    const inCallerClass = isMember && callerC !== null && container === callerC.name;
+    // The caller's own class. Where classes cannot be split over files, a class of the same name
+    // in another file (one `DatabaseSchemaEditor` per backend) is a different class.
+    const inCallerClass =
+      isMember && callerC !== null && container === callerC.name &&
+      (!SINGLE_FILE_CLASS.has(fam) || sameFile || callerC.id === null || parent === null ||
+        !CONTAINER_KINDS.has(parent.kind) || parent.id === callerC.id);
     const inCallerAncestors = (): boolean =>
       isMember && callerC !== null && container !== null &&
       (callerC.id !== null ? this.ancestorsOf(callerC.id).has(container) : this.relatedTo(callerC.name).anc.has(container));
@@ -978,6 +1054,8 @@ export class Resolver {
         if (container === T) {
           // Go `pkg.Type`: methods live in the package that defines the type.
           if (site.rtypeDir !== undefined && dirOf(cand.path) !== site.rtypeDir) return null;
+          // The calling file imports (or defines) its own type T: a same-named class elsewhere is not it.
+          if (SINGLE_FILE_CLASS.has(fam) && !sameFile && this.otherTypeInScope(T, cand, site)) return null;
           return 100 + vis + tie;
         }
         const rel = this.relatedTo(T);
@@ -1049,6 +1127,17 @@ export class Resolver {
         return (SAME_DIR_PACKAGE.has(site.lang) ? 66 : 46) + ns + tie;
       }
       return 18 + Math.min(12, common * 3) + ns * 2 + tie;
+    }
+
+    // --- super.foo() / base.Foo() / parent::foo() ----------------------------------
+    if (isSuperReceiver(recv, site.lang)) {
+      if (!isMember || (callerC !== null && container === callerC.name)) return null;
+      if (inCallerAncestors()) return 92 + tie;
+      // A mixin calls up the MRO of whatever class it is mixed into (`super().dispatch()` in a
+      // Django mixin): the parent is not declared here, so any other definition is a candidate.
+      if (fam !== 'python' && fam !== 'ruby' && fam !== 'js' && fam !== 'php') return null;
+      if (callerC && container && this.relatedTo(callerC.name).desc.has(container)) return null;
+      return 34 + tie;
     }
 
     // --- this.foo() / self.foo() ---------------------------------------------

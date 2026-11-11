@@ -195,6 +195,11 @@ export function callersOf(
       if (top.sym.id !== target.id && resolver.overriddenBelow(target, top.sym)) {
         if (certain) continue;
       }
+      // Bound to a supertype's declaration, but on a receiver that cannot be the target's class
+      // (a sibling subclass, or an explicit super call).
+      if (top.sym.id !== target.id && !resolver.reaches(target, top.sym, {
+        fileId: row.file_id, path: row.path, lang: row.lang, receiver: row.receiver, rtype: row.rtype, via: row.via, caller,
+      })) continue;
     } else {
       const mine = res.candidates.find(c => family.has(c.sym.id));
       // Keep near-ties as uncertain edges; drop sites that clearly mean another definition.
