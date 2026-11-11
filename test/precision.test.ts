@@ -542,3 +542,33 @@ export function debounce(fn: () => void, wait?: number): void {
     assert.equal(own[0]!.overloads, 2);
   });
 });
+
+describe('receiver names that fit several classes', () => {
+  let q: Project;
+  before(async () => {
+    q = await createProject({
+      'auth/base_user.py': `class AbstractBaseUser:
+    def set_password(self, raw):
+        pass
+`,
+      'auth/models.py': `class AnonymousUser:
+    def set_password(self, raw):
+        raise NotImplementedError
+`,
+      'auth/forms.py': `from auth.models import AnonymousUser
+
+
+def set_password_and_save(user, password):
+    user.set_password(password)
+`,
+    });
+  });
+  after(() => q.dispose());
+
+  it('does not present either as certain', () => {
+    const s = findSymbols(q.clast.db, 'set_password_and_save')[0]!;
+    const callees = calleesOf(q.clast.db, q.ctx.resolver, s).filter(c => c.name === 'set_password');
+    assert.ok(callees.length >= 1);
+    assert.ok(callees.every(c => !c.certain), 'user.set_password() could be either class');
+  });
+});

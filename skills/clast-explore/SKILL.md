@@ -38,6 +38,11 @@ right after you edit. Answers come back as compact text with `path:line` locatio
 - Before changing a signature: `clast_call_graph` with `direction: "callers"`; add
   `includeTests: false` to see production callers only. Edges marked `?` are name-only matches on an
   untyped receiver: verify those before relying on them.
+- Callers of a method include calls made through its interface or base class (they may dispatch to
+  it), but not calls bound to an override in a subclass. To see every implementation's callers, ask
+  for the interface / base method, or use `clast_hierarchy` on the method first.
+- `clast_search` with a short description ("parse forwarded headers") also looks at what function
+  bodies mention, so it can find code whose name says something else.
 - After editing: `clast_changes` lists the touched symbols, callers outside the change and the test
   files that exercise them.
 - If a tool says a name is not defined in the project, it is external or built dynamically:

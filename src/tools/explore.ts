@@ -26,7 +26,8 @@ export async function references(ctx: ToolContext, args: ReferencesArgs): Promis
   const ref = parseSymbolRef(args.name);
   const name = ref.name;
   const limit = Math.max(1, Math.min(args.limit ?? 40, 500));
-  const defs = findSymbols(ctx.db, { ...ref, path: undefined });
+  // References are matched case-sensitively: a definition spelled differently (LRU_CLOCK for lru_clock) is not theirs.
+  const defs = findSymbols(ctx.db, { ...ref, path: undefined }).filter(d => d.name === name);
   const nameId = ctx.db.nameId(name, false);
   if (nameId === undefined) {
     return note + `"${name}": no occurrences in indexed code (identifiers in strings and comments are not indexed; use clast_grep for those).`;

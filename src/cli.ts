@@ -205,7 +205,13 @@ async function main(): Promise<void> {
         return;
     }
     // Tool hints name MCP tools; say the same thing in CLI terms here.
-    console.log(out.replace(/clast_[a-z_]+/g, t => CLI_NAMES[t] ?? t));
+    console.log(
+      out
+        .replace(/clast_[a-z_]+/g, t => CLI_NAMES[t] ?? t)
+        .replace(/\buncertain=true\b/g, '--uncertain')
+        .replace(/\bincludeTests=true\b/g, '--tests')
+        .replace(/\braise maxLines\b/g, 'raise --max-lines')
+    );
     if (out.startsWith('error:')) process.exitCode = 1;
   } finally {
     try { clast.close(); } catch { /* closed above */ }

@@ -1594,6 +1594,17 @@ export class Resolver {
     // differ only in which type the calling file can see: its import / proximity bonus decides.
     const sameNamed = second !== undefined && second.sym.qname === top.sym.qname && second.sym.kind === top.sym.kind;
     let confident = top.score >= CONFIDENT_SCORE && (!second || top.score - second.score >= (sameNamed ? 4 : CONFIDENT_GAP));
+    // An untyped receiver whose name fits two unrelated classes equally (`user.set_password()` with both
+    // AbstractBaseUser and AnonymousUser defining it): the name decides nothing, so neither is a fact.
+    if (
+      confident && second && site.receiver && !site.rtype && site.receiver !== '?' &&
+      !SELF_RECEIVERS.has(site.receiver)
+    ) {
+      const last = site.receiver.replace(/^[$@&*]+/, '').split(/\.|::|->|\\/).pop() ?? '';
+      const tc = this.containerName(top.sym);
+      const sc = this.containerName(second.sym);
+      if (last && tc && sc && tc !== sc && tc !== last && looselyNamed(last, tc) && looselyNamed(last, sc)) confident = false;
+    }
     // A bare call to a distinctively named function or class that the project defines exactly once
     // (`new AntiforgeryTokenSet()`, `lookupKeyReadOrReply()`): proximity is irrelevant, there is nothing else it can be.
     if (
