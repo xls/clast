@@ -295,7 +295,9 @@ describe('Go packages', () => {
   });
 
   it('callers of a method include calls through an interface its type satisfies', () => {
-    assert.deepEqual(callerNames('Job.Run'), ['Start']);
+    // Possible, not certain: any type with these methods satisfies the interface.
+    assert.deepEqual(callerNames('Job.Run', false), ['Start']);
+    assert.deepEqual(callerNames('Job.Run'), []);
   });
 });
 
@@ -606,5 +608,131 @@ export function run(opts: Options): void {
     const edges = callersOf(q.clast.db, q.ctx.resolver, findSymbols(q.clast.db, 'Logger.info')[0]!);
     assert.deepEqual(edges.map(e => [e.caller?.qname, e.certain]), [['run', true]]);
     assert.equal(callersOf(q.clast.db, q.ctx.resolver, findSymbols(q.clast.db, 'Metrics.info')[0]!).length, 0);
+  });
+});
+
+describe('same-named types from other packages and the standard library', () => {
+  let q: Project;
+  before(async () => {
+    q = await createProject({
+      'go.mod': 'module example.com/app\n',
+      'page/page.go': `package page
+
+type Provider interface {
+	Content() string
+}
+`,
+      'resource/resource.go': `package resource
+
+type Provider interface {
+	Name() string
+}
+
+type Closer interface {
+	Close() error
+}
+`,
+      'site/out.go': `package site
+
+import (
+	"io"
+
+	"example.com/app/page"
+)
+
+type Output struct {
+	page.Provider
+}
+
+type Stream interface {
+	io.Closer
+	Read() string
+}
+`,
+      'rs/src/wake.rs': `pub trait Wake {
+    fn wake(&self);
+}
+
+pub struct Handle;
+
+impl Wake for Handle {
+    fn wake(&self) {}
+}
+`,
+      'rs/src/other.rs': `use std::task::{Context, Wake};
+
+pub struct Flag;
+
+impl Wake for Flag {
+    fn wake(self: Arc<Self>) {}
+}
+`,
+      'cs/Builder.cs': `public class Builder
+{
+    public Builder(string name) { }
+    public Builder(string name, int retries) { }
+}
+
+public static class Factory
+{
+    public static Builder Create() { return new Builder("x", 3); }
+}
+`,
+      'php/SoftDeletes.php': `<?php
+namespace App;
+
+trait SoftDeletes
+{
+    public function restore()
+    {
+        return $this->save();
+    }
+}
+`,
+      'php/Model.php': `<?php
+namespace App;
+
+class Model
+{
+    public function save() {}
+}
+`,
+    });
+  });
+  after(() => q.dispose());
+
+  const sym = (ref: string) => {
+    const s = findSymbols(q.clast.db, ref)[0];
+    assert.ok(s, `symbol not found: ${ref}`);
+    return s;
+  };
+
+  it('a Go embedded type keeps its package', () => {
+    const sup = directSupertypes(q.clast.db, q.ctx.resolver, sym('Output'));
+    assert.equal(sup[0]!.sym?.path, 'page/page.go');
+    assert.equal(directSubtypes(q.clast.db, q.ctx.resolver, sym('resource/resource.go:Provider')).length, 0);
+  });
+
+  it('io.Closer is not the project interface called Closer', () => {
+    const sup = directSupertypes(q.clast.db, q.ctx.resolver, sym('Stream'));
+    assert.equal(sup.find(s => s.name === 'Closer')!.sym, null);
+    assert.equal(directSubtypes(q.clast.db, q.ctx.resolver, sym('Closer')).length, 0);
+  });
+
+  it('a trait imported from std is not the local trait of that name', () => {
+    const subs = directSubtypes(q.clast.db, q.ctx.resolver, sym('Wake')).map(s => s.sym.name);
+    assert.deepEqual(subs, ['Handle']);
+  });
+
+  it('constructor callers are the sites that create the class, by argument count', () => {
+    const ctors = findSymbols(q.clast.db, 'Builder.Builder').sort((a, b) => a.start_line - b.start_line);
+    assert.equal(ctors.length, 2);
+    assert.equal(callersOf(q.clast.db, q.ctx.resolver, ctors[0]!).length, 0);
+    assert.deepEqual(callersOf(q.clast.db, q.ctx.resolver, ctors[1]!).map(e => e.caller?.qname), ['Factory.Create']);
+  });
+
+  it('a self call inside a trait is a possible call of the host class method', () => {
+    const callees = calleesOf(q.clast.db, q.ctx.resolver, sym('SoftDeletes.restore')).filter(c => c.target);
+    assert.deepEqual(callees.map(c => [c.target!.qname, c.certain]), [['Model.save', false]]);
   });
 });

@@ -463,7 +463,9 @@ export class Resolver {
       }
       let top = 0;
       for (const n of counts.values()) top = Math.max(top, n);
-      for (const [prefix, n] of counts) if (n >= Math.max(2, top * 0.05)) g.prefixes.add(prefix);
+      // (In a project with only a handful of internal imports a single one has to be enough.)
+      const floor = top >= 4 ? Math.max(2, top * 0.05) : 1;
+      for (const [prefix, n] of counts) if (n >= floor) g.prefixes.add(prefix);
     }
     let hit = g.bySource.get(source);
     if (hit !== undefined) return hit;
@@ -558,9 +560,9 @@ export class Resolver {
     const types = this.db.symbolsByName(type).filter(s => CONTAINER_KINDS.has(s.kind) || s.kind === 'type');
     if (types.some(s => s.file_id === home)) return true;
     // Java: a type of the same package needs no import and wins over anything else of that name.
-    if (from === undefined && site.lang === 'java') {
+    if (from === undefined && (site.lang === 'java' || site.lang === 'php')) {
       const dir = dirOf(site.path);
-      return dirOf(cand.path) !== dir && types.some(s => s.lang === 'java' && dirOf(s.path) === dir);
+      return dirOf(cand.path) !== dir && types.some(s => s.lang === site.lang && dirOf(s.path) === dir);
     }
     return false;
   }
@@ -761,6 +763,38 @@ export class Resolver {
     return namespace;
   }
 
+  private stdNameCache = new Map<number, Set<string>>();
+
+  /** Rust: names a file imports from the standard library (`use std::task::{Context, Wake}`). */
+  private stdNames(fileId: number): Set<string> {
+    let set = this.stdNameCache.get(fileId);
+    if (!set) {
+      set = new Set<string>();
+      for (const r of this.db.all<{ source: string; names: string }>(
+        `SELECT source, names FROM imports INDEXED BY idx_imports_file WHERE file_id = ?`, fileId
+      )) {
+        if (!/^(std|core|alloc)(::|$)/.test(r.source)) continue;
+        for (const n of r.names.split(',')) {
+          const name = n.trim().split('=')[0]!.trim();
+          if (name) set.add(name);
+        }
+      }
+      this.stdNameCache.set(fileId, set);
+    }
+    return set;
+  }
+
+  /**
+   * A supertype written in file `fileId` that cannot be a project type even though the project
+   * defines one of that name: a Go type of an external package (`io.Closer`), a Rust trait the
+   * file imports from the standard library (`use std::task::Wake`).
+   */
+  externalSupertype(name: string, qualifier: string | null, fileId: number, lang: string): boolean {
+    if (lang === 'go') return !!qualifier && this.goImports(fileId).get(qualifier) === null;
+    if (lang === 'rust') return !qualifier && this.stdNames(fileId).has(name);
+    return false;
+  }
+
   /** Names of the classes a container extends/implements, transitively (bounded). */
   ancestorsOf(containerId: number): Set<string> {
     let set = this.ancestorCache.get(containerId);
@@ -770,9 +804,10 @@ export class Resolver {
     for (let depth = 0; depth < 5 && frontier.length; depth++) {
       const next: number[] = [];
       for (const id of frontier) {
-        for (const row of this.db.all<{ name: string; file_id: number }>(
-          `SELECT name, file_id FROM heritage WHERE symbol_id = ?`, id
+        for (const row of this.db.all<{ name: string; file_id: number; qualifier: string | null; lang: string }>(
+          `SELECT h.name, h.file_id, h.qualifier, f.lang FROM heritage h JOIN files f ON f.id = h.file_id WHERE h.symbol_id = ?`, id
         )) {
+          if (this.externalSupertype(row.name, row.qualifier, row.file_id, row.lang)) continue;
           // `class A extends Base` where Base is `import { X as Base }`: the supertype is X.
           const h = { name: this.importedNames(row.file_id).aliases.get(row.name) ?? row.name };
           if (set.has(h.name)) continue;
@@ -810,9 +845,11 @@ export class Resolver {
     for (let depth = 0; depth < 6 && frontier.length && rel.desc.size < 4000; depth++) {
       const next: string[] = [];
       for (const n of frontier) {
-        for (const row of this.db.all<{ name: string }>(
-          `SELECT s.name FROM heritage h JOIN symbols s ON s.id = h.symbol_id WHERE h.name = ? LIMIT 1000`, n
+        for (const row of this.db.all<{ name: string; file_id: number; qualifier: string | null; lang: string }>(
+          `SELECT s.name, h.file_id, h.qualifier, f.lang FROM heritage h JOIN symbols s ON s.id = h.symbol_id
+           JOIN files f ON f.id = h.file_id WHERE h.name = ? LIMIT 1000`, n
         )) {
+          if (this.externalSupertype(n, row.qualifier, row.file_id, row.lang)) continue;
           if (row.name !== name && !rel.desc.has(row.name)) {
             rel.desc.add(row.name);
             next.push(row.name);
@@ -894,7 +931,15 @@ export class Resolver {
         fam.add(other.id);
       } else if (related && (other.kind === 'method' || other.kind === sym.kind)) {
         const oc = this.containerName(other);
-        if (oc && related.has(oc)) fam.add(other.id);
+        if (!oc || !related.has(oc)) continue;
+        if (oc === container && other.file_id !== sym.file_id) {
+          // Two types with the same short name (Cache\Repository and Config\Repository, both implementing
+          // a contract called Repository) are related only if one of them is that interface.
+          const po = this.parentOf(other);
+          const ps = this.parentOf(sym);
+          if (po && ps && po.kind !== 'interface' && ps.kind !== 'interface' && po.kind !== 'trait' && ps.kind !== 'trait') continue;
+        }
+        fam.add(other.id);
       }
     }
     this.familyCache.set(sym.id, fam);
@@ -942,7 +987,9 @@ export class Resolver {
    * Evidence that a member call on a receiver of unknown type targets `cand`
    * (a method of `container`). Zero evidence means "not linked".
    */
-  private memberEvidence(name: string, cand: SymbolRow, container: string | null, site: CallSite, recv: string | null): number {
+  private memberEvidence(
+    name: string, cand: SymbolRow, container: string | null, site: CallSite, recv: string | null, lenient = false
+  ): number {
     let e = 0;
     if (cand.file_id === site.fileId) e += 24;
     else if (this.importsOf(site.fileId).has(cand.file_id)) e += 22;
@@ -969,7 +1016,7 @@ export class Resolver {
     }
     if (COMMON_MEMBER_NAMES.has(name.toLowerCase())) {
       // .get(), .add(), .count(): only the receiver's name can tell a project method from a builtin.
-      return receiverMatches ? e : 0;
+      return receiverMatches || lenient ? e : 0;
     }
     // `connection_handler.establish_connection`: the receiver names ConnectionHandler, so a same-named
     // method on some other class (even the caller's own) is not the target.
@@ -1184,8 +1231,12 @@ export class Resolver {
       // `function View() { this.lookup() }` with `View.prototype.lookup = ...` in the same file.
       if (!callerC && site.caller && container === site.caller.name && sameFile) return 90 + tie;
       if (callerC && container && this.relatedTo(callerC.name).desc.has(container)) return 56 + tie; // abstract hook
-      const e = this.memberEvidence(name, cand, container, site, null);
-      return e >= 20 ? Math.min(46, 10 + e) + tie : null; // mixin-style
+      // Inside a trait / mixin, `$this->save()` is a method of whatever class uses it: even a
+      // common name is then worth a (name-only) candidate.
+      const host = callerC && callerC.id !== null ? this.db.symbolById(callerC.id) : undefined;
+      const mixin = !!host && (host.kind === 'trait' || (host.lang === 'ruby' && host.kind === 'namespace') || /Mixin$/.test(host.name));
+      const e = this.memberEvidence(name, cand, container, site, null, mixin);
+      return e >= (mixin ? 8 : 20) ? Math.min(46, 10 + e) + tie : null; // mixin-style
     }
 
     // --- expression receiver: a.b().foo(), "x".foo() --------------------------

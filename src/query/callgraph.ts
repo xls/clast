@@ -109,6 +109,8 @@ export interface CallerQuery {
   pathContains?: string;
   /** Examine fewer call sites (summaries that only show the first few callers). */
   quick?: boolean;
+  /** Other overloads of the target whose call sites count too (a bare name means "any overload"). */
+  overloads?: SymbolRow[];
 }
 
 /** Set by callersOf when a name has more call sites than were examined. */
@@ -156,11 +158,22 @@ export function callersOf(
   }
 
   let family = resolver.familyOf(target);
+  // A constructor is called by naming its class: `new Foo(...)` resolves to the class.
+  if (target.parent_id !== null && target.kind === 'method') {
+    const parent = db.symbolById(target.parent_id);
+    if (parent && parent.name === target.name && CONTAINER_KINDS.has(parent.kind)) family = new Set([...family, parent.id]);
+  }
+  const arityTargets = query.overloads?.length ? [target, ...query.overloads] : [target];
+  /** Go interface methods the target satisfies structurally: calls through them are possible, not certain. */
+  let structural: Set<number> | null = null;
   if (target.lang === 'go' && target.kind === 'method') {
     // Go interfaces are satisfied structurally: a call through an interface this method's
     // type implements may reach it.
     const viaInterface = goInterfaceMethods(db, target);
-    if (viaInterface.length) family = new Set([...family, ...viaInterface]);
+    if (viaInterface.length) {
+      family = new Set([...family, ...viaInterface]);
+      structural = new Set(viaInterface);
+    }
   }
   const edges: CallerEdge[] = [];
   const weak: CallerEdge[] = [];
@@ -179,7 +192,7 @@ export function callersOf(
       argc: row.argc, caller,
     };
     // A call with another number of arguments is a call of another overload (or of something else).
-    if (!resolver.arityFits(target, site)) continue;
+    if (!arityTargets.some(t => resolver.arityFits(t, site))) continue;
     // A symbol "calling itself" by name from inside its own definition line is recursion: keep it.
     const res = resolver.resolve(target.name, site);
     if (res.candidates.length === 0) {
@@ -195,6 +208,9 @@ export function callersOf(
     if (family.has(top.sym.id)) {
       // Resolved to the target or to its interface/override/overload twin.
       certain = res.confident;
+      // Any type with these methods satisfies a Go interface: a call through it may reach the
+      // target, but equally one of the other implementers.
+      if (structural && structural.has(top.sym.id)) certain = false;
       // Bound to an override in a subclass: that call does not run the target.
       if (top.sym.id !== target.id && resolver.overriddenBelow(target, top.sym)) {
         if (certain) continue;
@@ -374,6 +390,8 @@ export interface GraphOptions {
   pathContains?: string;
   /** Filled in for the root symbol: how many call sites of the name exist vs were examined. */
   stats?: CallerStats;
+  /** Other overloads of the root whose callers are included. */
+  overloads?: SymbolRow[];
 }
 
 /** Symbols with more direct edges than this are not expanded below the first level. */
@@ -406,7 +424,11 @@ export function buildGraph(
       let children: GraphNode[];
       if (direction === 'callers') {
         children = groupCallers(
-          callersOf(db, resolver, node.sym, { pathContains: opts.pathContains }, level === 0 ? opts.stats : undefined)
+          callersOf(
+            db, resolver, node.sym,
+            { pathContains: opts.pathContains, overloads: level === 0 ? opts.overloads : undefined },
+            level === 0 ? opts.stats : undefined
+          )
         )
           .filter(g => (opts.includeTests || !isTestPath(g.path)) && (!opts.path || opts.path(g.path)))
           .map(g => ({

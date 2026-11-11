@@ -322,7 +322,7 @@ async function describe(ctx: ToolContext, sym: SymbolRow, args: ContextArgs, ove
   if (callable || isContainer || MINOR_KINDS.has(sym.kind)) {
     // A summary: bounded work even for names with tens of thousands of call sites.
     const callerStats = { examined: 0, total: 0 };
-    const callers = callersOf(ctx.db, ctx.resolver, sym, { quick: true }, callerStats);
+    const callers = callersOf(ctx.db, ctx.resolver, sym, { quick: true, overloads }, callerStats);
     callerLines(callers, out);
     if (callerStats.total > callerStats.examined) {
       out.push(
@@ -581,16 +581,24 @@ export async function callGraph(ctx: ToolContext, args: CallGraphArgs): Promise<
   out.push(...containerNote(args.name, sym));
   // Overloads are told apart by argument types, which call sites do not record: say that they are merged.
   const overloads = matches.filter(m => m.id !== sym.id && m.file_id === sym.file_id && m.qname === sym.qname);
+  // A bare name means any overload; `path:line` means that one (matched by argument count).
+  const oneOverload = parseSymbolRef(args.name).line !== undefined;
   if (overloads.length) {
+    const lines = `${overloads.slice(0, 4).map(o => o.start_line).join(', ')}${overloads.length > 4 ? ', ...' : ''}`;
     out.push(
-      `(${plural(overloads.length, 'other overload')} at line ${overloads.slice(0, 4).map(o => o.start_line).join(', ')}` +
-        `${overloads.length > 4 ? ', ...' : ''}; call sites are told apart by argument count where the overloads differ in it)`
+      oneOverload
+        ? `(${plural(overloads.length, 'other overload')} at line ${lines}; only call sites whose argument count fits this one are listed)`
+        : `(${plural(overloads.length, 'other overload')} at line ${lines}; callers of all overloads are listed - ` +
+            `for one overload only, address it by line: ${sym.path}:${overloads[0]!.start_line})`
     );
   }
   const stats = { examined: 0, total: 0 };
   // A plain directory / file fragment can be pre-filtered by the database.
   const pathContains = within && !/[*?]/.test(within) ? within.replace(/\\/g, '/').replace(/^\.\//, '') : undefined;
-  const opts = { depth, budget: 100000, includeTests: !dropTests, path: pathFilter, pathContains, stats };
+  const opts = {
+    depth, budget: 100000, includeTests: !dropTests, path: pathFilter, pathContains, stats,
+    overloads: oneOverload ? undefined : overloads,
+  };
   const accept = (p: string): boolean => (!dropTests || !isTestPath(p)) && (!pathFilter || pathFilter(p));
 
   if (direction !== 'callees') {

@@ -248,7 +248,8 @@ function structFields(struct: Node, sym: number, own: string, ctx: Ctx): void {
       ctx.def(fd, { name, kind: 'field', body: null, scope: false, exported: isExported(name) });
       ctx.typeHint(name, hintType(type) ?? name);
       // `type ResponseWriter struct { http.ResponseWriter }` does not extend itself.
-      if (name !== own || !isQualified(type)) ctx.inherit(sym, name, 'extends');
+      // The package qualifier is kept (`page.ContentProvider`): it tells same-named types apart.
+      if (name !== own || !isQualified(type)) ctx.inherit(sym, hintType(type) ?? name, 'extends');
       continue;
     }
     const type = hintType(field(fd, 'type'));
@@ -264,7 +265,7 @@ function interfaceMembers(iface: Node, sym: number, own: string, ctx: Ctx): void
   // `type ResponseWriter interface { http.ResponseWriter }` does not extend itself.
   const embed = (t: Node): void => {
     const name = typeName(t);
-    if (name && (name !== own || !isQualified(t))) ctx.inherit(sym, name, 'extends');
+    if (name && (name !== own || !isQualified(t))) ctx.inherit(sym, hintType(t) ?? name, 'extends');
   };
   for (const m of iface.namedChildren) {
     if (!m) continue;
@@ -335,7 +336,7 @@ const valueSpec = (kind: 'constant' | 'variable'): Visitor => (node, ctx) => {
     // Interface satisfaction assertion: `var _ IRouter = (*Engine)(nil)` / `= &Engine{}`
     const iface = typeName(field(node, 'type'));
     const type = iface ? assertedType(value) : null;
-    if (iface && type && !BUILTINS.has(iface)) assertImplements(type, iface, ctx);
+    if (iface && type && !BUILTINS.has(iface)) assertImplements(type, hintType(field(node, 'type')) ?? iface, ctx);
     return;
   }
   if (value && value.type === 'func_literal' && names[0]) {

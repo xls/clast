@@ -80,9 +80,9 @@ function lexicalType(db: ClastDb, from: SymbolRow, qualifier: string | null, nam
  */
 export function directSubtypes(db: ClastDb, resolver: Resolver, sym: SymbolRow): TypeEdge[] {
   if (isStaticClass(sym)) return [];
-  type Row = SymbolRow & { hkind: string; hqual: string | null; harity: number };
+  type Row = SymbolRow & { hkind: string; hqual: string | null; harity: number; hfile: number };
   const symArity = sym.lang === 'csharp' ? declaredArity(sym) : -1;
-  const select = `SELECT ${SYMBOL_COLUMNS}, h.kind AS hkind, h.qualifier AS hqual, h.arity AS harity FROM heritage h
+  const select = `SELECT ${SYMBOL_COLUMNS}, h.kind AS hkind, h.qualifier AS hqual, h.arity AS harity, h.file_id AS hfile FROM heritage h
      JOIN symbols s ON s.id = h.symbol_id JOIN files f ON f.id = s.file_id`;
   const rows = db.all<Row>(`${select} WHERE h.name = ? LIMIT 5000`, sym.name);
   const sameName = db.symbolsByName(sym.name).filter(s => CONTAINER_KINDS.has(s.kind) || s.kind === 'type');
@@ -104,6 +104,8 @@ export function directSubtypes(db: ClastDb, resolver: Resolver, sym: SymbolRow):
     if (row.id === sym.id || seen.has(row.id)) continue;
     // A C++ class does not implement a C# interface of the same name.
     if (langFamily(row.lang) !== langFamily(sym.lang)) continue;
+    // `io.Closer` / a `Wake` imported from std is not the project's type of that name.
+    if (resolver.externalSupertype(sym.name, row.hqual, row.hfile, row.lang)) continue;
     // C#: `Foo` and `Foo<T>` are different types.
     if (symArity !== -1 && row.harity !== symArity) continue;
     let certain = true;
@@ -165,8 +167,8 @@ export function directSupertypes(db: ClastDb, resolver: Resolver, sym: SymbolRow
       .map(s => s.id);
     if (!ids.includes(sym.id)) ids.push(sym.id);
   }
-  const rows = db.all<{ name: string; kind: string; qualifier: string | null; arity: number }>(
-    `SELECT name, kind, qualifier, arity FROM heritage WHERE symbol_id IN (${ids.map(() => '?').join(',')})`, ...ids
+  const rows = db.all<{ name: string; kind: string; qualifier: string | null; arity: number; file_id: number }>(
+    `SELECT name, kind, qualifier, arity, file_id FROM heritage WHERE symbol_id IN (${ids.map(() => '?').join(',')})`, ...ids
   );
   const out: SuperEdge[] = [];
   const seen = new Set<string>();
@@ -175,6 +177,10 @@ export function directSupertypes(db: ClastDb, resolver: Resolver, sym: SymbolRow
     seen.add(row.name);
     const isType = (s: SymbolRow): boolean =>
       (CONTAINER_KINDS.has(s.kind) || s.kind === 'type') && s.id !== sym.id && !isStaticClass(s);
+    if (resolver.externalSupertype(row.name, row.qualifier, row.file_id, sym.lang)) {
+      out.push({ name: row.name, kind: row.kind, sym: null });
+      continue;
+    }
     let res = resolver.resolve(
       row.name,
       { fileId: sym.file_id, path: sym.path, lang: sym.lang, receiver: row.qualifier, caller: sym },
