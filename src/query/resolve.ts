@@ -744,6 +744,14 @@ export class Resolver {
         // Go convention: `s` for *Site, `c` for *Context, `rg` ... Within a package this is good evidence.
         e += 8;
         receiverMatches = site.lang === 'go' && dirOf(cand.path) === dirOf(site.path);
+      } else {
+        // `@cache.fetch_multi` -> Cache::Store#fetch_multi: the receiver names the enclosing namespace.
+        const q = cand.qname.split('.');
+        const outer = q.length >= 3 ? q[q.length - 3]! : null;
+        if (outer && outer.length >= 4 && looselyNamed(recv, outer)) {
+          e += 22;
+          receiverMatches = true;
+        }
       }
     }
     if (COMMON_MEMBER_NAMES.has(name.toLowerCase())) {
@@ -759,6 +767,10 @@ export class Resolver {
       // Defined once in the whole project. A multi-word name (`complete_inflight`, `pollElapsed`)
       // is then almost certainly this method; a single word (`changed`, `close`) may be a library's.
       e += splitIdentifier(name).length >= 2 && name.length >= 8 ? 46 : 20;
+    } else if (e === 0 && recv && splitIdentifier(name).length >= 2 && name.length >= 8 && this.familyCount(name) <= 3) {
+      // A distinctive name with two or three definitions and no other clue (`@cache.fetch_multi` in a
+      // test): still worth listing as a name-only candidate rather than hiding the call site.
+      e += 16;
     }
     return e;
   }
@@ -1268,7 +1280,8 @@ export class Resolver {
 
     let all = this.candidates(name);
     // Resolving a type name (a supertype in `extends X`): constructors and same-named members are not answers.
-    if (typesOnly) all = all.filter(c => TYPE_KINDS.has(c.kind));
+    // (Ruby modules are mixins: `include Foo` names a module.)
+    if (typesOnly) all = all.filter(c => TYPE_KINDS.has(c.kind) || (c.kind === 'namespace' && c.lang === 'ruby'));
     if (all.length === 0) return { candidates: [], confident: false };
     const site = this.withFieldType(rawSite, depth);
     let cands = all.length > PRESELECT_THRESHOLD && !typesOnly ? this.preselect(name, site) : all;

@@ -20,6 +20,26 @@ export interface SuperEdge {
 }
 
 /**
+ * Lexical scope lookup of a type name written inside `from`: `Enum` inside
+ * `ActiveRecord.Base` is `ActiveRecord.Base.Enum`, else `ActiveRecord.Enum`,
+ * else top-level `Enum`. Returns null when no enclosing scope defines it.
+ */
+function lexicalType(db: ClastDb, from: SymbolRow, qualifier: string | null, name: string): SymbolRow | null {
+  const cands = db
+    .symbolsByName(name)
+    .filter(s => (CONTAINER_KINDS.has(s.kind) || s.kind === 'type') && s.id !== from.id && s.lang === from.lang);
+  if (cands.length === 0) return null;
+  const parts = from.qname.split('.');
+  const tail = (qualifier ? qualifier.replace(/::|\\/g, '.') + '.' : '') + name;
+  for (let n = parts.length; n >= 0; n--) {
+    const want = (n ? parts.slice(0, n).join('.') + '.' : '') + tail;
+    const hits = cands.filter(s => s.qname === want);
+    if (hits.length) return hits.find(s => !isTestPath(s.path)) ?? hits[0]!;
+  }
+  return null;
+}
+
+/**
  * Types that directly extend / implement `sym`. Heritage is recorded by
  * name, so each candidate is checked by resolving that name from the
  * subtype's file (imports, same file, proximity) back to `sym`.
@@ -47,7 +67,11 @@ export function directSubtypes(db: ClastDb, resolver: Resolver, sym: SymbolRow):
   for (const row of rows) {
     if (row.id === sym.id || seen.has(row.id)) continue;
     let certain = true;
-    if (row.hqual && symContainer) {
+    const lex = row.lang === 'ruby' ? lexicalType(db, row, row.hqual, sym.name) : null;
+    if (lex) {
+      // Ruby constant lookup is lexical: the name means the nearest enclosing definition.
+      if (lex.id !== sym.id && lex.qname !== sym.qname) continue;
+    } else if (row.hqual && symContainer) {
       // Written as Outer::Name / Outer.Name: the qualifier must be our enclosing type or namespace.
       if (row.hqual !== symContainer) continue;
     } else if (sameName.length > 1 || row.hqual) {
@@ -101,6 +125,10 @@ export function directSupertypes(db: ClastDb, resolver: Resolver, sym: SymbolRow
       true
     );
     let target = res.candidates.find(c => isType(c.sym));
+    if (sym.lang === 'ruby' || !res.confident) {
+      const lex = lexicalType(db, sym, row.qualifier, row.name);
+      if (lex) target = { sym: lex, score: 95 };
+    }
     if (!target && row.qualifier) {
       // Qualified by an enclosing type / namespace that is part of the qualified name.
       const want = row.qualifier + '.' + row.name;
