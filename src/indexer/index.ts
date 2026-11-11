@@ -216,7 +216,7 @@ export class Indexer {
     if (!existsSync(workerPath())) return 1;
     const configured = this.config.workers;
     if (configured === 1) return 1;
-    const auto = Math.max(1, Math.min(8, availableParallelism() - 1));
+    const auto = Math.max(1, Math.min(12, availableParallelism() - 1));
     const n = configured > 0 ? configured : auto;
     return Math.max(1, Math.min(n, Math.ceil(taskCount / TASK_BATCH)));
   }

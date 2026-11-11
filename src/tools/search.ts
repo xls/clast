@@ -316,10 +316,10 @@ async function describe(ctx: ToolContext, sym: SymbolRow, args: ContextArgs, ove
     const external = callees.filter(c => !c.target);
     if (internal.length) {
       out.push(`calls (${internal.length}):`);
-      for (const c of internal.slice(0, 14)) {
+      for (const c of internal.slice(0, 20)) {
         out.push(`  ${c.target!.qname}  ${loc(c.target!)}${c.certain ? '' : '  ?'}`);
       }
-      if (internal.length > 14) out.push(`  ... ${internal.length - 14} more (clast_call_graph direction=callees)`);
+      if (internal.length > 20) out.push(`  ... ${internal.length - 20} more (clast_call_graph direction=callees)`);
     }
     if (external.length) {
       const names = [...new Set(external.map(c => c.name))];
