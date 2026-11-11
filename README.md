@@ -72,7 +72,7 @@ The project root is `CLAST_PROJECT_DIR`, else `CLAUDE_PROJECT_DIR`, else the wor
 | `clast_get_context` | Show me X. | Source of one symbol plus callers, callees, overloads, overrides, subtypes. Batch several names in one call |
 | `clast_call_graph` | Who calls X? What does X call? | Caller / callee tree to depth N, test callers separated, `within` path filter. Works for external names too |
 | `clast_references` | Where is X used? | Every usage of an identifier (calls, types, imports, assignments) with the enclosing symbol of each line |
-| `clast_hierarchy` | What implements / extends / overrides X? | Supertypes and transitive subtypes; Go interface satisfaction by method set; the same method across related types; `within` path filter |
+| `clast_hierarchy` | What implements / extends / overrides X? | Supertypes and transitive subtypes; Ruby mixins; Go interface satisfaction by method set (names plus parameter / result counts); the same method across related types; `within` path filter |
 | `clast_grep` | Where does this text appear? | Literal or regex search over all text files; each hit is labelled with its enclosing function |
 | `clast_changes` | What did this diff touch? | Symbols changed vs HEAD or a base ref, their callers outside the change, and the tests that exercise them |
 | `clast_status` | Is the index healthy? | Counts, languages, indexing progress, watcher state |
@@ -225,8 +225,11 @@ text is stored by file path and qualified name, so it survives re-indexing.
 4. **Link at query time** - call edges are stored as "symbol A calls name N on receiver R of type T" and
    resolved when queried, so nothing goes stale when another file changes. Resolution order: declared
    receiver type, then imports and same-file definitions, then `this`/`self` and inheritance, then
-   evidence scoring for untyped receivers. Interface methods, overrides, overloads and C/C++ prototypes
-   are treated as one target.
+   evidence scoring for untyped receivers. A call through an interface or base type counts as a caller
+   of the implementations it can reach (including Go's structural interfaces); a call bound to a
+   subclass override does not count for the base method. Types are told apart by more than their name
+   where the language allows it: Go packages (`pkg.Type` against the file's imports), C# generic arity
+   and partial classes, Ruby lexical constant lookup, Rust module paths.
 5. **Stay fresh** - a watcher re-indexes saved files; in addition every tool re-checks the files it is
    about to quote and re-parses them on the spot if they changed.
 
@@ -278,7 +281,7 @@ Node v24.7.0, win32 x64. Query times are medians of 5 in-process runs on the mos
 ```bash
 npm install
 npm run build        # tsc
-npm test             # node:test, 150+ tests incl. an end-to-end MCP session
+npm test             # node:test, 200+ tests incl. an end-to-end MCP session
 npm run bench -- /path/to/dir-with-repos
 ```
 

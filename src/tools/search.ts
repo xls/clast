@@ -556,6 +556,14 @@ export async function callGraph(ctx: ToolContext, args: CallGraphArgs): Promise<
   const out: string[] = [symLine(sym)];
   if (sym.signature) out.push(`  ${firstLine(sym.signature, 160)}`);
   out.push(...amb.lines);
+  // Overloads are told apart by argument types, which call sites do not record: say that they are merged.
+  const overloads = matches.filter(m => m.id !== sym.id && m.file_id === sym.file_id && m.qname === sym.qname);
+  if (overloads.length) {
+    out.push(
+      `(${plural(overloads.length, 'other overload')} at line ${overloads.slice(0, 4).map(o => o.start_line).join(', ')}` +
+        `${overloads.length > 4 ? ', ...' : ''}; call sites of all overloads are listed together)`
+    );
+  }
   const stats = { examined: 0, total: 0 };
   // A plain directory / file fragment can be pre-filtered by the database.
   const pathContains = within && !/[*?]/.test(within) ? within.replace(/\\/g, '/').replace(/^\.\//, '') : undefined;
