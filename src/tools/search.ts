@@ -7,7 +7,7 @@ import { firstLine, isTestPath, isTestSite, loc, plural, symLine } from '../quer
 import {
   directSubtypes, directSupertypes, structuralImplementers, structuralInterfaces,
 } from '../query/hierarchy.js';
-import { findSymbols, otherDefinitions, parseSymbolRef, pathMatches } from '../query/resolve.js';
+import { findSymbols, isFileLocal, otherDefinitions, parseSymbolRef, pathMatches } from '../query/resolve.js';
 import { searchSymbols, type SearchOptions } from '../query/search.js';
 import { ToolContext, toList } from './context.js';
 
@@ -47,6 +47,9 @@ export async function search(ctx: ToolContext, args: SearchArgs): Promise<string
       out.push(`${symLine(s)}${tags.length ? '  [' + tags.join(' ') + ']' : ''}`);
       if (s.signature && s.signature !== s.name) out.push(`  ${firstLine(s.signature, 180)}`);
       if (s.doc) out.push(`  // ${firstLine(s.doc, 140)}`);
+    }
+    if (hits.some(h => h.match === 'body')) {
+      out.push('([body] = matched by what the function\'s code mentions, not by its name or documentation)');
     }
     out.push('');
   }
@@ -210,6 +213,8 @@ function valueReferences(
   );
   let nearest = false;
   if (accept) rows = rows.filter(r => accept(r.path));
+  // A C static function cannot be named from another file.
+  if (isFileLocal(sym)) rows = rows.filter(r => r.file_id === sym.file_id);
   if (rows.length > 40) {
     // A widely used name: only the defining file and the files importing it can mean this symbol.
     const visible = new Set<number>([sym.file_id]);
@@ -284,6 +289,7 @@ function valueReferences(
       if (out.length < max) out.push(`  ${who}  ${key}  ${text}`);
     }
   }
+  if (out.length === 0) return [];
   if (seen.size > out.length || nearest) {
     out.push(`  ... ${nearest ? 'more' : seen.size - out.length + ' more'} (clast_references ${sym.name}${nearest ? ' lists every use; nearest shown' : ''})`);
   }
@@ -491,7 +497,10 @@ export async function getContext(ctx: ToolContext, args: ContextArgs): Promise<s
     }
 
     const chosen = matches[0]!;
-    const overloads = matches.filter(m => m.id !== chosen.id && m.file_id === chosen.file_id && m.qname === chosen.qname);
+    // (A prototype above its definition, or a field next to its accessor, is not an overload.)
+    const overloads = matches.filter(
+      m => m.id !== chosen.id && m.file_id === chosen.file_id && m.qname === chosen.qname && m.kind === chosen.kind
+    );
     const { others } = otherDefinitions(chosen, matches, ctx.resolver.familyOf(chosen));
     const ref = parseSymbolRef(name);
     const unqualified = ref.container.length === 0 && !ref.path && !args.path && ref.line === undefined;
@@ -649,7 +658,9 @@ export async function callGraph(ctx: ToolContext, args: CallGraphArgs): Promise<
   out.push(...amb.lines);
   out.push(...containerNote(args.name, sym));
   // Overloads are told apart by argument types, which call sites do not record: say that they are merged.
-  const overloads = matches.filter(m => m.id !== sym.id && m.file_id === sym.file_id && m.qname === sym.qname);
+  const overloads = matches.filter(
+    m => m.id !== sym.id && m.file_id === sym.file_id && m.qname === sym.qname && m.kind === sym.kind
+  );
   // A bare name means any overload; `path:line` means that one (matched by argument count).
   const oneOverload = parseSymbolRef(args.name).line !== undefined;
   if (overloads.length) {

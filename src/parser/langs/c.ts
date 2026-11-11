@@ -701,8 +701,27 @@ const macro: Visitor = (node, ctx) => {
       if (!v.includes('\n')) sig += ' ' + v;
     }
   }
-  define(ctx, node, { name, kind: 'macro', sig, exported: true, scope: false });
+  // A function-like macro that wraps calls (`#define serverAssert(e) (... _serverAssert(#e, __FILE__, __LINE__))`):
+  // the calls in its body are calls made by the macro, so the wrapped function does not look unused.
+  const body = params ? field(node, 'value') : null;
+  const text = body && body.endIndex - body.startIndex <= 2000 ? body.text : '';
+  const called = new Set<string>();
+  if (text) {
+    const own = new Set(params!.text.replace(/[()\s]/g, '').split(','));
+    const re = /(^|[^\w.>])([A-Za-z_]\w*)\s*\(/g;
+    for (let m = re.exec(text); m && called.size < 12; m = re.exec(text)) {
+      const callee = m[2]!;
+      if (callee !== name && !own.has(callee) && !MACRO_BODY_SKIP.has(callee)) called.add(callee);
+    }
+  }
+  define(ctx, node, { name, kind: 'macro', sig, exported: true, scope: called.size > 0 });
+  for (const callee of called) ctx.call(callee, node);
 };
+
+const MACRO_BODY_SKIP = new Set([
+  'if', 'while', 'for', 'switch', 'return', 'sizeof', 'do', 'else', 'defined', 'typeof', '__typeof__', 'alignof',
+  '_Alignof', 'offsetof', '__attribute__', '__builtin_expect', 'static_assert', '_Static_assert', 'decltype',
+]);
 
 const include: Visitor = (node, ctx) => {
   const path = field(node, 'path');

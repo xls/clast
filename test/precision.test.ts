@@ -766,3 +766,84 @@ void run() {
     assert.equal(edges.reduce((n, e) => n + e.count, 0), 2);
   });
 });
+
+describe('imports that bind members, instances and submodules', () => {
+  let q: Project;
+  before(async () => {
+    q = await createProject({
+      'java/org/app/util/Utils.java': `package org.app.util;
+
+public class Utils {
+    public static String mkEntry(String k, String v) { return k + v; }
+}
+`,
+      'java/org/app/Main.java': `package org.app;
+
+import static org.app.util.Utils.mkEntry;
+
+public class Main {
+    String run() { return mkEntry("a", "b"); }
+}
+`,
+      'py/dispatch.py': `class Signal:
+    def send(self, sender):
+        pass
+`,
+      'py/signals.py': `from py.dispatch import Signal
+
+pre_save = Signal()
+`,
+      'py/base.py': `from py.signals import pre_save
+
+
+def save_base(instance):
+    pre_save.send(instance)
+`,
+      'py/utils/__init__.py': '',
+      'py/utils/text.py': `def slugify(value):
+    return value
+`,
+      'py/views.py': `from py.utils import text
+
+
+def title(value):
+    return text.slugify(value)
+`,
+      'c/assert.h': `void _fail(const char *expr, const char *file, int line);
+#define check(e) ((e) ? (void)0 : _fail(#e, __FILE__, __LINE__))
+`,
+      'c/assert.c': `#include "assert.h"
+
+void _fail(const char *expr, const char *file, int line) {}
+`,
+      'c/use.c': `#include "assert.h"
+
+void work(int x) { check(x > 0); }
+`,
+    });
+  });
+  after(() => q.dispose());
+
+  const callers = (ref: string): string[] => {
+    const s = findSymbols(q.clast.db, ref)[0];
+    assert.ok(s, `symbol not found: ${ref}`);
+    return callersOf(q.clast.db, q.ctx.resolver, s).filter(e => e.certain).map(e => e.caller?.qname ?? '<file>').sort();
+  };
+
+  it('a Java static import makes the bare name a call of that member', () => {
+    assert.deepEqual(callers('Utils.mkEntry'), ['Main.run']);
+  });
+
+  it('a call on an imported module-level instance has the type it was created with', () => {
+    assert.deepEqual(callers('Signal.send'), ['save_base']);
+  });
+
+  it('from package import submodule; submodule.func() resolves to the submodule', () => {
+    assert.deepEqual(callers('py/utils/text.py:slugify'), ['title']);
+  });
+
+  it('a function called only from a macro body has the macro as its caller', () => {
+    assert.deepEqual(callers('c/assert.c:_fail'), ['check']);
+    assert.deepEqual(callers('check'), ['work']);
+  });
+});

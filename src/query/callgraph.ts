@@ -178,6 +178,9 @@ export function callersOf(
   const edges: CallerEdge[] = [];
   const weak: CallerEdge[] = [];
   const targetIsMember = target.kind === 'method' || target.qname.includes('.');
+  // `get_or_create`, `maybeAutoCommit`: a name like that on an unknown receiver is worth listing as possible
+  // even from files that never mention the class.
+  const distinctive = target.name.length >= 8 && /[a-z0-9][A-Z_]|_[a-z]/.test(target.name);
   // `@property def count` / `get count()`: read as an attribute, so `.count(...)` calls elsewhere are something else.
   const propertyLike = /^@(cached_)?property\b|^(public |private |protected |static |override )*get \w/.test(target.signature);
   const callerCache = new Map<number, SymbolRow | undefined>();
@@ -198,7 +201,7 @@ export function callersOf(
     if (res.candidates.length === 0) {
       // Nothing could be attributed. If the receiver's type is simply unknown,
       // keep the site as a possible caller instead of silently dropping it.
-      if (targetIsMember && !propertyLike && weak.length < MAX_WEAK && resolver.canSee(row.file_id, target) && resolver.isOpaqueReceiver(site) && langFamily(row.lang) === langFamily(target.lang) && !(isTestPath(target.path) && !isTestPath(row.path))) {
+      if (targetIsMember && !propertyLike && weak.length < MAX_WEAK && (distinctive || resolver.canSee(row.file_id, target)) && resolver.isOpaqueReceiver(site) && langFamily(row.lang) === langFamily(target.lang) && !(isTestPath(target.path) && !isTestPath(row.path))) {
         weak.push({ caller, path: row.path, line: row.line, count: row.count, certain: false, weak: true });
       }
       continue;
@@ -222,6 +225,11 @@ export function callersOf(
       const mine = res.candidates.find(c => family.has(c.sym.id));
       // Keep near-ties as uncertain edges; drop sites that clearly mean another definition.
       if (!mine || top.score - mine.score > 10) continue;
+      // The site binds to another copy of this definition (a vendored fork) that its file can see better.
+      if (
+        top.sym.qname === target.qname && top.sym.kind === target.kind && top.sym.file_id !== target.file_id &&
+        top.score - mine.score >= 4
+      ) continue;
       certain = false;
     }
     edges.push({ caller, path: row.path, line: row.line, count: row.count, certain });

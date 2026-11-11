@@ -352,7 +352,7 @@ function isSuperReceiver(recv: string | null | undefined, lang: string): boolean
 const HEADER_RE = /\.(h|hh|hpp|hxx|inl|ipp)$/i;
 
 /** A C / C++ function with internal linkage: visible only in its own translation unit. */
-function isFileLocal(s: SymbolRow): boolean {
+export function isFileLocal(s: SymbolRow): boolean {
   return /^(?:\w+\s+)*static\b/.test(s.signature) && !HEADER_RE.test(s.path) && s.qname === s.name;
 }
 
@@ -597,6 +597,40 @@ export class Resolver {
     const recv = site.receiver;
     const unbound = !!recv && (/^[A-Z]/.test(recv) || recv.includes('::'));
     return arityFits(range, argc, sym.lang, unbound);
+  }
+
+  private filePathCache = new Map<number, string | null>();
+
+  private filePath(fileId: number): string | null {
+    let p = this.filePathCache.get(fileId);
+    if (p === undefined) {
+      p = this.db.get<{ path: string }>(`SELECT path FROM files WHERE id = ?`, fileId)?.path ?? null;
+      this.filePathCache.set(fileId, p);
+    }
+    return p;
+  }
+
+  private instanceTypeCache = new Map<string, string | null>();
+
+  /**
+   * Type of a module-level variable `name` defined in file `fileId`, read from its declaration:
+   * `pre_save = ModelSignal(...)`, `export const logger = new Logger()`, `export const x: Foo = ...`.
+   */
+  private instanceType(fileId: number, name: string): string | null {
+    const key = fileId + ':' + name;
+    let t = this.instanceTypeCache.get(key);
+    if (t !== undefined) return t;
+    t = null;
+    const decl = this.db.symbolsByName(name).find(s => s.file_id === fileId && VALUE_KINDS.has(s.kind) && s.qname === s.name);
+    if (decl) {
+      const sig = decl.signature;
+      const m =
+        /:\s*([A-Z][\w$]*)\s*(?:<[^=]*>)?\s*=/.exec(sig) ??
+        /=\s*(?:new\s+)?(?:[\w$]+\.)*([A-Z][\w$]*)\s*[(<]/.exec(sig);
+      if (m && this.isProjectType(m[1]!)) t = m[1]!;
+    }
+    this.instanceTypeCache.set(key, t);
+    return t;
   }
 
   /** Go: does the file import the package in directory `dir`? */
@@ -1180,6 +1214,12 @@ export class Resolver {
         if (STRICT_IMPORTS.has(fam)) return null;
         if (inCallerClass) return (sameFile ? 88 : 72) + tie; // implicit this / same (partial) class
         if (inCallerAncestors()) return 68 + tie;
+        if (site.lang === 'java') {
+          // `import static pkg.Utils.mkEntry;` / `import static pkg.Utils.*;`
+          const imp = this.importedNames(site.fileId);
+          if (imp.names.get(name) === cand.file_id) return 94 + tie;
+          if (imp.wildcards.has(cand.file_id)) return 58 + tie;
+        }
         if (site.lang === 'go' || site.lang === 'rust') return null;
         if (site.lang === 'ruby' || site.lang === 'php') {
           const e = this.memberEvidence(name, cand, container, site, null);
@@ -1229,7 +1269,8 @@ export class Resolver {
     // --- super.foo() / base.Foo() / parent::foo() ----------------------------------
     if (isSuperReceiver(recv, site.lang)) {
       if (!isMember || (callerC !== null && container === callerC.name)) return null;
-      if (inCallerAncestors()) return 92 + tie;
+      // (Which class of that name: the one the subclass's file imports, when there are copies.)
+      if (inCallerAncestors()) return 92 + (container ? this.typeVisibility(container, cand, site) : 0) + tie;
       // A mixin calls up the MRO of whatever class it is mixed into (`super().dispatch()` in a
       // Django mixin): the parent is not declared here, so any other definition is a candidate.
       if (fam !== 'python' && fam !== 'ruby' && fam !== 'js' && fam !== 'php') return null;
@@ -1244,7 +1285,7 @@ export class Resolver {
         return fam === 'js' && sameFile && cand.kind === 'function' ? 36 + tie : null;
       }
       if (inCallerClass) return (sameFile ? 96 : 80) + tie;
-      if (inCallerAncestors()) return 76 + tie;
+      if (inCallerAncestors()) return 76 + (container ? this.typeVisibility(container, cand, site) : 0) + tie;
       // `function View() { this.lookup() }` with `View.prototype.lookup = ...` in the same file.
       if (!callerC && site.caller && container === site.caller.name && sameFile) return 90 + tie;
       if (callerC && container && this.relatedTo(callerC.name).desc.has(container)) return 56 + tie; // abstract hook
@@ -1296,6 +1337,11 @@ export class Resolver {
     const from = names.get(last);
     if (from !== undefined && from !== null) {
       if (from === cand.file_id) return 94 + tie; // import * as ns / import module
+      // Python `from django.utils import text`: the name is a submodule of the imported package.
+      if (fam === 'python') {
+        const pkg = this.filePath(from);
+        if (pkg && /(^|\/)__init__\.py$/.test(pkg) && cand.path === dirOf(pkg) + '/' + last + '.py') return 92 + tie;
+      }
       // The namespace is a package whose __init__ / index re-exports the definition.
       return this.importsOf(from).has(cand.file_id) ? 72 + tie : null;
     }
@@ -1368,6 +1414,15 @@ export class Resolver {
       const t = this.chainType(site, depth);
       if (t) return { ...site, rtype: t };
       if (r === '?') return site;
+    }
+    // An imported module-level instance: `from signals import pre_save` ... `pre_save.send()`.
+    if (r && /^[A-Za-z_$][\w$]*$/.test(r) && !SELF_RECEIVERS.has(r)) {
+      const from = this.importedNames(site.fileId).names.get(r);
+      if (from !== undefined && from !== null) {
+        const original = this.importedNames(site.fileId).aliases.get(r) ?? r;
+        const t = this.instanceType(from, original);
+        if (t) return { ...site, rtype: t };
+      }
     }
     if (!r || r === '?' || !site.caller) return site;
     let field: string | null = null;

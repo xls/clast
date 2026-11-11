@@ -185,7 +185,10 @@ function resolveOne(row: ImportRow, index: PathIndex): number | undefined {
     );
   }
   const p = src.replace(/^\\/, '').replace(/[.\\]|::/g, '/').replace(/\/\*$/, '');
-  return index.suffix(p, row.path);
+  const hit = index.suffix(p, row.path);
+  if (hit !== undefined || row.lang !== 'java' || !p.includes('/')) return hit;
+  // `import static pkg.Utils.mkEntry;` / `import pkg.Outer.Inner;`: the last segment is a member of the class file.
+  return index.suffix(p.slice(0, p.lastIndexOf('/')), row.path);
 }
 
 /**
