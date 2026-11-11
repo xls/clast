@@ -58,6 +58,8 @@ export interface ExCall {
   receiver: string | null;
   /** Declared type of the receiver when a type hint was in scope (`Foo` for `x: Foo; x.bar()`). */
   rtype: string | null;
+  /** Number of arguments at the call site; -1 when unknown (spread arguments, macros, no argument list). */
+  argc: number;
   count: number;
   /**
    * For calls on an expression receiver that is itself a call

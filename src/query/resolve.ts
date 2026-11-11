@@ -1,6 +1,7 @@
 import type { ClastDb } from '../db/index.js';
 import { SYMBOL_COLUMNS, SYMBOL_FROM } from '../db/index.js';
 import { CONTAINER_KINDS, type SymbolKind, type SymbolRow } from '../types.js';
+import { ARITY_LANGS, arityFits, paramRange, type ParamRange } from './arity.js';
 import { isTestPath, isVendoredPath } from './format.js';
 import { splitIdentifier } from './words.js';
 
@@ -326,6 +327,8 @@ export interface CallSite {
   caller?: SymbolRow | null;
   /** Go: directory of the package the receiver type is qualified with (set by the resolver). */
   rtypeDir?: string;
+  /** Number of arguments at the call site (-1 / undefined = unknown). */
+  argc?: number | null;
 }
 
 export interface Resolution {
@@ -553,6 +556,27 @@ export class Resolver {
     const home = from === undefined ? site.fileId : from;
     if (home === null || home === cand.file_id) return false;
     return this.db.symbolsByName(type).some(s => s.file_id === home && (CONTAINER_KINDS.has(s.kind) || s.kind === 'type'));
+  }
+
+  private arityCache = new Map<number, ParamRange | null>();
+
+  /**
+   * Can a call with the site's argument count be a call of `sym`? True when either side is
+   * unknown. Tells overloads apart and rejects same-named methods with another shape.
+   */
+  arityFits(sym: SymbolRow, site: CallSite): boolean {
+    const argc = site.argc;
+    if (argc === undefined || argc === null || argc < 0) return true;
+    if (!CALLABLE.has(sym.kind) || sym.kind === 'macro' || !ARITY_LANGS.has(sym.lang)) return true;
+    let range = this.arityCache.get(sym.id);
+    if (range === undefined) {
+      range = paramRange(sym.signature, sym.name, sym.lang);
+      this.arityCache.set(sym.id, range);
+    }
+    if (!range) return true;
+    const recv = site.receiver;
+    const unbound = !!recv && (/^[A-Z]/.test(recv) || recv.includes('::'));
+    return arityFits(range, argc, sym.lang, unbound);
   }
 
   /** Go: does the file import the package in directory `dir`? */
@@ -1018,6 +1042,8 @@ export class Resolver {
     const isMember =
       cand.kind === 'method' ||
       (inContainer && (cand.kind === 'function' || cand.kind === 'declaration' || VALUE_KINDS.has(cand.kind)));
+    // The number of arguments rules the definition out (another overload, or an unrelated method of that name).
+    if (site.argc !== undefined && site.argc !== null && site.argc >= 0 && !this.arityFits(cand, site)) return null;
     // C: a static function is callable only inside its own file (or a file that includes it).
     if (fam === 'c' && !sameFile && isFileLocal(cand) && !this.importsOf(site.fileId).has(cand.file_id)) return null;
     // A module-level variable is only callable by its bare name; never through an object.

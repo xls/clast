@@ -561,7 +561,7 @@ export async function callGraph(ctx: ToolContext, args: CallGraphArgs): Promise<
   if (overloads.length) {
     out.push(
       `(${plural(overloads.length, 'other overload')} at line ${overloads.slice(0, 4).map(o => o.start_line).join(', ')}` +
-        `${overloads.length > 4 ? ', ...' : ''}; call sites of all overloads are listed together)`
+        `${overloads.length > 4 ? ', ...' : ''}; call sites are told apart by argument count where the overloads differ in it)`
     );
   }
   const stats = { examined: 0, total: 0 };

@@ -9,7 +9,7 @@ import { ftsWords, initials, splitIdentifier } from '../query/words.js';
  * Bump whenever the schema or the extraction output changes shape. The index
  * is a cache: a version mismatch simply drops and rebuilds it.
  */
-export const SCHEMA_VERSION = 13;
+export const SCHEMA_VERSION = 14;
 
 /** Kinds that get a full-text row (concept search). Others are found by name. */
 const FTS_KINDS = new Set(['function', 'method', 'class', 'interface', 'struct', 'trait', 'enum', 'type', 'namespace', 'macro']);
@@ -105,7 +105,8 @@ const SCHEMA = `
     receiver TEXT,
     rtype TEXT,
     count INTEGER NOT NULL DEFAULT 1,
-    via INTEGER
+    via INTEGER,
+    argc INTEGER NOT NULL DEFAULT -1
   );
 
   CREATE TABLE imports (
@@ -476,13 +477,14 @@ export class ClastDb {
     }
 
     const insertCall = this.stmt(
-      `INSERT INTO calls (file_id, caller_id, name_id, line, receiver, rtype, count) VALUES (?, ?, ?, ?, ?, ?, ?)`
+      `INSERT INTO calls (file_id, caller_id, name_id, line, receiver, rtype, count, argc) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
     );
     const callIds: number[] = new Array(ex.calls.length);
     for (let i = 0; i < ex.calls.length; i++) {
       const c = ex.calls[i]!;
       const r = insertCall.run(
-        fileId, c.caller >= 0 ? ids[c.caller] ?? null : null, this.nameId(c.name, true)!, c.line, c.receiver, c.rtype, c.count
+        fileId, c.caller >= 0 ? ids[c.caller] ?? null : null, this.nameId(c.name, true)!, c.line, c.receiver, c.rtype, c.count,
+        c.argc ?? -1
       );
       callIds[i] = Number(r.lastInsertRowid);
     }

@@ -39,6 +39,8 @@ interface CallRow {
   receiver: string | null;
   rtype: string | null;
   via: number | null;
+  /** Arguments at the call site; -1 or absent when unknown. */
+  argc?: number;
   count: number;
   path: string;
   lang: string;
@@ -124,7 +126,7 @@ export function callersOf(
 ): CallerEdge[] {
   const nameId = db.nameId(target.name, false);
   if (nameId === undefined) return [];
-  const cols = `c.rowid AS id, c.file_id, c.caller_id, c.line, c.receiver, c.rtype, c.via, c.count, f.path, f.lang`;
+  const cols = `c.rowid AS id, c.file_id, c.caller_id, c.line, c.receiver, c.rtype, c.via, c.argc, c.count, f.path, f.lang`;
   const pathClause = query.pathContains ? ` AND f.path LIKE ? ESCAPE '\\'` : '';
   const pathArg = query.pathContains ? ['%' + query.pathContains.replace(/[\\%_]/g, c => '\\' + c) + '%'] : [];
 
@@ -172,16 +174,18 @@ export function callersOf(
       if (!callerCache.has(row.caller_id)) callerCache.set(row.caller_id, db.symbolById(row.caller_id));
       caller = callerCache.get(row.caller_id) ?? null;
     }
+    const site = {
+      fileId: row.file_id, path: row.path, lang: row.lang, receiver: row.receiver, rtype: row.rtype, via: row.via,
+      argc: row.argc, caller,
+    };
+    // A call with another number of arguments is a call of another overload (or of something else).
+    if (!resolver.arityFits(target, site)) continue;
     // A symbol "calling itself" by name from inside its own definition line is recursion: keep it.
-    const res = resolver.resolve(target.name, {
-      fileId: row.file_id, path: row.path, lang: row.lang, receiver: row.receiver, rtype: row.rtype, via: row.via, caller,
-    });
+    const res = resolver.resolve(target.name, site);
     if (res.candidates.length === 0) {
       // Nothing could be attributed. If the receiver's type is simply unknown,
       // keep the site as a possible caller instead of silently dropping it.
-      if (targetIsMember && !propertyLike && weak.length < MAX_WEAK && resolver.canSee(row.file_id, target) && resolver.isOpaqueReceiver({
-        fileId: row.file_id, path: row.path, lang: row.lang, receiver: row.receiver, rtype: row.rtype, via: row.via, caller,
-      }) && langFamily(row.lang) === langFamily(target.lang) && !(isTestPath(target.path) && !isTestPath(row.path))) {
+      if (targetIsMember && !propertyLike && weak.length < MAX_WEAK && resolver.canSee(row.file_id, target) && resolver.isOpaqueReceiver(site) && langFamily(row.lang) === langFamily(target.lang) && !(isTestPath(target.path) && !isTestPath(row.path))) {
         weak.push({ caller, path: row.path, line: row.line, count: row.count, certain: false, weak: true });
       }
       continue;
@@ -197,9 +201,7 @@ export function callersOf(
       }
       // Bound to a supertype's declaration, but on a receiver that cannot be the target's class
       // (a sibling subclass, or an explicit super call).
-      if (certain && top.sym.id !== target.id && !resolver.reaches(target, top.sym, {
-        fileId: row.file_id, path: row.path, lang: row.lang, receiver: row.receiver, rtype: row.rtype, via: row.via, caller,
-      })) continue;
+      if (certain && top.sym.id !== target.id && !resolver.reaches(target, top.sym, site)) continue;
     } else {
       const mine = res.candidates.find(c => family.has(c.sym.id));
       // Keep near-ties as uncertain edges; drop sites that clearly mean another definition.
@@ -246,15 +248,16 @@ export function calleesOf(db: ClastDb, resolver: Resolver, sym: SymbolRow): Call
   const byName = new Map<string, CalleeEdge>();
   for (const id of ids) {
     const caller = id === sym.id ? sym : db.symbolById(id) ?? sym;
-    const rows = db.all<{ name: string; line: number; receiver: string | null; rtype: string | null; via: number | null; count: number }>(
-      `SELECT n.name, c.line, c.receiver, c.rtype, c.via, c.count
+    const rows = db.all<{ name: string; line: number; receiver: string | null; rtype: string | null; via: number | null; argc: number; count: number }>(
+      `SELECT n.name, c.line, c.receiver, c.rtype, c.via, c.argc, c.count
        FROM calls c JOIN names n ON n.id = c.name_id
        WHERE c.caller_id = ? ORDER BY c.line`,
       id
     );
     for (const row of rows) {
       const res = resolver.resolve(row.name, {
-        fileId: sym.file_id, path: sym.path, lang: sym.lang, receiver: row.receiver, rtype: row.rtype, via: row.via, caller,
+        fileId: sym.file_id, path: sym.path, lang: sym.lang, receiver: row.receiver, rtype: row.rtype, via: row.via,
+        argc: row.argc, caller,
       });
       const first = res.candidates[0];
       // Follow the call to the implementation, not to a prototype / in-class declaration.

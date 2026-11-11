@@ -36,7 +36,7 @@ for (const name of repos) {
   const resolver = new Resolver(db);
   const total = db.get(`SELECT COUNT(*) AS n FROM calls`).n;
   const sample = db.all(
-    `SELECT c.rowid AS id, n.name, c.file_id, c.caller_id, c.receiver, c.rtype, c.via, f.path, f.lang
+    `SELECT c.rowid AS id, n.name, c.file_id, c.caller_id, c.receiver, c.rtype, c.via, c.argc, f.path, f.lang
      FROM calls c JOIN names n ON n.id = c.name_id JOIN files f ON f.id = c.file_id
      WHERE c.rowid IN (SELECT rowid FROM calls ORDER BY random() LIMIT ?)`,
     SAMPLE
@@ -45,7 +45,7 @@ for (const name of repos) {
   const member = { resolved: 0, nameOnly: 0, unknown: 0, external: 0, n: 0 };
   for (const row of sample) {
     const caller = row.caller_id !== null ? db.symbolById(row.caller_id) ?? null : null;
-    const site = { fileId: row.file_id, path: row.path, lang: row.lang, receiver: row.receiver, rtype: row.rtype, via: row.via, caller };
+    const site = { fileId: row.file_id, path: row.path, lang: row.lang, receiver: row.receiver, rtype: row.rtype, via: row.via, argc: row.argc, caller };
     const res = resolver.resolve(row.name, site);
     let kind;
     if (res.candidates.length) kind = res.confident ? 'resolved' : 'nameOnly';

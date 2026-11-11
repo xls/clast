@@ -121,6 +121,29 @@ function boundVariable(call: Node): string | null {
   return /^[A-Za-z_]\w*$/.test(text) ? text : null;
 }
 
+const ARGUMENT_LISTS = new Set(['argument_list', 'arguments', 'value_arguments']);
+
+/** Number of arguments of a call node, or -1 when it cannot be counted (spread, no argument list). */
+function argCount(node: Node): number {
+  // Flat grammars (Dart) hand in synthetic call spans that are not real nodes.
+  if (typeof node.childForFieldName !== 'function' || !Array.isArray(node.namedChildren)) return -1;
+  let args = node.childForFieldName('arguments');
+  if (!args) {
+    for (const c of node.namedChildren) {
+      if (c && ARGUMENT_LISTS.has(c.type)) { args = c; break; }
+    }
+  }
+  if (!args || !ARGUMENT_LISTS.has(args.type)) return -1;
+  let n = 0;
+  for (const c of args.namedChildren) {
+    if (!c || c.type.includes('comment')) continue;
+    // f(*args), f(...xs), f(xs...): the count is not known statically.
+    if (/splat|spread|variadic/.test(c.type)) return -1;
+    n++;
+  }
+  return Math.min(n, 99);
+}
+
 function squash(s: string, max: number): string {
   const t = s.replace(/\s+/g, ' ').trim();
   return t.length > max ? t.slice(0, max - 3) + '...' : t;
@@ -366,8 +389,9 @@ export function extract(tree: Tree, source: string, compiled: CompiledSpec): Ext
       const caller = currentCaller();
       const start = node.startIndex;
       const end = node.endIndex;
+      const argc = argCount(node);
       // Calls on expression receivers are kept apart per site until the chain is known (merged below).
-      const key = caller + '\0' + name + '\0' + (receiver === '?' ? '?' + start + ':' + end : receiver ?? '');
+      const key = caller + '\0' + name + '\0' + (receiver === '?' ? '?' + start + ':' + end : receiver ?? '') + '\0' + argc;
       let rec = callMap.get(key);
       if (rec) {
         rec.count++;
@@ -382,7 +406,7 @@ export function extract(tree: Tree, source: string, compiled: CompiledSpec): Ext
           const args = node.childForFieldName('arguments');
           if (args) row = args.startPosition.row;
         }
-        rec = { caller, name, line: row + 1, receiver, rtype, count: 1, via: -1 };
+        rec = { caller, name, line: row + 1, receiver, rtype, argc, count: 1, via: -1 };
         callMap.set(key, rec);
       }
       // Call chains: in `a.b().c()` the expression for c starts where the expression for b starts,
@@ -601,7 +625,9 @@ export function extract(tree: Tree, source: string, compiled: CompiledSpec): Ext
         continue;
       }
       const inner = viaRef.get(call);
-      const key = call.caller + '\0' + call.name + '\0' + (inner ? inner.name + '\0' + (inner.receiver ?? '') : '') + '\0' + (call.rtype ?? '');
+      const key =
+        call.caller + '\0' + call.name + '\0' + (inner ? inner.name + '\0' + (inner.receiver ?? '') : '') + '\0' +
+        (call.rtype ?? '') + '\0' + call.argc;
       const first = kept.get(key);
       if (first) {
         first.count += call.count;
