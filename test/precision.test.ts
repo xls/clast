@@ -1075,6 +1075,17 @@ describe('Ruby calls without receiver, arguments or parentheses', () => {
     1
   end
 
+  def extensions
+    extensions = [1]
+    extensions |= [2]
+    extensions
+  end
+
+  def countdown(n)
+    countdown(n - 1) if n > 0
+    save
+  end
+
   def update(attrs, touch: false)
     offset = 2
     save
@@ -1091,7 +1102,9 @@ end
   it('a bare method name is a call; a parameter or local of that name is not', () => {
     const callers = (ref: string) =>
       callersOf(q.clast.db, q.ctx.resolver, findSymbols(q.clast.db, ref)[0]!).filter(e => e.certain).map(e => e.caller?.qname);
-    assert.deepEqual(callers('Person.save'), ['Person.update']);
+    assert.deepEqual(callers('Person.save').sort(), ['Person.countdown', 'Person.update']);
+    assert.deepEqual(callers('Person.extensions'), [], 'a local named like its own method is a local');
+    assert.deepEqual(callers('Person.countdown'), ['Person.countdown'], 'recursion with arguments is still a call');
     assert.deepEqual(callers('Person.touch'), [], 'touch is a keyword parameter in update');
     assert.deepEqual(callers('Person.offset'), [], 'offset is assigned as a local in update');
   });

@@ -476,7 +476,6 @@ const bareIdentifier: Visitor = (node, ctx) => {
   if (!locals) {
     locals = new Set<string>();
     collectLocals(method, locals, false, 0);
-    locals.delete(field(method, 'name')?.text ?? '');
     byMethod.set(method.id, locals);
   }
   if (locals.has(name)) return;
