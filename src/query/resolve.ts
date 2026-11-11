@@ -1344,6 +1344,18 @@ export class Resolver {
       }
     }
     if (container && (last === container || bare === container)) {
+      // `Assert.Equal()` written without an outer class does not mean a class `Assert` nested inside
+      // some other class (`Http2Utilities.Assert`), unless the call is made from inside that class.
+      if (bare === container && parent) {
+        const outer = this.parentOf(parent);
+        if (outer && CONTAINER_KINDS.has(outer.kind) && outer.kind !== 'namespace') {
+          const q = site.caller?.qname ?? '';
+          // Inside the outer class the nested one is the nearest of that name: it shadows any other.
+          if (q === outer.qname || q.startsWith(outer.qname + '.')) return 106 + tie;
+          // (`import pkg.Outer.Inner;` makes the nested class nameable on its own.)
+          if (!sameFile && names.get(container) !== cand.file_id) return null;
+        }
+      }
       return 92 + this.typeVisibility(container, cand, site) + tie; // static / qualified call
     }
     if (isMember) {
@@ -1784,6 +1796,14 @@ export class Resolver {
       !confident && !second && !site.receiver && top.score >= 18 &&
       !STRICT_IMPORTS.has(langFamily(site.lang)) &&
       (splitIdentifier(name).length >= 2 || name.length >= 10) && this.familyCount(name) === 1
+    ) {
+      confident = true;
+    }
+    // Swift / Dart / Kotlin construct by calling the type: `Session(...)`. With a single type of that
+    // name in the project there is nothing else it can be.
+    if (
+      !confident && !second && !site.receiver && TYPE_KINDS.has(top.sym.kind) && /^[A-Z]/.test(name) &&
+      (site.lang === 'swift' || site.lang === 'dart' || site.lang === 'kotlin')
     ) {
       confident = true;
     }

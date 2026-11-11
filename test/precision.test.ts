@@ -924,3 +924,53 @@ export class View {
     assert.equal(callersOf(q.clast.db, q.ctx.resolver, findSymbols(q.clast.db, 'Sash.layout')[0]!).length, 0);
   });
 });
+
+describe('nested helper classes and type construction', () => {
+  let q: Project;
+  before(async () => {
+    q = await createProject({
+      'cs/Assert.cs': `public static class Assert
+{
+    public static void Equal(int a, int b) { }
+}
+`,
+      'cs/Http2Utilities.cs': `public class Http2Utilities
+{
+    public static class Assert
+    {
+        public static void Equal(int a, int b) { }
+    }
+
+    void Inside() { Assert.Equal(1, 1); }
+}
+`,
+      'cs/Tests.cs': `public class Tests
+{
+    void Run() { Assert.Equal(1, 2); }
+}
+`,
+      'swift/Session.swift': `public class Session {
+    public init(name: String) {}
+}
+`,
+      'swift/App.swift': `func start() {
+    let s = Session(name: "x")
+}
+`,
+    });
+  });
+  after(() => q.dispose());
+
+  it('an unqualified static call does not mean a class nested inside another class', () => {
+    const top = findSymbols(q.clast.db, 'cs/Assert.cs:Equal')[0]!;
+    const nested = findSymbols(q.clast.db, 'Http2Utilities.Assert.Equal')[0]!;
+    const names = (s: typeof top) => callersOf(q.clast.db, q.ctx.resolver, s).filter(e => e.certain).map(e => e.caller?.qname).sort();
+    assert.deepEqual(names(top), ['Tests.Run']);
+    assert.deepEqual(names(nested), ['Http2Utilities.Inside']);
+  });
+
+  it('Swift Type(...) is a certain reference to the only type of that name', () => {
+    const callees = calleesOf(q.clast.db, q.ctx.resolver, findSymbols(q.clast.db, 'start')[0]!).filter(c => c.target);
+    assert.ok(callees.some(c => c.target!.name === 'Session' && c.certain), JSON.stringify(callees.map(c => [c.target!.qname, c.certain])));
+  });
+});
