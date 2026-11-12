@@ -1,6 +1,6 @@
 # Changelog
 
-## 0.2.3
+## 0.2.3 (not yet on npm)
 
 - `clast-ai guide` prints the usage guide (the Claude Code plugin's `explore` skill) as Markdown,
   for agents that take their instructions from a file: `clast-ai guide >> AGENTS.md`.
