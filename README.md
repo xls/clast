@@ -57,7 +57,8 @@ through `npx clast-ai@<plugin version>` (downloaded on first use).
 ### Upgrading from an older install
 
 If clast is already set up the old way (`npm install -g clast-ai` plus `claude mcp add`, or through
-the old VS Code extension), install the plugin and restart. That is all:
+the old VS Code extension), install the plugin and restart. That is all, provided Node.js is 22.22 or
+newer (0.1 ran on Node 18; check with `node --version`):
 
 ```
 /plugin marketplace add xls/clast
@@ -71,8 +72,11 @@ The first session after that cleans up in the background, once per plugin versio
 - entries the old VS Code extension wrote into `.claude/settings.local.json` are removed,
 - the v0.1 index file `.clast/clast.db` is deleted (the new index is rebuilt by itself).
 
-Restart Claude Code once more and `/mcp` shows a single `clast` server. A `.mcp.json` that is shared
-with a team is never changed; remove the clast entry there yourself once everyone uses the plugin.
+Restart Claude Code once more and `/mcp` shows a single `clast` server.
+
+One case is left to you: a project whose `.mcp.json` lists clast. That file is shared with a team, so
+it is never changed, and in that project the server stays listed twice until the entry is removed
+from the file (`clast-ai migrate` names the file).
 
 Optional: `npm uninstall -g clast-ai` removes the old global package. The plugin does not need it; it
 only uses a global install that is at least as new as the plugin itself.
@@ -435,6 +439,13 @@ Known limitations).
 
 ## Changelog
 
+### 0.2.2
+
+- The clean-up of older installs also finds servers registered as `node .../dist/server/index.js` (how
+  the 0.1 README registered a build from source) and reads the configuration from `CLAUDE_CONFIG_DIR`
+  when that is set. Both were found by installing the plugin into an empty configuration next to an
+  old-style registration.
+
 ### 0.2.1
 
 - `clast-ai migrate`: finds and removes what older installs left behind (duplicate MCP registrations
@@ -495,7 +506,7 @@ Other:
 
 - Swift and Dart added (14 languages).
 - All dependencies updated (MCP SDK 1.32, web-tree-sitter 0.27).
-- 290 tests, plus `bench/bench.mjs`, `bench/resolution.mjs` and the A/B harness `bench/ab.mjs`.
+- 291 tests, plus `bench/bench.mjs`, `bench/resolution.mjs` and the A/B harness `bench/ab.mjs`.
 - Installable as a Claude Code plugin from this repository (`/plugin marketplace add xls/clast`,
   `/plugin install clast@clast`): the MCP server, a usage skill, and the slash commands
   `/clast:deadcode`, `/clast:impact`, `/clast:audit` and `/clast:status`. The old VS Code extension

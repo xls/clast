@@ -28,6 +28,7 @@ function setup(withPlugin: boolean): void {
     projects: {
       [other]: { mcpServers: { index: { command: 'node', args: ['C:/tools/clast/dist/cli.js'] } } },
       'Z:/gone/long/ago': { mcpServers: { clast: { command: 'clast-ai.cmd', args: [] } } },
+      'Z:/gone/too': { mcpServers: { clast: { command: 'node', args: ['/path/to/clast/dist/server/index.js'] } } },
       [project]: { mcpServers: { blender: { command: 'uvx', args: ['blender-mcp'] } } },
     },
   }));
@@ -59,13 +60,13 @@ describe('clast-ai migrate', () => {
   it('finds registrations of clast in every scope and leaves other servers alone', () => {
     const plan = planMigration(home, project);
     assert.deepEqual(plan.map(a => a.kind + (a.kind === 'mcp' ? ':' + a.scope + ':' + a.name : '')).sort(), [
-      'index', 'mcp:local:clast', 'mcp:local:index', 'mcp:user:clast', 'settings', 'shared',
+      'index', 'mcp:local:clast', 'mcp:local:clast', 'mcp:local:index', 'mcp:user:clast', 'settings', 'shared',
     ]);
   });
 
   it('only reports without --apply', async () => {
     const out = await migrate({ home, cwd: project, remove });
-    assert.match(out, /found 6 leftovers/);
+    assert.match(out, /found 7 leftovers/);
     assert.match(out, /migrate --apply/);
     assert.equal(removed.length, 0);
     assert.ok(existsSync(join(project, '.clast', 'clast.db')));
@@ -106,6 +107,30 @@ describe('clast-ai migrate --auto (run by the plugin at session start)', () => {
     const out = await migrate({ home, cwd: other, remove, auto: true });
     assert.match(out, /deleted: v0\.1 index/);
     assert.equal(removed.length, 0);
+  });
+});
+
+describe('clast-ai migrate with CLAUDE_CONFIG_DIR', () => {
+  before(() => {
+    setup(true);
+    // Move the configuration to where CLAUDE_CONFIG_DIR puts it: nothing is left in the home directory.
+    const dir = join(home, 'cfg');
+    mkdirSync(join(dir, 'plugins'), { recursive: true });
+    writeFileSync(join(dir, '.claude.json'), readFileSync(join(home, '.claude.json')));
+    writeFileSync(join(dir, 'plugins', 'installed_plugins.json'), readFileSync(join(home, '.claude', 'plugins', 'installed_plugins.json')));
+    rmSync(join(home, '.claude.json'));
+    rmSync(join(home, '.claude'), { recursive: true });
+    process.env.CLAUDE_CONFIG_DIR = dir;
+  });
+  after(() => {
+    delete process.env.CLAUDE_CONFIG_DIR;
+    teardown();
+  });
+
+  it('reads the configuration from there', async () => {
+    const out = await migrate({ home, cwd: project, remove, auto: true });
+    assert.match(out, /removed: server "clast" registered for all projects/);
+    assert.equal(removed.length, 2);
   });
 });
 

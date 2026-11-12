@@ -42,7 +42,8 @@ function isClast(_name: string, entry: ServerEntry | undefined): boolean {
   const command = String(entry.command ?? '');
   const args = Array.isArray(entry.args) ? entry.args.map(String) : [];
   if (/(^|[\\/])clast-ai(\.cmd|\.exe)?$/i.test(command)) return true;
-  if (args.some(a => /clast[^\\/]*[\\/]dist[\\/]cli\.js$/i.test(a))) return true;
+  // dist/cli.js, and dist/server/index.js as the 0.1 README registered a build from source.
+  if (args.some(a => /clast[^\\/]*[\\/]dist[\\/](cli|server[\\/]index)\.js$/i.test(a))) return true;
   // `npx clast-ai`, `npx -y clast-ai@0.1`
   if (/(^|[\\/])npx(\.cmd)?$/i.test(command) && args.some(a => /^clast-ai(@|$)/.test(a))) return true;
   return false;
@@ -61,8 +62,19 @@ function describe(entry: ServerEntry): string {
 }
 
 /** Is the clast plugin installed for this user? */
+/**
+ * Where Claude Code keeps its configuration: `~/.claude.json` and `~/.claude/`, or both inside
+ * CLAUDE_CONFIG_DIR when that is set.
+ */
+function claudePaths(home: string): { config: string; plugins: string } {
+  const dir = process.env.CLAUDE_CONFIG_DIR;
+  return dir
+    ? { config: join(dir, '.claude.json'), plugins: join(dir, 'plugins') }
+    : { config: join(home, '.claude.json'), plugins: join(home, '.claude', 'plugins') };
+}
+
 export function pluginInstalled(home: string): boolean {
-  const installed = readJson(join(home, '.claude', 'plugins', 'installed_plugins.json'));
+  const installed = readJson(join(claudePaths(home).plugins, 'installed_plugins.json'));
   const plugins = (installed?.plugins ?? {}) as Record<string, unknown>;
   return Object.keys(plugins).some(id => /^clast@/.test(id));
 }
@@ -70,7 +82,7 @@ export function pluginInstalled(home: string): boolean {
 /** Everything an older install left behind, without changing anything. */
 export function planMigration(home: string, cwd: string): Action[] {
   const actions: Action[] = [];
-  const config = readJson(join(home, '.claude.json'));
+  const config = readJson(claudePaths(home).config);
   const servers = (config?.mcpServers ?? {}) as Record<string, ServerEntry>;
   for (const [name, entry] of Object.entries(servers)) {
     if (isClast(name, entry)) actions.push({ kind: 'mcp', scope: 'user', name, dir: cwd, command: describe(entry) });
