@@ -10,6 +10,13 @@
   src/vs/base/common). The tool loads on demand and adds nothing to the prompt. In sessions, plain
   grep with a multi-line expression answered the same two questions faster, so this is for shapes a
   regular expression cannot describe, not a speed gain.
+- Monorepos: an import by package name (`from '@scope/pkg'`) is resolved to that package of the
+  repository through its package.json, and names re-exported by its index file (`export * from`) are
+  followed. Before, a function used across packages showed no callers.
+- Dead code: computed member names (`[Service.init]()`), names that are not identifiers (event maps),
+  object-literal members in `.tsx` files and named function expressions are no longer reported.
+- Benchmark on two repositories created after the model's training data (Go and TypeScript, 1.5 and
+  1.6 million lines): 1.2 to 1.7 tool calls with clast against 2.8 to 4.0 with grep.
 - Vue single-file components: the script blocks of `.vue` files are indexed as TypeScript, with the
   line numbers of the file, and calls link into `.ts` files and back.
 - Kotlin: classes, interfaces, objects, enums, properties, functions, extension functions, calls,

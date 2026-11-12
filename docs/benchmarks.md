@@ -5,6 +5,46 @@ and how fast the index is. All were run on real open-source repositories.
 
 ## Clast against grep + read
 
+### Repositories the model has never seen
+
+A model answers questions about famous code from memory, which hides what a tool does. These two
+repositories were created after the model's training data ends, so it cannot know them. Every answer
+was confirmed with grep before the run. Two sessions per question and side.
+
+**[yetone/magpie](https://github.com/yetone/magpie)** - Go, 7,750 files, 1.5 million lines, created September 2026.
+Both sides answered all seven questions correctly.
+
+| Question | Tool calls (clast / grep) | Time | Tokens in | Tokens out |
+| --- | ---: | ---: | ---: | ---: |
+| The chain of calls between two functions | 2.0 / 4.0 | 12 s / 22 s | 114k / 216k | 0.4k / 0.8k |
+| Every type that satisfies an interface (8, four of them by embedding) | 3.0 / 5.0 | 17 s / 23 s | 141k / 191k | 0.8k / 1.3k |
+| Tests that reach a function no test names | 2.0 / 7.0 | 16 s / 27 s | 172k / 262k | 0.7k / 1.5k |
+| One of several same-named methods, described by what it does | 1.0 / 3.0 | 10 s / 14 s | 114k / 159k | 0.2k / 0.4k |
+| Counting types by name pattern | 1.0 / 2.0 | 10 s / 12 s | 112k / 105k | 0.3k / 0.5k |
+| Dead functions in one file | 2.0 / 3.5 | 17 s / 26 s | 168k / 222k | 0.3k / 1.4k |
+| A function described by behaviour | 1.0 / 3.5 | 11 s / 15 s | 114k / 160k | 0.3k / 0.6k |
+| **All questions** | 1.7 / 4.0 | 13 s / 20 s | 134k / 188k | 0.4k / 0.9k |
+
+**[deepseek-ai/deepseek-harness](https://github.com/deepseek-ai/deepseek-harness)** - a TypeScript monorepo, 7,633 files,
+1.6 million lines, created August 2026. Both sides answered correctly, with one caveat: on the
+behaviour question grep named a different function that also fits the wording, so that question
+does not separate them on correctness.
+
+| Question | Tool calls (clast / grep) | Time | Tokens in | Tokens out |
+| --- | ---: | ---: | ---: | ---: |
+| Every subclass of a base class | 1.0 / 1.0 | 11 s / 12 s | 47k / 41k | 0.3k / 0.3k |
+| The chain of calls between two functions | 1.0 / 2.0 | 13 s / 12 s | 52k / 46k | 0.5k / 0.4k |
+| One of several same-named methods, described by what it does | 1.0 / 5.5 | 11 s / 24 s | 49k / 100k | 0.2k / 1.0k |
+| Counting types by name pattern | 1.0 / 1.0 | 11 s / 15 s | 48k / 42k | 0.3k / 0.8k |
+| A function described by behaviour | 1.0 / 4.5 | 11 s / 21 s | 50k / 109k | 0.2k / 0.9k |
+| Dead functions in one file | 2.0 / 3.0 | 18 s / 22 s | 71k / 95k | 0.3k / 0.9k |
+| **All questions** | 1.2 / 2.8 | 12 s / 18 s | 53k / 72k | 0.3k / 0.7k |
+
+Across both: clast needed 1.2 to 1.7 tool calls where grep needed 2.8 to 4.0, a third less time, and
+about a quarter fewer tokens. The questions are in `bench/ab/magpie.json` and
+`bench/ab/deepseek-harness.json`.
+
+
 Measured with real headless Claude Code sessions (`bench/ab.mjs`): every question runs in its own
 fresh session, once with clast connected and once with only Read / Grep / Glob. Two large repositories:
 vscode (TypeScript, 15.7k files) and OnAir (C++, 7.5k files, 1.6M lines). The index was fully built
