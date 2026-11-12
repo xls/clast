@@ -435,7 +435,7 @@ async function describe(ctx: ToolContext, sym: SymbolRow, args: ContextArgs, ove
   return out;
 }
 
-function notFound(ctx: ToolContext, name: string, path?: string): string[] {
+export function notFound(ctx: ToolContext, name: string, path?: string): string[] {
   const out: string[] = [];
   const bare = parseSymbolRef(name).name || name;
   const { hits } = searchSymbols(ctx.db, bare, { limit: 6, path });
@@ -458,7 +458,7 @@ function notFound(ctx: ToolContext, name: string, path?: string): string[] {
  * `Widget.layout` was asked for but the answer is `ChatWidget.layout` or an inherited
  * `Composite.layout`: say so, instead of letting the reader assume it is what they named.
  */
-function containerNote(asked: string, sym: SymbolRow): string[] {
+export function containerNote(asked: string, sym: SymbolRow): string[] {
   const ref = parseSymbolRef(asked);
   // `Stream` asked, only `stream` exists: say that the match is not exact.
   if (ref.name && ref.name !== sym.name && ref.name.toLowerCase() === sym.name.toLowerCase()) {
@@ -572,7 +572,7 @@ function renderGraph(node: GraphNode, indent: number, out: string[], direction: 
  * (and stop when there are too many to guess). Returns lines to print and
  * whether the caller should continue with the first match.
  */
-function disambiguate(
+export function disambiguate(
   ctx: ToolContext,
   name: string,
   path: string | undefined,

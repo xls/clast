@@ -13,6 +13,7 @@ import { symLine } from '../query/format.js';
 import { ToolContext } from '../tools/context.js';
 import { callGraph, getContext, hierarchy, search } from '../tools/search.js';
 import { changes, fileSummary, grep, overview, references, reindex, status } from '../tools/explore.js';
+import { impact, unused } from '../tools/impact.js';
 import { stats } from '../tools/stats.js';
 import { VERSION } from '../version.js';
 
@@ -20,7 +21,9 @@ const INSTRUCTIONS = `Clast is a pre-built, always-fresh code index for this rep
 - Unfamiliar repo or directory -> clast_overview, then clast_file_summary.
 - Where is X / what is it called -> clast_search (names, partial names, Class.method, or words describing behaviour).
 - Show me X, or before editing X -> clast_get_context (source of that symbol plus callers and callees).
-- Who calls X, what breaks if I change X -> clast_call_graph (depth N), clast_references (every use, including types and imports).
+- Who calls X -> clast_call_graph (depth N), clast_references (every use, including types and imports).
+- Before changing or deleting X: what else must change, and which tests to run -> clast_impact.
+- Dead code, cleanup after a refactor -> clast_unused.
 - What implements / extends / overrides X, which base class to extend -> clast_hierarchy.
 - How many X, how big, what is it made of -> clast_stats (exact totals; do not count search results by hand).
 - Strings, comments, config keys -> clast_grep. After a change -> clast_changes (touched symbols, affected callers, tests).
@@ -247,6 +250,43 @@ export async function startServer(): Promise<void> {
       _meta: ALWAYS_LOAD,
     },
     guard(args => stats(ctx, args))
+  );
+
+  server.registerTool(
+    'clast_impact',
+    {
+      title: 'Impact of changing a symbol',
+      description:
+        'Before changing a signature, behaviour or deleting a symbol: one answer with the declarations / overrides / implementations that must change together, every direct caller by file and line, how far the change reaches through indirect callers, and the test files to run (those that call it directly or through its callers).',
+      inputSchema: {
+        name: z.string().describe('Symbol: name, Container.name, or path:name'),
+        path: z.string().optional().describe('Disambiguate by file or directory path'),
+        depth: z.number().int().min(1).max(6).optional().describe('Caller levels to follow (default 3)'),
+        limit: z.number().int().min(1).max(500).optional().describe('Max lines per section (default 30)'),
+      },
+      annotations: READ_ONLY,
+      _meta: ALWAYS_LOAD,
+    },
+    guard(args => impact(ctx, args))
+  );
+
+  server.registerTool(
+    'clast_unused',
+    {
+      title: 'Unused code',
+      description:
+        'Dead code: functions, methods and types that nothing references (or that only other unused code references), grouped by file with line ranges; plus code used only by tests, and names that only appear in strings or comments. Entry points, decorated / attribute-marked symbols and overrides of library types are left out. Use after a refactor or to clean up a directory.',
+      inputSchema: {
+        path: z.string().optional().describe('Only judge symbols under / matching this path'),
+        lang: z.string().optional().describe('Only this language id'),
+        kind: z.string().optional().describe('Kinds to judge, comma separated (default function, method, class, struct, interface, trait, enum, type)'),
+        exported: z.boolean().optional().describe('false: leave out exported / public symbols'),
+        limit: z.number().int().min(1).max(1000).optional().describe('Max symbols listed (default 60)'),
+      },
+      annotations: READ_ONLY,
+      _meta: ALWAYS_LOAD,
+    },
+    guard(args => unused(ctx, args))
   );
 
   server.registerTool(

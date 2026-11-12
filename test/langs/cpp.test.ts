@@ -323,6 +323,18 @@ describe('cpp extraction', () => {
     assert.deepEqual(callList(ex), ['nativeStart -> pushGain', 'nativeStop -> pushGain']);
   });
 
+  it('names a function pointer with a macro calling convention by the pointer, not the return type', async () => {
+    // Found on OnAir: every such member was indexed as a method called `err_t`.
+    const ex = await extractSource('api.cpp', [
+      'struct Api {',
+      '    typedef int err_t;',
+      '    err_t (MY_CALL* find)(const char*, int**) = nullptr;',
+      '    err_t (MY_CALL* make)(int**) = nullptr;',
+      '};',
+    ].join('\n'));
+    assert.deepEqual(symbolList(ex), ['struct Api', 'type Api.err_t', 'field Api.find', 'field Api.make']);
+  });
+
   it('gives each declarator of a multi-declarator member its own signature', async () => {
     const ex = await extractSource('a.cc', SRC);
     assert.equal(sym(ex, 'geo.detail.Box.x_').signature, 'int x_');

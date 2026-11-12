@@ -10,6 +10,7 @@ import { SourceParser } from './parser/index.js';
 import { ToolContext } from './tools/context.js';
 import { callGraph, getContext, hierarchy, search } from './tools/search.js';
 import { changes, fileSummary, grep, overview, references, reindex, status } from './tools/explore.js';
+import { impact, unused } from './tools/impact.js';
 import { stats, type StatsArgs } from './tools/stats.js';
 import { VERSION } from './version.js';
 
@@ -30,6 +31,8 @@ usage: clast-ai [command] [args] [--root <dir>]
   refs <name>                all references to an identifier   [--path p] [--limit n]
   grep <pattern>             text search with enclosing symbols   [--regex] [--path p] [--limit n]
   changes [base]             symbols touched by the git diff and their impact
+  impact <name>              what must change with it, who reaches it, which tests to run   [--depth n] [--limit n]
+  unused [path]              dead code   [--kind k] [--lang l] [--limit n] [--no-exported]
   stats [what] [name]        exact counts: inventory | symbols | subtypes | calls | text | imports | endpoints | database
                              [--kind k] [--on receiver] [--path p] [--lang l] [--group-by g] [--depth n] [--limit n] [--tests]
   parse <file> [--json]      debug: show what the extractor produces for a file
@@ -48,6 +51,8 @@ const CLI_NAMES: Record<string, string> = {
   clast_grep: 'clast-ai grep',
   clast_changes: 'clast-ai changes',
   clast_stats: 'clast-ai stats',
+  clast_impact: 'clast-ai impact',
+  clast_unused: 'clast-ai unused',
   clast_reindex: 'clast-ai index',
   clast_status: 'clast-ai status',
 };
@@ -58,7 +63,7 @@ interface Parsed {
 }
 
 const BOOLEAN_FLAGS = new Set([
-  'force', 'json', 'regex', 'no-body', 'no-scan', 'no-tests', 'tests', 'uncertain', 'help', 'version', 'all',
+  'force', 'json', 'regex', 'no-body', 'no-scan', 'no-tests', 'tests', 'uncertain', 'help', 'version', 'all', 'no-exported',
 ]);
 
 function parseArgs(argv: string[]): Parsed {
@@ -202,6 +207,16 @@ async function main(): Promise<void> {
         break;
       case 'changes':
         out = await changes(ctx, { base: positional[0] });
+        break;
+      case 'impact':
+        out = await impact(ctx, { name: positional.join(' '), path: str('path'), depth: num('depth'), limit: num('limit') });
+        break;
+      case 'unused':
+      case 'dead':
+        out = await unused(ctx, {
+          path: positional[0] ?? str('path'), lang: str('lang'), kind: str('kind'), limit: num('limit'),
+          exported: flags.has('no-exported') ? false : undefined,
+        });
         break;
       case 'stats':
       case 'count': {

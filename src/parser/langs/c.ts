@@ -542,6 +542,11 @@ function declare(node: Node, ctx: Ctx, isField: boolean): void {
       if (isTrailingAnnotation(node, d.name)) continue;
       let sig = sigText(ctx, range, range.endIndex);
       if (node.hasError) sig = cutAtBrace(sig);
+      const pointer = macroFunctionPointer(d.fn);
+      if (pointer) {
+        define(ctx, node, { name: pointer, kind: member ? 'field' : 'variable', range, sig, exported, scope: false });
+        continue;
+      }
       const real = isField && node.hasError && isConstName(d.name) ? annotatedField(decl) : null;
       if (real) {
         define(ctx, node, { name: real.text, kind: 'field', range, sig, exported, scope: false });
@@ -593,6 +598,20 @@ function declare(node: Node, ctx: Ctx, isField: boolean): void {
       scope: false,
     });
   }
+}
+
+/**
+ * `err_t (CALLCONV* find)(const char*, int)`: a function pointer whose calling convention is a macro
+ * parses as a function called `err_t` taking `CALLCONV* find`. The declared name is the pointer.
+ */
+function macroFunctionPointer(fn: Node | null | undefined): string | null {
+  if (!fn || fn.parent?.type !== 'function_declarator') return null;
+  const params = (field(fn, 'parameters')?.namedChildren ?? []).filter(c => c?.type === 'parameter_declaration');
+  if (params.length !== 1) return null;
+  const ptr = field(params[0]!, 'declarator');
+  if (ptr?.type !== 'pointer_declarator') return null;
+  const id = field(ptr, 'declarator');
+  return id?.type === 'identifier' ? id.text : null;
 }
 
 const declaration: Visitor = (node, ctx) => declare(node, ctx, false);

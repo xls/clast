@@ -536,7 +536,7 @@ export interface GrepArgs {
 /** Non-indexed text files, cached per project (re-listed at most once a minute). */
 const otherFilesCache = new WeakMap<object, { at: number; files: string[] }>();
 
-function otherTextFiles(ctx: ToolContext): string[] {
+export function otherTextFiles(ctx: ToolContext): string[] {
   const hit = otherFilesCache.get(ctx.indexer);
   if (hit && Date.now() - hit.at < 60_000) return hit.files;
   const files = ctx.indexer.rules.otherTextFiles();

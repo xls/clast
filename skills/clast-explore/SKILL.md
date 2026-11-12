@@ -27,6 +27,8 @@ right after you edit. Answers come back as compact text with `path:line` locatio
 | What implements / extends / overrides X? | `clast_hierarchy` |
 | Where does this string / comment / config key appear? | `clast_grep` (hits are labelled with their function) |
 | What did my change touch, and what may break? | `clast_changes` (vs HEAD or a base ref) |
+| I am about to change or delete X: what else must change, which tests do I run? | `clast_impact` (overrides and declarations, callers by file and line, tests that reach it) |
+| What is dead code here? What did the refactor leave behind? | `clast_unused` (whole project or a path; candidates, confirm with the compiler or tests) |
 | How many X are there? How big is it, what is it made of? Endpoints, database access, dependencies? | `clast_stats` (exact totals grouped by directory, kind or name; do not tally search results by hand) |
 
 ## Habits that save round trips

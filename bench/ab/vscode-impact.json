@@ -1,0 +1,17 @@
+[
+  {
+    "id": "signature-change-count",
+    "q": "IKeybindingService.softDispatch (src/vs/platform/keybinding/common/keybinding.ts) gets a new required parameter. In how many production (non-test) files are there call sites that must be updated? Give the number and list the files.",
+    "expect": ["14", "contentHoverController.ts", "modalEditorPart.ts", "terminalInstance.ts", "markersView.ts"]
+  },
+  {
+    "id": "test-for-symbol",
+    "q": "Which test file directly tests AbstractKeybindingService.softDispatch, and which other classes implement softDispatch and would have to change with it? Name the test file and the mock class.",
+    "expect": ["abstractKeybindingService.test.ts", "MockKeybindingService"]
+  },
+  {
+    "id": "dead-code-file",
+    "q": "Is there an exported function in src/vs/base/common/validation.ts that nothing in the repository uses? Name it.",
+    "expect": ["vLazy"]
+  }
+]

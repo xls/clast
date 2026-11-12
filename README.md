@@ -36,7 +36,7 @@ claude mcp add -s user clast clast-ai
 ```
 
 `-s user` registers the server for all projects. Restart Claude Code (or "Developer: Reload Window" in
-VS Code) and run `/mcp`: `clast` should be listed with 13 tools. The first start indexes the project in
+VS Code) and run `/mcp`: `clast` should be listed with 15 tools. The first start indexes the project in
 the background (seconds, about half a minute for 15k files); until that first index is ready the tools
 answer with the build progress and ask to be called again. Later starts are ready immediately.
 
@@ -78,6 +78,8 @@ The project root is `CLAST_PROJECT_DIR`, else `CLAUDE_PROJECT_DIR`, else the wor
 | `clast_hierarchy` | What implements / extends / overrides X? | Supertypes and transitive subtypes; Ruby mixins; Go interface satisfaction by method set (names plus parameter / result counts); the same method across related types; `within` path filter |
 | `clast_grep` | Where does this text appear? | Literal or regex search over all text files; each hit is labelled with its enclosing function |
 | `clast_changes` | What did this diff touch? | Symbols changed vs HEAD or a base ref, their callers outside the change, and the tests that exercise them |
+| `clast_impact` | What breaks if I change X? Which tests do I run? | Declarations, overrides and implementations that must change together; every direct caller by file and line; how far it reaches through indirect callers; the test files that call it directly or through its callers |
+| `clast_unused` | What is dead code? | Functions, methods and types nothing references (or only other unused code does), by file with line ranges; code used only by tests; names that only appear in strings or non-code files |
 | `clast_stats` | How many X are there? What does this code base consist of? | Exact totals grouped by directory, file, kind or name; inventory, endpoints, database access, dependencies |
 | `clast_status` | Is the index healthy? | Counts, languages, indexing progress, watcher state |
 | `clast_reindex` | Rebuild | Rarely needed; incremental rescan or forced rebuild |
@@ -152,6 +154,8 @@ clast-ai hierarchy Shape
 clast-ai refs DEFAULT_CONFIG
 clast-ai grep "TODO" --path src
 clast-ai changes main                  # symbols changed vs main and their impact
+clast-ai impact Shape.area             # what must change with it, callers, tests to run
+clast-ai unused src/billing            # dead code under a directory (or the whole project)
 clast-ai index --force                 # rebuild the index
 clast-ai parse file.go                 # debug: what the extractor sees
 ```
@@ -297,6 +301,11 @@ output above cached prompt tokens, so it is the closest single number to "tokens
 | Small implementation tasks | OnAir | 6 | 11.5 / 12.8 | 39 s / 40 s | $0.58 / $0.56 | 6 / 6 |
 | Cross-cutting refactors (rename a method in 28 files, add a parameter and update all callers) | vscode | 4 | 21.8 / 22.0 | 47 s / 48 s | $0.45 / $0.37 | 4 / 4 |
 | Cross-cutting refactors | OnAir | 4 | 9.8 / 7.8 | 26 s / 25 s | $0.25 / $0.24 | 4 / 4 |
+| Before a change (tests that reach a function, files to edit for a signature change, dead functions in a file) | vscode | 9 | 2.3 / 2.2 | 19.3 s / 19.8 s | $0.098 / $0.154 | 9 / 9 |
+| Before a change | OnAir | 9 | 1.7 / 3.6 | 14.3 s / 17.4 s | $0.126 / $0.173 | 9 / 9 |
+| Find dead code in a directory ("five unused functions under app/", answers checked by hand) | OnAir | 2 | 2.0 / 16.0 | 20 s / 124 s | $0.15 / $1.89 | 2 / 2 |
+| Questions that describe behaviour without naming anything ("what takes out the spike in the middle of the spectrum") | OnAir | 12 | 1.8 / 4.2 | 12.0 s / 20.5 s | $0.068 / $0.197 | 12 / 12 |
+| Questions that describe behaviour | vscode | 12 | 1.0 / 1.0 | 11.7 s / 11.8 s | $0.048 / $0.044 | 12 / 12 |
 
 What this says:
 
@@ -307,6 +316,17 @@ What this says:
   does not make that faster, it only returns a little less text.
 - **Counting is faster and exact** with `clast_stats`. With grep the agent tallied matches by hand and
   was off by one in one of three runs.
+- **Finding dead code is the largest gap measured**: one `clast_unused` call and a confirming grep
+  against 11-21 greps, a sixth of the time and a thirteenth of the cost. Every function either arm
+  named was verified unused, and all ten the grep sessions found are in clast's list.
+- **Describing behaviour instead of naming it** works on a repository the model has never seen
+  (OnAir): search over names, comments and what function bodies mention finds the place in one or two
+  calls where grep needs four rounds of guessing words. On vscode it is a tie at one call, because the
+  model already knows where things are in vscode; that row measures the model's memory, not the tools.
+- **Questions before a change are cheaper, not always faster.** With `clast_impact` and `clast_unused`
+  the sessions cost 27-36% less because the agent reads less tool output. The clear win is "which
+  tests reach this function when none names it": 1 call and 11 s against 5.7 calls and 22 s on OnAir.
+  "Which files do I edit for a signature change" is one grep and stays a tie.
 - **Implementation work showed no benefit**, neither small features nor cross-cutting refactors. Both
   arms made the same edits in the same files in the same time (refactors were also checked for
   completeness: nothing of the old name or call shape left). Finding every occurrence of one name is
@@ -318,8 +338,9 @@ What this says:
 One result changed the server itself. Claude Code defers MCP tools behind its tool search by default,
 and in that state the agent never called clast: 0 of 60 sessions, every question answered with Grep.
 The navigation tools now ask the client to keep them loaded, after which the agent used clast in every
-question session where it helped. The cost is about 4.4k tokens of tool definitions and instructions in
-the cached prompt (measured: 23.7k against 19.3k prompt tokens for a session that calls no tool).
+question session where it helped. The cost is about 5k tokens of tool definitions and instructions in
+the cached prompt (measured with 13 tools: 23.7k against 19.3k prompt tokens for a session that calls
+no tool; `clast_impact` and `clast_unused` add about 0.6k).
 
 Reproduce with `node bench/ab.mjs <repo> bench/ab/<set>.json --runs 3`. The question sets are in
 `bench/ab/`.
@@ -360,6 +381,15 @@ New tools (7 to 13):
 - `clast_overview`: map of a repository or directory.
 - `clast_grep`: text search over all text files with the enclosing symbol on every hit.
 - `clast_changes`: symbols touched by a git diff, plus their callers.
+- `clast_impact`: for one symbol, what has to change with it (declarations, overrides, implementations,
+  overloads), every direct caller by file and line, the reach through indirect callers, and the test
+  files to run, including tests that only reach it through its callers.
+- `clast_unused`: dead code. A name counts as unused when it is never referenced outside its own
+  definitions, or only from other unused code (so a deleted feature's helpers are found with it).
+  Reported separately: code used only by tests, names that still appear in a string, config or
+  template, and (Java, C#, C, C++, Rust) methods whose every call binds to another definition. Left
+  out, with counts: entry points, decorated or attribute-marked symbols, subclasses of library types
+  and their methods, object-literal members, exported Go methods, C# extension classes.
 - `clast_stats`: exact counts grouped by directory, file, kind or name: inventory, symbols by name
   pattern, direct and indirect subtypes, call sites by name and receiver, text matches, external
   dependencies, and pattern-based inventories of HTTP / RPC endpoints and database access.
@@ -393,13 +423,15 @@ Other:
 
 - Swift and Dart added (14 languages).
 - All dependencies updated (MCP SDK 1.32, web-tree-sitter 0.27).
-- 270 tests, plus `bench/bench.mjs`, `bench/resolution.mjs` and the A/B harness `bench/ab.mjs`.
+- 283 tests, plus `bench/bench.mjs`, `bench/resolution.mjs` and the A/B harness `bench/ab.mjs`.
 - The navigation tools ask Claude Code to keep them loaded instead of deferring them behind tool
   search; deferred, the agent never called them.
 - Ruby classes and their ancestors are compared by qualified name (`Rails::Generators::Base` is not
   `ActiveRecord::Base`; `Thor::Group` is not a project class called `Group`).
 - C++ functions declared through a head-building macro (`FN(jstring, nativeStart)(args)`) are indexed
   under their real name.
+- C / C++ function pointers whose calling convention is a macro (`err_t (MY_CALL* find)(args)`) are
+  indexed as a field called `find`, not as a method called `err_t`.
 
 ### Upgrading from 0.1
 
@@ -407,7 +439,7 @@ Other:
 - The index moved from `.clast/clast.db` (sql.js) to `.clast/index.db` (`node:sqlite`). Nothing is
   migrated: the index is a cache and is rebuilt on first start. The old file is ignored and can be
   deleted.
-- A later schema change deletes and rebuilds the index automatically (the schema is at version 25).
+- A later schema change deletes and rebuilds the index automatically (the schema is at version 26).
 - Tool output is compact text instead of JSON.
 - `clast_call_graph` defaults to depth 1 and gained `within` and `includeTests`.
 - The binary entry point is `dist/cli.js`; `dist/server/index.js` still starts the server for old configs.
@@ -434,6 +466,13 @@ Other:
   inferred from imports, not from go.mod.
 - **Swift**: the grammar fails on some files depending on parse order, which can drop a class while
   keeping its members. Swift and Dart are new and less exercised.
+- **Dead code is judged by name**: a member whose name is also used by other symbols (`get`, `run`,
+  `close`) is never listed, so the list is incomplete for common method names; calls built from
+  strings at run time are only caught when the prefix is a literal (`getattr(x, "as_" + vendor)`).
+  In a spot check of 8-12 random findings per repository (kafka, aspnetcore, vscode, django, tokio,
+  hugo, OnAir) against a word grep, the remaining wrong ones were convention-based discovery (Django
+  `AppConfig` classes inside Django itself). Treat the list as candidates and let the compiler or the
+  tests confirm a deletion.
 - **Search is lexical**: a description that shares no word with the code finds the neighbourhood, not
   always the function.
 - **Not indexed**: Kotlin, Scala and other languages without a bundled grammar. `clast_grep` still
