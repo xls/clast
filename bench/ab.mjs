@@ -139,12 +139,24 @@ function runOne(question, arm) {
         rec.diff = collectDiff();
         rec.diffLines = rec.diff.split('\n').filter(l => /^[+-][^+-]/.test(l)).length;
         rec.files = [...rec.diff.matchAll(/^diff --git a\/(\S+)/gm)].map(m => m[1]);
+        // "mustNotRemain": a pattern that a complete change leaves nowhere (the old name, the old call shape).
+        if (question.mustNotRemain) {
+          const left = git('grep', '-I', '-E', '-c', question.mustNotRemain, '--', ...(question.paths || ['.'])).stdout || '';
+          rec.remaining = left.split('\n').filter(Boolean).reduce((n, l) => n + Number(l.slice(l.lastIndexOf(':') + 1)), 0);
+          rec.remainingFiles = left.split('\n').filter(Boolean).length;
+        }
         resetRepo();
       }
       const answer = (question.task ? rec.diff : rec.answer || '').toLowerCase().replaceAll('\\', '/');
       const hits = question.expect.filter(e => answer.includes(e.toLowerCase()));
-      rec.score = hits.length / question.expect.length;
       rec.missing = question.expect.filter(e => !hits.includes(e));
+      if (question.mustNotRemain) {
+        // Half for the expected strings, half for completeness (nothing of the old form left).
+        rec.score = 0.5 * (hits.length / question.expect.length) + 0.5 * (rec.remaining === 0 ? 1 : 0);
+        if (rec.remaining) rec.missing.push(`${rec.remaining} left in ${rec.remainingFiles} files`);
+      } else {
+        rec.score = hits.length / question.expect.length;
+      }
       done(rec);
     });
   });

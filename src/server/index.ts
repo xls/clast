@@ -16,19 +16,17 @@ import { changes, fileSummary, grep, overview, references, reindex, status } fro
 import { stats } from '../tools/stats.js';
 import { VERSION } from '../version.js';
 
-const INSTRUCTIONS = `Clast is a pre-built, always-fresh code index for this repository (symbols, call graph, references, imports). Its tools answer in one call what would otherwise take several grep + file-read round trips, and they return exact file:line locations.
+const INSTRUCTIONS = `Clast is a pre-built, always-fresh code index for this repository. One call answers what otherwise takes several grep + read round trips, with exact file:line locations. Use it first for code navigation:
+- Unfamiliar repo or directory -> clast_overview, then clast_file_summary.
+- Where is X / what is it called -> clast_search (names, partial names, Class.method, or words describing behaviour).
+- Show me X, or before editing X -> clast_get_context (source of that symbol plus callers and callees).
+- Who calls X, what breaks if I change X -> clast_call_graph (depth N), clast_references (every use, including types and imports).
+- What implements / extends / overrides X, which base class to extend -> clast_hierarchy.
+- How many X, how big, what is it made of -> clast_stats (exact totals; do not count search results by hand).
+- Strings, comments, config keys -> clast_grep. After a change -> clast_changes (touched symbols, affected callers, tests).
 
-Use it first for code navigation:
-- Unfamiliar repo or directory -> clast_overview, then clast_file_summary on a directory or file.
-- "Where is X defined / what is it called?" -> clast_search (accepts exact names, partial or abbreviated names, Class.method, or plain words describing the behaviour).
-- "Show me X" / before editing X -> clast_get_context (returns the source of just that symbol plus its callers and callees; no need to read the whole file).
-- "Who calls X / what breaks if I change X?" -> clast_call_graph (callers/callees, depth N) and clast_references (every usage, including non-call uses, types and imports).
-- "What implements / extends / overrides X?" -> clast_hierarchy.
-- Text that is not a symbol (strings, comments, config keys) -> clast_grep (matches are labelled with the enclosing function).
-- "How many X are there / how big is this / what does it consist of?" -> clast_stats (exact totals grouped by directory, kind or name; inventory, endpoints, database access, dependencies). Do not count search results by hand.
-- Reviewing or finishing a change -> clast_changes (symbols touched by the git diff, their callers, and the tests that exercise them).
-
-Tips: most tools accept several names at once (arrays) - batch lookups instead of calling repeatedly. Symbols can be addressed as name, Container.name, or path/to/file.ext:name. Results marked "?" are name-based guesses. The index updates itself when files change; edits you make are visible immediately.`;
+When implementing a change: find the sibling implementations with clast_hierarchy or clast_search, read one with clast_get_context, and list every caller or switch you must update with clast_call_graph / clast_references before editing.
+Most tools take several names at once (arrays). Symbols: name, Container.name, or path/to/file.ext:name. "?" marks a name-based guess. The index follows file changes, including your own edits.`;
 
 const text = (t: string) => ({ content: [{ type: 'text' as const, text: t }] });
 
@@ -75,7 +73,7 @@ export async function startServer(): Promise<void> {
     {
       title: 'Search symbols',
       description:
-        'Ranked symbol search (functions, classes, methods, types, variables). Query by exact name, partial or abbreviated name ("parseConf", "pcfg"), typo, qualified name ("Parser.parse"), or plain words describing behaviour ("resolve import path": matched against names, signatures, docs, and the identifiers used inside function bodies). Returns kind, qualified name, file:line, signature and doc summary. Prefer over grep for finding definitions. An array runs several searches in one call.',
+        'Ranked symbol search. Query by exact, partial or abbreviated name ("parseConf", "pcfg"), typo, "Class.method", or plain words describing behaviour (matched against names, signatures, docs and the identifiers used in function bodies). Returns kind, qualified name, file:line, signature and doc summary. Prefer over grep for finding definitions. Array = several searches.',
       inputSchema: {
         query: names.describe('Name, partial name, Container.name, or descriptive words. Array = several searches.'),
         kind: z.enum(SYMBOL_KINDS as [string, ...string[]]).optional().describe('Only this kind of symbol'),
@@ -95,7 +93,7 @@ export async function startServer(): Promise<void> {
     {
       title: 'Symbol source and context',
       description:
-        'One symbol in one call: its exact source (fresh from disk, with line numbers and doc comment) plus callers, callees, overloads, overrides and, for classes, members and sub/supertypes. Use INSTEAD of reading a whole file when you need a specific function, method or class. Address as "name", "Class.method", "path/file.ext:name" or "path/file.ext:<line>"; ambiguous names list their candidates. An array fetches several symbols at once.',
+        'One symbol in one call: its exact source with line numbers plus callers, callees, overloads, overrides and, for classes, members and sub/supertypes. Use INSTEAD of reading a whole file, and before editing a symbol. Address as "name", "Class.method", "path/file.ext:name" or "path/file.ext:<line>". Array = several symbols.',
       inputSchema: {
         name: names.describe('Symbol name, Container.name, or path:name. Array = several symbols.'),
         path: z.string().optional().describe('Disambiguate by file or directory path'),
@@ -114,7 +112,7 @@ export async function startServer(): Promise<void> {
     {
       title: 'Call graph',
       description:
-        'Callers and/or callees of a function, method or class as a tree with file:line per edge (depth > 1 follows the chain). Use to see the blast radius before changing something, or to trace a request path. Calls are resolved by receiver type, imports and inheritance (a call through an interface counts for its implementations); "?" marks unconfirmed name-only matches. Test callers are summarised by default. Names not defined in the project (library functions) list their call sites by name.',
+        'Callers and/or callees as a tree with file:line per edge; depth > 1 follows the chain. Use for the blast radius before a change (every caller to update) or to trace a path. Resolved by receiver type, imports and inheritance; "?" marks name-only matches. Test callers are summarised. Library names list their call sites.',
       inputSchema: {
         name: z.string().describe('Symbol name, Container.name, or path:name'),
         path: z.string().optional().describe('Disambiguate by file or directory path'),
@@ -136,7 +134,7 @@ export async function startServer(): Promise<void> {
     {
       title: 'Type hierarchy',
       description:
-        'Supertypes and subtypes of a class, interface, struct or trait (transitive, as a tree): what it extends/implements and everything that extends/implements it, including Go types that satisfy an interface by method set. Given a method, lists the same method on related types (interface declaration, overrides, implementations). Use for "what implements X", "which classes override Y", "what does Z inherit from".',
+        'Supertypes and all direct and indirect subtypes of a class, interface, struct or trait as a tree (including Go interface satisfaction). For a method: the same method on related types (declaration, overrides, implementations). Use for "what implements X", "which classes override Y", "which base class do the others extend".',
       inputSchema: {
         name: z.string().describe('Type or method: name, Container.name, or path:name'),
         path: z.string().optional().describe('Disambiguate by file or directory path'),
@@ -156,7 +154,7 @@ export async function startServer(): Promise<void> {
     {
       title: 'Find references',
       description:
-        'Every place an identifier is used in code (calls, type annotations, imports, assignments), grouped by file, each line shown with its text and the enclosing function/class. Faster and more precise than grep -w: it only matches real identifiers (not substrings, strings or comments) and tells you which symbol each usage sits in. Use for variables, types, fields and constants, or when clast_call_graph is too narrow.',
+        'Every use of an identifier (calls, type annotations, imports, assignments) grouped by file, each line with its enclosing function/class. Matches real identifiers only, not substrings, strings or comments. Use for variables, types, fields, constants and enum members, or when clast_call_graph is too narrow.',
       inputSchema: {
         name: z.string().describe('Identifier (or Container.name; matching is by the last name segment)'),
         path: z.string().optional().describe('Only references in files under / matching this path'),
@@ -174,7 +172,7 @@ export async function startServer(): Promise<void> {
     {
       title: 'File or directory outline',
       description:
-        'Outline of a file: every symbol as an indented tree of signatures with line ranges and doc summaries, plus what the file imports and which files import it. Use INSTEAD of reading a file to learn its structure, then fetch only the symbols you need with clast_get_context. Given a directory, lists its files with their main symbols and sub-directories with sizes. Partial paths are resolved ("queries.ts", "db/queries").',
+        'Outline of a file: symbols as a tree of signatures with line ranges and doc summaries, plus its imports and importers. Use INSTEAD of reading a file to learn its structure. For a directory: its files with main symbols and sub-directories with sizes. Partial paths work ("db/queries").',
       inputSchema: {
         path: z.string().describe('File or directory path (relative; partial paths are matched)'),
         members: z
@@ -194,7 +192,7 @@ export async function startServer(): Promise<void> {
     {
       title: 'Repository map',
       description:
-        'Compact map of the repository (or a sub-directory): languages, directory layout with sizes, the most widely referenced classes/functions, hub files that many others import, and entry points. Call this first in an unfamiliar codebase instead of listing directories and opening files.',
+        'Map of the repository or a sub-directory: languages, layout with sizes, most referenced classes/functions, hub files, entry points. Call first in an unfamiliar codebase.',
       inputSchema: {
         path: z.string().optional().describe('Sub-directory to map (default: whole repository)'),
       },
@@ -209,7 +207,7 @@ export async function startServer(): Promise<void> {
     {
       title: 'Text search with symbol context',
       description:
-        'Search the text of indexed source files (literal by default, regex optional, smart-case). Each matching line is labelled with the function/class it is inside, so you can jump straight to clast_get_context. Use for string literals, comments, error messages, config keys and other non-identifier text; for identifiers prefer clast_search / clast_references.',
+        'Text search over all text files (literal or regex, smart-case); each hit is labelled with its enclosing function/class. Use for strings, comments, error messages and config keys; for identifiers prefer clast_search / clast_references.',
       inputSchema: {
         pattern: z.string().describe('Text to find (literal unless regex=true)'),
         regex: z.boolean().default(false).describe('Interpret pattern as a JavaScript regular expression'),
@@ -230,7 +228,7 @@ export async function startServer(): Promise<void> {
     {
       title: 'Count and aggregate',
       description:
-        'Exact counts over the whole repository for "how many ..." questions, grouped by directory, file, kind or name: no need to tally search results by hand. what=inventory (default): files and lines per language, production vs tests vs vendored, symbols by kind, longest functions, largest files and types. what=symbols: definitions matching a name pattern ("*Receiver", "*Controller|*Service") and/or kind. what=subtypes: all direct and indirect subclasses / implementers of a type. what=calls: call sites of a name ("query|execute"), optionally only on a receiver ("*Repository|db"). what=text: regex matches. what=imports: external dependencies. what=endpoints: HTTP / RPC route declarations of common frameworks. what=database: SQL, schema, ORM models and query calls (heuristic).',
+        'Exact counts for "how many ..." questions, grouped by directory, file, kind or name; do not tally search results by hand. what = inventory (size, languages, production vs tests, symbols by kind, longest functions), symbols (name pattern "*Receiver|*Service" and/or kind), subtypes (direct and indirect subclasses / implementers), calls (call sites of "query|execute", optionally on a receiver), text (regex), imports (external dependencies), endpoints (route declarations of common web frameworks), database (SQL, schema, ORM models, query calls; heuristic).',
       inputSchema: {
         what: z.enum(['inventory', 'symbols', 'subtypes', 'calls', 'text', 'imports', 'endpoints', 'database']).optional()
           .describe('What to count (default inventory, or symbols when name is given)'),
@@ -272,7 +270,6 @@ export async function startServer(): Promise<void> {
       description: 'Index statistics and health: files, symbols, languages, whether indexing is in progress, watcher state.',
       inputSchema: {},
       annotations: READ_ONLY,
-      _meta: ALWAYS_LOAD,
     },
     guard(() => status(ctx, watcher), false)
   );

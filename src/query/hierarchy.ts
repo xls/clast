@@ -176,8 +176,10 @@ export function directSupertypes(db: ClastDb, resolver: Resolver, sym: SymbolRow
   const out: SuperEdge[] = [];
   const seen = new Set<string>();
   for (const row of rows) {
-    if (seen.has(row.name)) continue;
-    seen.add(row.name);
+    // (`include Thor::Actions` and `include Rails::Generators::Actions` are two supertypes.)
+    const key = `${row.qualifier ?? ''}::${row.name}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
     const isType = (s: SymbolRow): boolean =>
       (CONTAINER_KINDS.has(s.kind) || s.kind === 'type') && s.id !== sym.id && !isStaticClass(s) &&
       // Rust associated types (`type Future = ...` inside an impl) are not the trait `Future`.
@@ -198,9 +200,10 @@ export function directSupertypes(db: ClastDb, resolver: Resolver, sym: SymbolRow
       if (lex) target = { sym: lex, score: 95 };
       // Ruby: an unqualified constant that no enclosing scope defines is not some class of that name
       // nested elsewhere (`class SlowRedis < Redis` at top level means the gem's Redis).
-      else if (sym.lang === 'ruby' && !row.qualifier) target = undefined;
+      // The same holds for a qualified one: `Thor::Group` is not some other class called Group.
+      else if (sym.lang === 'ruby') target = undefined;
     }
-    if (!target && row.qualifier) {
+    if (!target && row.qualifier && sym.lang !== 'ruby') {
       // Qualified by an enclosing type / namespace that is part of the qualified name.
       const want = row.qualifier + '.' + row.name;
       const direct = db.symbolsByName(row.name).find(s => isType(s) && (s.qname === want || s.qname.endsWith('.' + want)));

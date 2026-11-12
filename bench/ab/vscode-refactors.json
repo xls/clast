@@ -1,0 +1,18 @@
+[
+  {
+    "id": "rename-soft-dispatch",
+    "task": true,
+    "q": "Rename the keybinding service method softDispatch to softDispatchKey. Update the interface, every implementation (including test doubles and mocks) and every caller in src/ and extensions/, so that nothing refers to the old name any more.",
+    "expect": ["softDispatchKey", "src/vs/platform/keybinding/common/keybinding.ts", "src/vs/platform/keybinding/common/abstractKeybindingService.ts", "src/vs/workbench/contrib/terminal/browser/terminalInstance.ts", "src/vs/platform/list/browser/listService.ts"],
+    "mustNotRemain": "\\bsoftDispatch\\b",
+    "paths": ["src", "extensions"]
+  },
+  {
+    "id": "quick-access-param",
+    "task": true,
+    "q": "Add a required third parameter includeDisabled: boolean to getQuickAccessProvider on the quick access registry. When it is false the behaviour stays as it is now. Update the interface, the implementation and every caller including tests; existing callers pass false.",
+    "expect": ["includeDisabled: boolean", "src/vs/platform/quickinput/common/quickAccess.ts", "src/vs/platform/quickinput/browser/quickAccess.ts", "src/vs/platform/quickinput/browser/helpQuickAccess.ts", "unifiedQuickAccess.ts", "quickAccess.test.ts"],
+    "mustNotRemain": "getQuickAccessProvider\\([^,()]*(\\([^()]*\\))?[^,()]*,[^,()]*(\\([^()]*\\))?[^,()]*\\)[^:]",
+    "paths": ["src"]
+  }
+]

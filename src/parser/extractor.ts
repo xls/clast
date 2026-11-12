@@ -448,7 +448,8 @@ export function extract(tree: Tree, source: string, compiled: CompiledSpec): Ext
       const bare = parts.pop();
       if (!bare) return;
       const qualifier = parts.length ? parts[parts.length - 1]! : null;
-      if (heritage.some(h => h.symbol === sym && h.name === bare)) return;
+      // (`include Thor::Actions` and `include Rails::Generators::Actions` are two different supertypes.)
+      if (heritage.some(h => h.symbol === sym && h.name === bare && (h.qualifier ?? null) === (qualifier ?? null))) return;
       heritage.push({ symbol: sym, name: bare, qualifier, kind, arity });
     },
 

@@ -308,6 +308,21 @@ describe('cpp extraction', () => {
     for (const s of ex.symbols) assert.ok(!/[\s()*&]/.test(s.name), `garbage name ${s.name}`);
   });
 
+  it('names a function declared through a head-building macro by the macro\'s last argument', async () => {
+    // JNI style, found on OnAir: these were indexed as `jstring.nativeStart` and `FN`.
+    const ex = await extractSource('jni.cpp', [
+      '#define FN(ret, name) extern "C" ret Java_pkg_##name',
+      'static void pushGain(int b) {}',
+      'FN(jstring, nativeStart)(JNIEnv* e, jobject, jint kind) {',
+      '    pushGain(1);',
+      '    return nullptr;',
+      '}',
+      'FN(void, nativeStop)(JNIEnv* e, jobject) { pushGain(2); }',
+    ].join('\n'));
+    assert.deepEqual(symbolList(ex), ['macro FN', 'function pushGain', 'function nativeStart', 'function nativeStop']);
+    assert.deepEqual(callList(ex), ['nativeStart -> pushGain', 'nativeStop -> pushGain']);
+  });
+
   it('gives each declarator of a multi-declarator member its own signature', async () => {
     const ex = await extractSource('a.cc', SRC);
     assert.equal(sym(ex, 'geo.detail.Box.x_').signature, 'int x_');

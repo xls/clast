@@ -537,6 +537,7 @@ export class Resolver {
   private importNameCache = new Map<number, ImportedNames>();
   private candidateCache = new Map<string, SymbolRow[]>();
   private ancestorCache = new Map<number, Set<string>>();
+  private rubyAncestorCache = new Map<number, Set<string>>();
   private relatedCache = new Map<string, { anc: Set<string>; desc: Set<string> }>();
   private familyCache = new Map<number, Set<number>>();
   private familyCountCache = new Map<string, number>();
@@ -872,11 +873,68 @@ export class Resolver {
     return false;
   }
 
+  /**
+   * Ruby constants are looked up lexically: `Base` written inside `Rails::Generators::NamedBase` is
+   * `Rails::Generators::Base`, never `ActiveRecord::Base`, and `Thor::Group` is not some other
+   * `Group`. Returns every part of the (possibly reopened) class or module, or nothing when no
+   * enclosing scope defines it (a gem).
+   */
+  private rubyConstant(from: SymbolRow, qualifier: string | null, name: string): SymbolRow[] {
+    const cands = this.db.symbolsByName(name).filter(s => CONTAINER_KINDS.has(s.kind) && s.lang === 'ruby');
+    if (cands.length === 0) return [];
+    const parts = from.qname.split('.');
+    const tail = (qualifier ? qualifier.replace(/::/g, '.').replace(/^\./, '') + '.' : '') + name;
+    for (let n = parts.length; n >= 0; n--) {
+      const want = (n ? parts.slice(0, n).join('.') + '.' : '') + tail;
+      const hits = cands.filter(s => s.qname === want && s.id !== from.id);
+      if (hits.length) return hits;
+    }
+    return [];
+  }
+
+  /**
+   * Qualified names of the Ruby ancestors (superclasses and mixins) of a class or module, found
+   * by lexical constant lookup. All parts of a reopened class contribute their own heritage.
+   */
+  rubyAncestors(containerId: number): Set<string> {
+    let set = this.rubyAncestorCache.get(containerId);
+    if (set) return set;
+    set = new Set<string>();
+    const start = this.db.symbolById(containerId);
+    let frontier: SymbolRow[] = start
+      ? this.db.symbolsByName(start.name).filter(s => s.qname === start.qname && s.lang === 'ruby' && CONTAINER_KINDS.has(s.kind))
+      : [];
+    for (let depth = 0; depth < 8 && frontier.length; depth++) {
+      const next: SymbolRow[] = [];
+      for (const sym of frontier) {
+        for (const row of this.db.all<{ name: string; qualifier: string | null }>(
+          `SELECT name, qualifier FROM heritage WHERE symbol_id = ?`, sym.id
+        )) {
+          for (const parent of this.rubyConstant(sym, row.qualifier, row.name)) {
+            if (parent.qname === start?.qname) continue;
+            if (!set.has(parent.qname)) next.push(parent);
+          }
+        }
+      }
+      for (const p of next) set.add(p.qname);
+      frontier = next.slice(0, 48);
+    }
+    this.rubyAncestorCache.set(containerId, set);
+    return set;
+  }
+
   /** Names of the classes a container extends/implements, transitively (bounded). */
   ancestorsOf(containerId: number): Set<string> {
     let set = this.ancestorCache.get(containerId);
     if (set) return set;
     set = new Set<string>();
+    const self = this.db.symbolById(containerId);
+    if (self?.lang === 'ruby') {
+      // By identity, then reported as names for the callers that compare names.
+      for (const q of this.rubyAncestors(containerId)) set.add(q.slice(q.lastIndexOf('.') + 1));
+      this.ancestorCache.set(containerId, set);
+      return set;
+    }
     let frontier = [containerId];
     for (let depth = 0; depth < 5 && frontier.length; depth++) {
       const next: number[] = [];
@@ -1208,13 +1266,23 @@ export class Resolver {
 
     // The caller's own class. Where classes cannot be split over files, a class of the same name
     // in another file (one `DatabaseSchemaEditor` per backend) is a different class.
+    // Ruby: classes are open (many files) but identified by their full name. `Base` is a different
+    // class in every namespace, so the caller's class and its ancestors are compared by qualified name.
+    const rubyCallerQ =
+      site.lang === 'ruby' && callerC !== null && callerC.id !== null && parent !== null && CONTAINER_KINDS.has(parent.kind)
+        ? this.db.symbolById(callerC.id)?.qname ?? null
+        : null;
     const inCallerClass =
-      isMember && callerC !== null && container === callerC.name &&
-      (!SINGLE_FILE_CLASS.has(fam) || sameFile || callerC.id === null || parent === null ||
-        !CONTAINER_KINDS.has(parent.kind) || parent.id === callerC.id);
+      rubyCallerQ !== null
+        ? isMember && parent!.qname === rubyCallerQ
+        : isMember && callerC !== null && container === callerC.name &&
+          (!SINGLE_FILE_CLASS.has(fam) || sameFile || callerC.id === null || parent === null ||
+            !CONTAINER_KINDS.has(parent.kind) || parent.id === callerC.id);
     const inCallerAncestors = (): boolean =>
-      isMember && callerC !== null && container !== null &&
-      (callerC.id !== null ? this.ancestorsOf(callerC.id).has(container) : this.relatedTo(callerC.name).anc.has(container));
+      rubyCallerQ !== null
+        ? isMember && this.rubyAncestors(callerC!.id!).has(parent!.qname)
+        : isMember && callerC !== null && container !== null &&
+          (callerC.id !== null ? this.ancestorsOf(callerC.id).has(container) : this.relatedTo(callerC.name).anc.has(container));
 
     // --- typed receiver: x.foo() where x: T ------------------------------------
     if (site.rtype && recv && !SELF_RECEIVERS.has(recv)) {

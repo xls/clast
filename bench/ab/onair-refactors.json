@@ -1,0 +1,18 @@
+[
+  {
+    "id": "rename-generic-gain",
+    "task": true,
+    "q": "Rename the function genericGain to genericGainFor. Update its declaration, its definition and every caller in the whole repository (core, app, android, tests), so that nothing refers to the old name any more.",
+    "expect": ["genericGainFor", "core/include/dect2/source/gain.h", "core/src/source/gain.cpp", "android/native/src/jni_onair.cpp", "app/ui/statusbar.cpp"],
+    "mustNotRemain": "\\bgenericGain\\(",
+    "paths": ["core", "app", "android", "tests", "tools"]
+  },
+  {
+    "id": "adc-advice-param",
+    "task": true,
+    "q": "Add a required second parameter bool brief to adcAdvice. When brief is true it returns only the first sentence of the advice; when false the result is as it is now. Update the declaration, the definition and every caller in the repository; existing callers pass false.",
+    "expect": ["bool brief", "core/include/dect2/source/gain.h", "core/src/source/gain.cpp", "app/ui/statusbar.cpp", "app/dab/dab_ui.cpp", "app/fm/fm_ui.cpp", "app/atsc3/atsc3_ui.cpp", "app/dtmb/dtmb_ui.cpp", "app/isdbt/isdbt_ui.cpp"],
+    "mustNotRemain": "adcAdvice\\([A-Za-z_:]+\\)",
+    "paths": ["core", "app", "android", "tests", "tools"]
+  }
+]

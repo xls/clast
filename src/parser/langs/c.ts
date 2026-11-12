@@ -491,6 +491,13 @@ const functionDefinition: Visitor = (node, ctx) => {
     const real = nameBehindMacros(name, sig);
     if (real !== name) {
       name = real;
+    } else if (d.fn?.parent?.type === 'function_declarator') {
+      // `FN(jstring, nativeStart)(JNIEnv* e, ...) { ... }`: the macro call is followed by the real
+      // parameter list, so the macro builds the declaration head and its last argument is the name
+      // (the earlier ones are the return type and attributes, not a container).
+      const args = field(d.fn, 'parameters')?.namedChildren ?? [];
+      const last = args[args.length - 1];
+      if (last && last.namedChildCount === 1 && last.firstNamedChild?.type === 'type_identifier') name = last.text;
     } else {
       const m = macroDefinedName(d.fn);
       if (m) ({ name, qualifier } = m);
