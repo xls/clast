@@ -279,7 +279,7 @@ caller search crosses the JNI bridge.
 
 Every figure comes from real headless Claude Code sessions: the same question asked once with clast
 and once with only grep and file reads. The rows below are from a 1.6-million-line C++ application
-that the model had never seen; results on vscode are in the full tables.
+that the model had never seen.
 
 | Kind of work | Tool calls (clast / grep) | Time | Tokens in | Tokens out |
 | --- | ---: | ---: | ---: | ---: |
@@ -340,20 +340,6 @@ does not separate them on correctness.
 Across both: clast needed 1.2 to 1.7 tool calls where grep needed 2.8 to 4.0, a third less time, and
 about a quarter fewer tokens. The questions are in `bench/ab/magpie.json` and
 `bench/ab/deepseek-harness.json`.
-
-### On vscode
-
-The same sessions on vscode (TypeScript, 15,726 files). The model knows vscode from its training,
-so where a question can be answered from memory the two sides tie.
-
-| Kind of work | Tool calls (clast / grep) | Time | Tokens in | Tokens out |
-| --- | ---: | ---: | ---: | ---: |
-| Multi-hop questions | 1.3 / 3.1 | 16.0 s / 19.8 s | 53k / 59k | 0.7k / 1.1k |
-| Before a change (tests that reach a function, signature change, dead functions in a file) | 2.3 / 2.2 | 19.3 s / 19.8 s | 62k / 67k | 0.8k / 1.0k |
-| Simple lookups | 1.4 / 1.4 | 13.9 s / 13.9 s | 54k / 45k | 0.5k / 0.5k |
-| Code described by behaviour | 1.0 / 1.0 | 11.7 s / 11.8 s | 50k / 40k | 0.4k / 0.5k |
-| Small implementation tasks | 7.5 / 8.5 | 30 s / 31 s | 113k / 96k | 2.0k / 2.2k |
-| Cross-cutting refactors | 21.8 / 22.0 | 47 s / 48 s | 127k / 100k | 4.2k / 4.4k |
 
 ### Is the call graph right?
 
