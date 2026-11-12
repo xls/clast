@@ -138,6 +138,26 @@ function bodyMatches(db: ClastDb, terms: string[]): Array<{ sym: SymbolRow; scor
   return out.slice(0, 80);
 }
 
+/** Words of what each symbol's body calls and the receivers it calls them on (`socketChannel.write` -> socket, channel, write). */
+function bodyWords(db: ClastDb, syms: SymbolRow[]): Map<number, string[]> {
+  const out = new Map<number, string[]>();
+  for (let i = 0; i < syms.length; i += 400) {
+    const ids = syms.slice(i, i + 400).map(s => s.id);
+    const rows = db.all<{ id: number; name: string; receiver: string | null; rtype: string | null }>(
+      `SELECT c.caller_id AS id, n.name AS name, c.receiver AS receiver, c.rtype AS rtype
+       FROM calls c JOIN names n ON n.id = c.name_id WHERE c.caller_id IN (${ids.map(() => '?').join(',')})`,
+      ...ids
+    );
+    for (const r of rows) {
+      let words = out.get(r.id);
+      if (!words) out.set(r.id, (words = []));
+      if (words.length > 400) continue;
+      words.push(...splitIdentifier(`${r.name} ${r.receiver ?? ''} ${r.rtype ?? ''}`));
+    }
+  }
+  return out;
+}
+
 /**
  * Ranked symbol search. Accepts an identifier (`parseAndStore`), a partial or
  * abbreviated name (`parseSt`, `pas`), a qualified name (`Indexer.indexAll`),
@@ -302,6 +322,33 @@ export function searchSymbols(db: ClastDb, query: string, opts: SearchOptions = 
         add(most, 26, 'text', textBonus);
       }
     }
+  }
+
+  // 3a. A common name plus context: "write socket" means the `write` that has to do with sockets.
+  // Every definition with exactly that name is a candidate, and the other words choose among them by
+  // what surrounds each one: its container, what its body calls and on which receivers, its signature
+  // and doc comment, its path. Grep cannot do this: it returns every line that says "write".
+  if (isMultiWord && terms.length >= 2) {
+    for (const t of terms) {
+      const context = terms.filter(o => o !== t);
+      const named = db.all<SymbolRow>(`${select} WHERE s.name_lc = ? LIMIT 3000`, t).filter(accept);
+      if (named.length === 0) continue;
+      const bodies = bodyWords(db, named);
+      const hit = (words: string[], term: string): boolean => words.some(w => wordMatches(w, term));
+      add(named, 0, 'context', s => {
+        const container = splitIdentifier(s.qname.slice(0, Math.max(0, s.qname.length - s.name.length)));
+        const text = splitIdentifier(s.signature + ' ' + s.doc).filter(w => w !== t);
+        const path = splitIdentifier(s.path);
+        const body = bodies.get(s.id) ?? [];
+        let sum = 0;
+        for (const c of context) {
+          sum += hit(container, c) ? 1 : hit(text, c) ? 0.8 : hit(body, c) || hit(path, c) ? 0.5 : 0;
+        }
+        // No context word anywhere near it: not this one (scored below every other kind of match).
+        return sum === 0 ? -1000 : 52 + (sum / context.length) * 30;
+      });
+    }
+    for (const [id, h] of found) if (h.score < 0) found.delete(id);
   }
 
   // 3b. Bodies: a description often names what a function *uses* rather than what it is called

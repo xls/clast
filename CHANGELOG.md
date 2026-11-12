@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.2.5
+
+- Search: a common name plus context words ("write socket", "reset viterbi decoder") ranks the
+  definitions of that name by what surrounds each one: its container, signature and doc comment,
+  the calls and receivers in its body, its path. On kafka, "write socket channel" now puts
+  `PlaintextTransportLayer.write` first of 77 definitions called `write` (it was fourth). On OnAir
+  such questions take 1.0 call against 3.6 with grep.
+
 ## 0.2.4
 
 - The server instructions and the usage skill tell the agent not to use clast for a rename or a

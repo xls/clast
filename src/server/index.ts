@@ -19,7 +19,7 @@ import { VERSION } from '../version.js';
 
 const INSTRUCTIONS = `Clast is a pre-built, always-fresh code index for this repository. One call answers what otherwise takes several grep + read round trips, with exact file:line locations. Use it first for code navigation:
 - Unfamiliar repo or directory -> clast_overview, then clast_file_summary.
-- Where is X / what is it called -> clast_search (names, partial names, Class.method, or words describing behaviour).
+- Where is X / what is it called -> clast_search (names, partial names, Class.method, words describing behaviour, or a common name plus context: "write socket").
 - Show me X, or before editing X -> clast_get_context (source of that symbol plus callers and callees).
 - Who calls X -> clast_call_graph (depth N), clast_references (every use, including types and imports).
 - Before changing or deleting X: what else must change, and which tests to run -> clast_impact.

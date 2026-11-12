@@ -12,6 +12,7 @@ Skip clast for one exact name (Grep) and for mechanical edits.
 |----------|------|
 | What is in this repo / directory / file? | `clast_overview`, `clast_file_summary` |
 | Where is the code that does X (no name known)? | `clast_search` with a short description |
+| Which of many same-named definitions? | `clast_search` with the name plus context words (`write socket`) |
 | Show X before editing | `clast_get_context` |
 | Who calls X, N levels up? | `clast_call_graph` (`depth`, `within`) |
 | What implements / extends / overrides X? | `clast_hierarchy` |
