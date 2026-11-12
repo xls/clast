@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.3.1
+
+- Six tools stay loaded in Claude Code instead of eleven (search, call graph, hierarchy, impact,
+  unused, stats); the rest load through tool search. The fixed prompt cost in a project where clast
+  is on drops from about 5.3k to about 3.5k tokens per turn, with the same benchmark results.
+
 ## 0.3.0
 
 - Opt-in per project. The server process still starts in every project, but it indexes and offers
@@ -8,9 +14,6 @@
   `mkdir .clast`) turns it on, also in a running session; deleting the folder turns it off.
   Projects indexed before already have the folder and stay on. `CLAST_ALWAYS=1` restores the old
   behaviour.
-- Six tools stay loaded in Claude Code instead of eleven (search, call graph, hierarchy, impact,
-  unused, stats); the rest load through tool search. The fixed prompt cost in a project where clast
-  is on drops from about 5.3k to about 3.5k tokens per turn, with the same benchmark results.
 - Benchmark tables show tokens in and out instead of price.
 
 ## 0.2.5
