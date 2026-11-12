@@ -6,6 +6,11 @@
   signature change of a distinctive name (one grep finds every site). In the refactor benchmark the
   clast sessions had made about three extra calls on such tasks; after the change they make none
   (8.3 calls against 8.3 for plain grep on OnAir).
+- The usage skills are rewritten as rules only, about 40% smaller.
+- Start-up in a very large folder (a home or temp directory): the directory walk blocked the server,
+  so the client got no answer to its first request and gave up after 30 seconds. The walk now yields
+  every few milliseconds (the server answers in half a second) and stops at 150,000 directories with
+  a warning in `clast_status`.
 
 ## 0.2.3
 
