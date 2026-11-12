@@ -51,8 +51,44 @@ and four slash commands:
 | `/clast:audit [path]` | Inventory for due diligence or onboarding: size, structure, endpoints, database access, dependencies, dead code |
 | `/clast:status` | State of the index |
 
-The plugin starts the server from a global `clast-ai` 0.2.x when there is one, otherwise through
-`npx clast-ai@0.2` (downloaded on first use). Update with `/plugin update clast@clast`.
+The plugin starts the server from a global `clast-ai` that is at least as new as the plugin, otherwise
+through `npx clast-ai@<plugin version>` (downloaded on first use).
+
+### Upgrading from an older install
+
+If clast is already set up the old way (`npm install -g clast-ai` plus `claude mcp add`, or through
+the old VS Code extension), install the plugin and restart. That is all:
+
+```
+/plugin marketplace add xls/clast
+/plugin install clast@clast
+```
+
+The first session after that cleans up in the background, once per plugin version:
+
+- clast servers registered with `claude mcp add`, for all projects or for single ones, are removed
+  (the plugin provides the server; with both, every tool would be listed twice),
+- entries the old VS Code extension wrote into `.claude/settings.local.json` are removed,
+- the v0.1 index file `.clast/clast.db` is deleted (the new index is rebuilt by itself).
+
+Restart Claude Code once more and `/mcp` shows a single `clast` server. A `.mcp.json` that is shared
+with a team is never changed; remove the clast entry there yourself once everyone uses the plugin.
+
+Optional: `npm uninstall -g clast-ai` removes the old global package. The plugin does not need it; it
+only uses a global install that is at least as new as the plugin itself.
+
+To see what would be removed, or to do it by hand (for example when you keep using the plain MCP
+server and only want the old index gone):
+
+```bash
+clast-ai migrate           # report only
+clast-ai migrate --apply   # remove the leftovers
+```
+
+What was removed is logged to `migrate.log` in the plugin's data folder. `CLAST_NO_MIGRATE=1` switches
+the automatic clean-up off.
+
+Later plugin updates: `/plugin marketplace update clast`, then `/plugin update clast@clast`.
 
 ### As a plain MCP server
 
@@ -62,7 +98,8 @@ claude mcp add -s user clast clast-ai
 ```
 
 `-s user` registers the server for all projects. This gives the tools without the skill and the slash
-commands. Use one of the two ways, not both: with both, every tool is listed twice.
+commands. Use one of the two ways, not both: with both, every tool is listed twice (the plugin removes
+a registration made this way when it is installed later).
 
 Either way, restart Claude Code (or "Developer: Reload Window" in VS Code) and run `/mcp`: `clast`
 should be listed with 15 tools. The first start indexes the project in the background (seconds, about
@@ -398,6 +435,14 @@ Known limitations).
 
 ## Changelog
 
+### 0.2.1
+
+- `clast-ai migrate`: finds and removes what older installs left behind (duplicate MCP registrations
+  next to the plugin, entries written by the old VS Code extension, the v0.1 index file). The plugin
+  runs it automatically, once per version, at the first session after an install or update.
+- The plugin uses a global `clast-ai` only when it is at least as new as the plugin itself, so a
+  plugin update is not held back by an older global install.
+
 ### 0.2.0
 
 New tools (7 to 13):
@@ -450,7 +495,7 @@ Other:
 
 - Swift and Dart added (14 languages).
 - All dependencies updated (MCP SDK 1.32, web-tree-sitter 0.27).
-- 283 tests, plus `bench/bench.mjs`, `bench/resolution.mjs` and the A/B harness `bench/ab.mjs`.
+- 290 tests, plus `bench/bench.mjs`, `bench/resolution.mjs` and the A/B harness `bench/ab.mjs`.
 - Installable as a Claude Code plugin from this repository (`/plugin marketplace add xls/clast`,
   `/plugin install clast@clast`): the MCP server, a usage skill, and the slash commands
   `/clast:deadcode`, `/clast:impact`, `/clast:audit` and `/clast:status`. The old VS Code extension
@@ -466,10 +511,12 @@ Other:
 
 ### Upgrading from 0.1
 
+How to upgrade: see [Upgrading from an older install](#upgrading-from-an-older-install). What changed:
+
 - Node.js 22.22+ is required (was 18).
 - The index moved from `.clast/clast.db` (sql.js) to `.clast/index.db` (`node:sqlite`). Nothing is
-  migrated: the index is a cache and is rebuilt on first start. The old file is ignored and can be
-  deleted.
+  migrated: the index is a cache and is rebuilt on first start. The old file is ignored; the plugin
+  (or `clast-ai migrate --apply`) deletes it.
 - A later schema change deletes and rebuilds the index automatically (the schema is at version 26).
 - Tool output is compact text instead of JSON.
 - `clast_call_graph` defaults to depth 1 and gained `within` and `includeTests`.

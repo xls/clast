@@ -1,6 +1,6 @@
 {
   "name": "clast-ai",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "Code index MCP server for LLM coding agents: ranked symbol search, exact symbol source, type-aware call graph, references, type hierarchy and git change impact",
   "main": "dist/engine.js",
   "bin": {
