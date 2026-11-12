@@ -1,0 +1,20 @@
+[
+  {
+    "id": "silence-source",
+    "task": true,
+    "q": "Add a new built-in IQ source called SilenceSource that delivers all-zero samples at the requested sample rate, paced in real time like the existing file and synthetic sources. Build it on the same base class those two use, put it next to them, and leave a short comment on where the device factory would create it.",
+    "expect": ["class SilenceSource : public PacedSource", "core/src/source/source.cpp", "override"]
+  },
+  {
+    "id": "adc-status-verylow",
+    "task": true,
+    "q": "Add a new ADC status value VeryLow (between NoSignal and Low) for a signal more than 12 dB below the existing low threshold. Update the enum, the classifier, the status name and the advice text so that every function that switches over the status handles it.",
+    "expect": ["VeryLow", "core/include/dect2/source/gain.h", "core/src/source/gain.cpp", "case AdcStatus::VeryLow"]
+  },
+  {
+    "id": "vfo-mode-cw",
+    "task": true,
+    "q": "Add a new multi-VFO channel mode Cw (narrow CW audio, default bandwidth 500 Hz) placed before Count in the mode enum. Update every function in the VFO engine code that maps or switches over the mode (name, default bandwidth, decoder check) so the new mode is handled; demodulate it like Usb for now.",
+    "expect": ["Cw", "core/include/dect2/engine/vfo.h", "core/src/engine/vfo.cpp", "500"]
+  }
+]

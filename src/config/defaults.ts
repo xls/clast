@@ -1,7 +1,18 @@
 export interface ClastConfig {
+  /** Language ids to index. Empty = all supported languages. */
   languages: string[];
+  /** Directory / file names (or gitignore-style patterns) to skip. */
   ignoredPaths: string[];
+  /** Honour .gitignore files (root and nested). */
+  respectGitignore: boolean;
+  /** Index location, relative to the project root unless absolute. */
   dbPath: string;
+  /** Files larger than this many bytes are skipped (generated / vendored blobs). */
+  maxFileSize: number;
+  /** Safety cap on the number of source files indexed (e.g. when started in a home directory). */
+  maxFiles: number;
+  /** Parser worker threads for bulk indexing. 0 = auto, 1 = no workers. */
+  workers: number;
   llm: {
     endpoint: string;
     model: string;
@@ -13,39 +24,47 @@ export interface ClastConfig {
     debounceMs: number;
     enabled: boolean;
   };
-  maxBodySize: number;
 }
 
+export const DEFAULT_IGNORED = [
+  'node_modules',
+  '.git',
+  '.hg',
+  '.svn',
+  'dist',
+  'build',
+  'out',
+  '__pycache__',
+  '.venv',
+  'venv',
+  '.clast',
+  'vendor',
+  'target',
+  '.next',
+  '.nuxt',
+  'coverage',
+  '.idea',
+  '.vscode-test',
+  '.gradle',
+  '.tox',
+  '.mypy_cache',
+  '.pytest_cache',
+  'bower_components',
+  'Pods',
+  '*.min.js',
+  '*.min.css',
+  '*.bundle.js',
+  '*.d.ts.map',
+];
+
 export const DEFAULT_CONFIG: ClastConfig = {
-  languages: [
-    'typescript',
-    'javascript',
-    'python',
-    'java',
-    'csharp',
-    'go',
-    'rust',
-    'c',
-    'cpp',
-    'ruby',
-    'php',
-  ],
-  ignoredPaths: [
-    'node_modules',
-    '.git',
-    'dist',
-    'build',
-    'out',
-    '__pycache__',
-    '.venv',
-    'venv',
-    '.clast',
-    'vendor',
-    'target',
-    '.next',
-    'coverage',
-  ],
-  dbPath: '.clast/clast.db',
+  languages: [],
+  ignoredPaths: DEFAULT_IGNORED,
+  respectGitignore: true,
+  dbPath: '.clast/index.db',
+  maxFileSize: 1_000_000,
+  maxFiles: 150_000,
+  workers: 0,
   llm: {
     endpoint: 'http://localhost:11434/v1',
     model: '',
@@ -54,8 +73,7 @@ export const DEFAULT_CONFIG: ClastConfig = {
     alwaysGenerate: false,
   },
   watch: {
-    debounceMs: 300,
+    debounceMs: 200,
     enabled: true,
   },
-  maxBodySize: 2000,
 };

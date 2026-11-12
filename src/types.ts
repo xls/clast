@@ -1,69 +1,137 @@
-export type AstNodeType =
+/** Kinds of symbols stored in the index. */
+export type SymbolKind =
   | 'function'
   | 'method'
   | 'class'
   | 'interface'
-  | 'enum'
-  | 'import'
-  | 'export'
-  | 'variable'
-  | 'type_alias'
   | 'struct'
   | 'trait'
-  | 'module';
+  | 'enum'
+  | 'type'
+  | 'namespace'
+  | 'constant'
+  | 'variable'
+  | 'field'
+  | 'property'
+  | 'macro'
+  | 'declaration';
 
-export interface AstNode {
-  id?: number;
-  filePath: string;
+export const SYMBOL_KINDS: SymbolKind[] = [
+  'function', 'method', 'class', 'interface', 'struct', 'trait', 'enum', 'type',
+  'namespace', 'constant', 'variable', 'field', 'property', 'macro', 'declaration',
+];
+
+/** Kinds that can contain members (used for outlines and qualified names). */
+export const CONTAINER_KINDS = new Set<SymbolKind>([
+  'class', 'interface', 'struct', 'trait', 'enum', 'namespace',
+]);
+
+export const CALLABLE_KINDS = new Set<SymbolKind>(['function', 'method', 'macro', 'declaration']);
+
+/** A symbol as produced by the extractor (before it gets a database id). */
+export interface ExSymbol {
   name: string;
-  type: AstNodeType;
+  /** Dotted qualified name, e.g. "ParserManager.parseAndStore". */
+  qname: string;
+  kind: SymbolKind;
+  /** Declared return type (bare class name) of a function / method, when it could be read off the signature. */
+  ret: string | null;
   signature: string;
+  doc: string;
+  /** 1-based line of the definition. */
   startLine: number;
   endLine: number;
   startCol: number;
-  endCol: number;
-  parentId: number | null;
-  language: string;
-  bodyText: string;
+  /** 1-based first line of the leading doc comment / decorators, or 0. */
+  docLine: number;
+  /** Index of the parent symbol in the same extraction, or -1. */
+  parent: number;
+  exported: boolean;
 }
 
-export interface CallEdge {
-  id?: number;
-  callerId: number;
-  calleeId: number | null;
-  calleeName: string;
-  filePath: string;
+export interface ExCall {
+  /** Index of the calling symbol in the same extraction, or -1 for file level. */
+  caller: number;
+  name: string;
+  line: number;
+  /** Receiver text for member calls ("this", "self", "Foo", "db"), if simple. */
+  receiver: string | null;
+  /** Declared type of the receiver when a type hint was in scope (`Foo` for `x: Foo; x.bar()`). */
+  rtype: string | null;
+  /** Number of arguments at the call site; -1 when unknown (spread arguments, macros, no argument list). */
+  argc: number;
+  count: number;
+  /**
+   * For calls on an expression receiver that is itself a call
+   * (`a.b().c()`): index of that receiver-producing call in the same
+   * extraction, else -1. The receiver type is then that call's return type.
+   */
+  via: number;
+}
+
+export interface ExImport {
+  source: string;
+  names: string[];
   line: number;
 }
 
-export interface FileInfo {
-  filePath: string;
+export interface ExHeritage {
+  symbol: number;
+  name: string;
+  /** Module / namespace the supertype was written with (`forms` in `forms.CharField`), if any. */
+  qualifier: string | null;
+  kind: 'extends' | 'implements';
+  /** Number of type arguments the supertype was written with (`Base<T>` -> 1); tells `Foo` from `Foo<T>` in C#. */
+  arity: number;
+}
+
+/** Everything extracted from a single source file. */
+export interface Extraction {
+  lang: string;
+  lineCount: number;
+  symbols: ExSymbol[];
+  calls: ExCall[];
+  imports: ExImport[];
+  heritage: ExHeritage[];
+  /** Name of the symbol exported as the module default (`module.exports = X`), if any. */
+  defaultExport: string | null;
+  /** Declared field types of class-like symbols: [container, field, type]. */
+  fieldTypes: Array<[string, string, string]>;
+  /** Identifier occurrences: [name, "12,40,41"] (1-based lines, capped per file). */
+  occ: Array<[string, string]>;
+  hadError: boolean;
+}
+
+export interface SymbolRow {
+  id: number;
+  file_id: number;
+  name: string;
+  name_lc: string;
+  qname: string;
+  kind: SymbolKind;
+  signature: string;
+  doc: string;
+  start_line: number;
+  end_line: number;
+  start_col: number;
+  doc_line: number;
+  parent_id: number | null;
+  exported: number;
+  /** Declared return type name, if known. */
+  ret: string | null;
+  /** Joined from files. */
+  path: string;
+  lang: string;
+}
+
+export interface FileRow {
+  id: number;
+  path: string;
   hash: string;
-  language: string;
-  lastIndexed: number;
-  nodeCount: number;
-}
-
-export interface CommentInfo {
-  id?: number;
-  nodeId: number;
-  text: string;
-  source: 'original' | 'generated';
-  generatedAt: number | null;
-}
-
-export interface ParseResult {
-  nodes: AstNode[];
-  edges: CallEdge[];
-  comments: CommentInfo[];
-}
-
-export interface IndexStatus {
-  filesIndexed: number;
-  totalNodes: number;
-  totalEdges: number;
-  totalComments: number;
-  lastIndexed: number | null;
-  watcherActive: boolean;
-  pendingFiles: number;
+  mtime: number;
+  size: number;
+  lang: string;
+  line_count: number;
+  symbol_count: number;
+  indexed_at: number;
 }

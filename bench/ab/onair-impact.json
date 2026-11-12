@@ -1,0 +1,17 @@
+[
+  {
+    "id": "tests-for-symbol",
+    "q": "I am about to change the behaviour of the function genericGain in core/src/source/gain.cpp. No test calls it by name. Which test files exercise it through the functions that call it? List the test files.",
+    "expect": ["test_gain.cpp", "test_agc.cpp"]
+  },
+  {
+    "id": "signature-change",
+    "q": "I want to add a parameter to the function genericGain (core/src/source/gain.cpp). List every file I have to edit so that the project still compiles, including the declaration.",
+    "expect": ["gain.h", "gain.cpp", "statusbar.cpp", "jni_onair.cpp"]
+  },
+  {
+    "id": "dead-code-file",
+    "q": "Which functions defined in core/src/uat/uat_decode.c are dead code, meaning nothing in the repository calls them, directly or only through other dead functions? Name the top-level functions that nothing calls at all.",
+    "expect": ["uat_display_adsb_mdb", "uat_display_uplink_mdb"]
+  }
+]

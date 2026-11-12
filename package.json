@@ -1,19 +1,19 @@
 {
   "name": "clast-ai",
-  "version": "0.1.2",
-  "description": "AST-based code intelligence plugin for Claude Code: search symbols, trace call graphs, generate comments, and provide structured context for any repository",
-  "main": "dist/server/index.js",
+  "version": "0.2.0",
+  "description": "Code index MCP server for LLM coding agents: ranked symbol search, exact symbol source, type-aware call graph, references, type hierarchy and git change impact",
+  "main": "dist/engine.js",
   "bin": {
-    "clast-ai": "dist/server/index.js"
+    "clast-ai": "dist/cli.js"
   },
   "type": "module",
   "scripts": {
     "build": "tsc -p tsconfig.json",
-    "start": "node dist/server/index.js",
-    "dev": "tsx src/server/index.ts",
-    "test": "vitest run",
-    "test:watch": "vitest",
-    "clean": "rm -rf dist",
+    "start": "node dist/cli.js",
+    "dev": "tsx src/cli.ts",
+    "test": "node --import tsx --test \"test/**/*.test.ts\"",
+    "bench": "node bench/bench.mjs",
+    "clean": "node -e \"require('node:fs').rmSync('dist',{recursive:true,force:true})\"",
     "prepare": "npm run build",
     "prepublishOnly": "npm run build"
   },
@@ -36,30 +36,27 @@
     "dist",
     "src",
     "skills",
-    "commands",
+    "plugin",
     ".claude-plugin",
-    ".mcp.json",
+    "bench",
     "tsconfig.json",
     "README.md",
     "LICENSE"
   ],
   "engines": {
-    "node": ">=18.0.0"
+    "node": ">=22.22.0"
   },
   "dependencies": {
-    "@anthropic-ai/sdk": "^0.39.0",
-    "@modelcontextprotocol/sdk": "^1.12.0",
-    "chokidar": "^4.0.0",
-    "sql.js": "^1.12.0",
-    "tree-sitter-wasms": "^0.1.13",
-    "web-tree-sitter": "^0.24.7",
-    "zod": "^3.24.0"
+    "@modelcontextprotocol/sdk": "^1.32.2",
+    "@repomix/tree-sitter-wasms": "^0.1.17",
+    "chokidar": "^6.0.0",
+    "ignore": "^7.0.14",
+    "web-tree-sitter": "^0.27.2",
+    "zod": "^4.6.7"
   },
   "devDependencies": {
-    "@types/node": "^22.0.0",
-    "@types/sql.js": "^1.4.11",
-    "tsx": "^4.19.0",
-    "typescript": "^5.7.0",
-    "vitest": "^3.0.0"
+    "@types/node": "^24.19.2",
+    "tsx": "^4.23.15",
+    "typescript": "^7.0.2"
   }
 }

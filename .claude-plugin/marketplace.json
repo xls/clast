@@ -1,0 +1,14 @@
+{
+  "name": "clast",
+  "owner": {
+    "name": "Thomas"
+  },
+  "description": "Clast: a code index MCP server for coding agents, with skills for dead code, change impact and code-base audits.",
+  "plugins": [
+    {
+      "name": "clast",
+      "source": "./",
+      "description": "Code index MCP server (symbol search, call graph, hierarchy, impact, dead code, counts) plus /clast:deadcode, /clast:impact, /clast:audit and /clast:status."
+    }
+  ]
+}

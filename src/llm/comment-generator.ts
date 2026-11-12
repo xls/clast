@@ -1,131 +1,80 @@
 import { LlmClient } from './index.js';
 import { buildFunctionCommentPrompt, buildClassCommentPrompt } from './prompts.js';
-import type { Queries } from '../db/queries.js';
-import type { AstNodeRow } from '../db/types.js';
+import type { ClastDb } from '../db/index.js';
 import type { ClastConfig } from '../config/index.js';
+import { CONTAINER_KINDS, type SymbolRow } from '../types.js';
+import type { LineCache } from '../query/format.js';
 
+/**
+ * Generates documentation for undocumented symbols with an OpenAI-compatible
+ * endpoint. Generated text is stored by (path, qualified name) so it survives
+ * re-indexing of the file.
+ */
 export class CommentGenerator {
   private client: LlmClient;
-  private queries: Queries;
-  private config: ClastConfig;
 
-  constructor(client: LlmClient, queries: Queries, config: ClastConfig) {
-    this.client = client;
-    this.queries = queries;
-    this.config = config;
+  constructor(
+    private readonly db: ClastDb,
+    private readonly config: ClastConfig,
+    private readonly lines: LineCache
+  ) {
+    this.client = new LlmClient(config.llm.endpoint, config.llm.model, config.llm.apiKey);
   }
 
   get isAvailable(): boolean {
     return this.client.isConfigured;
   }
 
+  /** Previously generated doc for a symbol, if any. */
+  stored(sym: SymbolRow): string | null {
+    const row = this.db.get<{ text: string }>(
+      `SELECT text FROM gen_docs WHERE path = ? AND qname = ?`, sym.path, sym.qname
+    );
+    return row?.text ?? null;
+  }
+
   /**
-   * Generate a comment for a specific node.
-   * Returns the generated comment text, or null if generation is disabled/failed.
+   * Returns the doc for a symbol: the original comment when present (unless
+   * alwaysGenerate), else a stored or freshly generated one. Null on failure.
    */
-  async generateForNode(nodeId: number): Promise<string | null> {
+  async generate(sym: SymbolRow, force = false): Promise<string | null> {
+    if (sym.doc && !this.config.llm.alwaysGenerate && !force) return sym.doc;
+    if (!force) {
+      const existing = this.stored(sym);
+      if (existing) return existing;
+    }
     if (!this.client.isConfigured) return null;
 
-    const node = this.queries.getNodeById(nodeId);
-    if (!node) return null;
-
-    // Check if original comment exists
-    const existingComments = this.queries.getCommentsForNode(nodeId);
-    const hasOriginal = existingComments.some(c => c.source === 'original');
-
-    if (hasOriginal && !this.config.llm.alwaysGenerate) {
-      // Original comment exists and we're not forcing generation
-      return existingComments.find(c => c.source === 'original')?.text ?? null;
+    let prompt: { system: string; user: string };
+    if (CONTAINER_KINDS.has(sym.kind)) {
+      const members = this.db
+        .all<{ name: string }>(
+          `SELECT name FROM symbols WHERE parent_id = ? AND kind IN ('method', 'function') LIMIT 60`, sym.id
+        )
+        .map(m => m.name);
+      prompt = buildClassCommentPrompt(sym.name, sym.signature, members, sym.lang);
+    } else {
+      const src = this.lines.lines(sym.path);
+      const body = src ? src.slice(sym.start_line - 1, Math.min(sym.end_line, sym.start_line + 80)).join('\n') : '';
+      prompt = buildFunctionCommentPrompt(sym.signature, body, sym.lang);
     }
 
     try {
-      const prompt = this.buildPrompt(node);
       const response = await this.client.complete([
         { role: 'system', content: prompt.system },
         { role: 'user', content: prompt.user },
       ]);
-
-      const comment = response.content.trim();
-      if (!comment) return null;
-
-      // Remove existing generated comment if any
-      this.queries.deleteCommentsBySource(nodeId, 'generated');
-
-      // Store the generated comment
-      this.queries.insertComment(nodeId, comment, 'generated');
-
-      return comment;
+      const text = response.content.trim();
+      if (!text) return null;
+      this.db.run(
+        `INSERT INTO gen_docs (path, qname, text, created_at) VALUES (?, ?, ?, ?)
+         ON CONFLICT(path, qname) DO UPDATE SET text = excluded.text, created_at = excluded.created_at`,
+        sym.path, sym.qname, text, Date.now()
+      );
+      return text;
     } catch (err) {
-      console.error(`[clast] Failed to generate comment for node ${nodeId}:`, err);
+      console.error(`[clast] comment generation failed for ${sym.qname}:`, err instanceof Error ? err.message : err);
       return null;
     }
   }
-
-  /**
-   * Batch generate comments for nodes without any comments.
-   * Returns counts of successes and failures.
-   */
-  async batchGenerate(
-    limit: number = 100,
-    onProgress?: (current: number, total: number) => void
-  ): Promise<{ success: number; failed: number; skipped: number }> {
-    if (!this.client.isConfigured) {
-      return { success: 0, failed: 0, skipped: 0 };
-    }
-
-    const nodes = this.queries.getNodesWithoutComments(limit);
-    let success = 0;
-    let failed = 0;
-    let skipped = 0;
-
-    // Process with concurrency limit
-    const concurrency = this.config.llm.maxConcurrent;
-    const chunks = chunkArray(nodes, concurrency);
-
-    let processed = 0;
-    for (const chunk of chunks) {
-      const results = await Promise.allSettled(
-        chunk.map(node => this.generateForNode(node.id))
-      );
-
-      for (const result of results) {
-        processed++;
-        onProgress?.(processed, nodes.length);
-
-        if (result.status === 'fulfilled') {
-          if (result.value) {
-            success++;
-          } else {
-            skipped++;
-          }
-        } else {
-          failed++;
-        }
-      }
-    }
-
-    return { success, failed, skipped };
-  }
-
-  private buildPrompt(node: AstNodeRow): { system: string; user: string } {
-    if (node.type === 'class' || node.type === 'interface' || node.type === 'struct' || node.type === 'trait') {
-      // Get method names for context
-      const children = this.queries.searchNodes(node.name, 'method', 50);
-      const methodNames = children
-        .filter(c => c.file_path === node.file_path)
-        .map(c => c.name);
-
-      return buildClassCommentPrompt(node.name, node.signature, methodNames, node.language);
-    }
-
-    return buildFunctionCommentPrompt(node.signature, node.body_text, node.language);
-  }
-}
-
-function chunkArray<T>(arr: T[], size: number): T[][] {
-  const chunks: T[][] = [];
-  for (let i = 0; i < arr.length; i += size) {
-    chunks.push(arr.slice(i, i + size));
-  }
-  return chunks;
 }

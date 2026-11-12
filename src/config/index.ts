@@ -1,6 +1,6 @@
 import { z } from 'zod';
 import { readFileSync, existsSync } from 'node:fs';
-import { join } from 'node:path';
+import { isAbsolute, join } from 'node:path';
 import { DEFAULT_CONFIG, type ClastConfig } from './defaults.js';
 
 const LlmConfigSchema = z.object({
@@ -12,20 +12,27 @@ const LlmConfigSchema = z.object({
 });
 
 const WatchConfigSchema = z.object({
-  debounceMs: z.number().int().min(50).max(5000).default(DEFAULT_CONFIG.watch.debounceMs),
+  debounceMs: z.number().int().min(20).max(5000).default(DEFAULT_CONFIG.watch.debounceMs),
   enabled: z.boolean().default(DEFAULT_CONFIG.watch.enabled),
 });
 
 const ClastConfigSchema = z.object({
   languages: z.array(z.string()).default(DEFAULT_CONFIG.languages),
   ignoredPaths: z.array(z.string()).default(DEFAULT_CONFIG.ignoredPaths),
+  respectGitignore: z.boolean().default(DEFAULT_CONFIG.respectGitignore),
   dbPath: z.string().default(DEFAULT_CONFIG.dbPath),
+  maxFileSize: z.number().int().min(1000).max(100_000_000).default(DEFAULT_CONFIG.maxFileSize),
+  maxFiles: z.number().int().min(100).max(5_000_000).default(DEFAULT_CONFIG.maxFiles),
+  workers: z.number().int().min(0).max(64).default(DEFAULT_CONFIG.workers),
   llm: LlmConfigSchema.default(DEFAULT_CONFIG.llm),
   watch: WatchConfigSchema.default(DEFAULT_CONFIG.watch),
-  maxBodySize: z.number().int().min(100).max(50000).default(DEFAULT_CONFIG.maxBodySize),
 });
 
 export type { ClastConfig } from './defaults.js';
+
+export function parseConfig(raw: unknown): ClastConfig {
+  return ClastConfigSchema.parse(raw ?? {}) as ClastConfig;
+}
 
 export function loadConfig(projectRoot: string): ClastConfig {
   const candidates = [
@@ -34,22 +41,24 @@ export function loadConfig(projectRoot: string): ClastConfig {
   ];
 
   for (const candidate of candidates) {
-    if (existsSync(candidate)) {
-      try {
-        const raw = JSON.parse(readFileSync(candidate, 'utf-8'));
-        return ClastConfigSchema.parse(raw) as ClastConfig;
-      } catch (err) {
-        console.error(`[clast] Failed to parse config at ${candidate}:`, err);
-      }
+    if (!existsSync(candidate)) continue;
+    try {
+      const raw = JSON.parse(readFileSync(candidate, 'utf-8'));
+      // The pre-0.2 default pointed at a sql.js database; never reuse that file name.
+      if (raw && raw.dbPath === '.clast/clast.db') delete raw.dbPath;
+      return parseConfig(raw);
+    } catch (err) {
+      console.error(`[clast] Ignoring invalid config at ${candidate}: ${err instanceof Error ? err.message : err}`);
     }
   }
 
-  return ClastConfigSchema.parse({}) as ClastConfig;
+  return parseConfig({});
 }
 
 export function resolveDbPath(projectRoot: string, config: ClastConfig): string {
-  if (config.dbPath.startsWith('/') || config.dbPath.match(/^[a-zA-Z]:\\/)) {
-    return config.dbPath;
-  }
+  // CLAST_DB_PATH overrides the configured location (useful for CI caches and experiments).
+  const override = process.env.CLAST_DB_PATH;
+  if (override) return override === ':memory:' || isAbsolute(override) ? override : join(projectRoot, override);
+  if (config.dbPath === ':memory:' || isAbsolute(config.dbPath)) return config.dbPath;
   return join(projectRoot, config.dbPath);
 }

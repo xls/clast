@@ -1,0 +1,17 @@
+[
+  {
+    "id": "mode-count",
+    "q": "How many receive modes does OnAir support according to its own mode list, and which source file is that list counted from? Give the number.",
+    "expect": ["333", "mode_table.cpp"]
+  },
+  {
+    "id": "receiver-count",
+    "q": "How many distinct receiver classes (a class or struct whose name ends in Receiver) are defined under core/? Give the number and five examples.",
+    "expect": ["199", "189"]
+  },
+  {
+    "id": "radio-drivers",
+    "q": "Which radio hardware has a native driver class in this code base (the classes built on the shared native source base)? List the driver classes and say how many there are.",
+    "expect": ["AirspySource", "BladeSource", "LimeSource", "PlutoSource", "RtlSource", "SdrplaySource", "UsrpSource", "Rx888Source", "20"]
+  }
+]

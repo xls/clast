@@ -1,0 +1,7 @@
+[
+  {
+    "id": "dead-code-area",
+    "q": "Find dead code under app/: name five functions defined there that nothing in the repository calls or references, each with its file and line. Only list functions you have verified are unused.",
+    "expect": []
+  }
+]

@@ -1,0 +1,22 @@
+[
+  {
+    "id": "dc-spike",
+    "q": "Before the samples reach the demodulators, something takes out the strong spike in the middle of the spectrum that many radios produce. Which function in the engine does that, and in which file?",
+    "expect": ["cleanSamples", "engine.cpp"]
+  },
+  {
+    "id": "adc-overdrive",
+    "q": "Which function decides whether the analog-to-digital converter is being driven too hard or too weakly, from the measured signal levels? Name the function and the file.",
+    "expect": ["classifyAdc", "gain.cpp"]
+  },
+  {
+    "id": "mute-gate",
+    "q": "Where is the logic that keeps the speaker quiet until a signal is strong enough, with different levels for opening and closing? Name the struct or class and the source file with its update logic.",
+    "expect": ["SquelchCore", "audio_control"]
+  },
+  {
+    "id": "background-level",
+    "q": "Which function works out how strong the background hiss of the band is, so that the automatic gain can be set? Name the function and its file.",
+    "expect": ["estimateFloor", "autogain_measure.cpp"]
+  }
+]

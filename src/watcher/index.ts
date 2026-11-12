@@ -1,34 +1,25 @@
 import { watch, type FSWatcher } from 'chokidar';
-import { extname } from 'node:path';
+import { basename, relative, sep } from 'node:path';
 import { EventEmitter } from 'node:events';
-import { getSupportedExtensions } from '../parser/languages.js';
-import { buildIgnorePatterns } from './gitignore.js';
-import type { ParserManager } from '../parser/index.js';
-import type { ClastDatabase } from '../db/index.js';
-import type { ClastConfig } from '../config/index.js';
+import type { Indexer } from '../indexer/index.js';
 
+/**
+ * Watches the project and keeps the index current. Events are debounced per
+ * file and processed strictly one at a time (the parser and database are not
+ * re-entrant).
+ */
 export class FileWatcher extends EventEmitter {
   private watcher: FSWatcher | null = null;
-  private projectRoot: string;
-  private config: ClastConfig;
-  private db: ClastDatabase;
-  private parser: ParserManager;
-  private debounceTimers = new Map<string, ReturnType<typeof setTimeout>>();
-  private _pendingCount = 0;
-  private supportedExts: Set<string>;
+  private timers = new Map<string, ReturnType<typeof setTimeout>>();
+  private queue: Array<{ rel: string; kind: 'change' | 'unlink' }> = [];
+  private draining = false;
+  private rescanTimer: ReturnType<typeof setTimeout> | null = null;
 
   constructor(
-    projectRoot: string,
-    config: ClastConfig,
-    db: ClastDatabase,
-    parser: ParserManager
+    private readonly indexer: Indexer,
+    private readonly debounceMs: number
   ) {
     super();
-    this.projectRoot = projectRoot;
-    this.config = config;
-    this.db = db;
-    this.parser = parser;
-    this.supportedExts = new Set(getSupportedExtensions(config.languages));
   }
 
   get isActive(): boolean {
@@ -36,96 +27,99 @@ export class FileWatcher extends EventEmitter {
   }
 
   get pendingCount(): number {
-    return this._pendingCount;
+    return this.timers.size + this.queue.length;
   }
 
   start(): void {
     if (this.watcher) return;
-    if (!this.config.watch.enabled) return;
+    const root = this.indexer.root;
+    const rules = this.indexer.rules;
 
-    const ignoredPatterns = buildIgnorePatterns(this.projectRoot, this.config.ignoredPaths);
-
-    this.watcher = watch(this.projectRoot, {
-      ignored: [
-        /(^|[/\\])\./,
-        ...ignoredPatterns.map(p => {
-          if (!p.includes('*') && !p.includes('/')) {
-            return `**/${p}/**`;
-          }
-          return p;
-        }),
-      ],
+    this.watcher = watch(root, {
       persistent: true,
       ignoreInitial: true,
+      followSymlinks: false,
+      awaitWriteFinish: false,
+      // Prune ignored directories early so huge trees (node_modules, build
+      // output) are never even watched.
+      ignored: (path: string, stats?: { isDirectory(): boolean; isFile(): boolean }) => {
+        const rel = relative(root, path).split(sep).join('/');
+        if (!rel || rel.startsWith('..')) return false;
+        const name = basename(path);
+        if (name === '.gitignore') return false;
+        if (stats?.isFile()) return !rules.isSupported(rel) || rules.isIgnored(rel);
+        if (stats?.isDirectory()) return name.startsWith('.') || rules.isIgnored(rel + '/x');
+        return false;
+      },
     });
 
-    this.watcher.on('add', path => this.handleFileChange(path));
-    this.watcher.on('change', path => this.handleFileChange(path));
-    this.watcher.on('unlink', path => this.handleFileDelete(path));
+    const toRel = (p: string): string => relative(root, p).split(sep).join('/');
+    this.watcher.on('add', p => this.schedule(toRel(p), 'change'));
+    this.watcher.on('change', p => this.schedule(toRel(p), 'change'));
+    this.watcher.on('unlink', p => this.schedule(toRel(p), 'unlink'));
+    this.watcher.on('unlinkDir', () => this.scheduleRescan());
     this.watcher.on('error', err => {
-      console.error('[clast] Watcher error:', err);
+      this.emit('error', { filePath: '', error: err as Error });
     });
   }
 
-  stop(): void {
-    if (!this.watcher) return;
-
-    for (const timer of this.debounceTimers.values()) {
-      clearTimeout(timer);
-    }
-    this.debounceTimers.clear();
-
-    this.watcher.close();
+  async stop(): Promise<void> {
+    for (const t of this.timers.values()) clearTimeout(t);
+    this.timers.clear();
+    if (this.rescanTimer) clearTimeout(this.rescanTimer);
+    this.queue = [];
+    const w = this.watcher;
     this.watcher = null;
+    if (w) await w.close();
   }
 
-  private handleFileChange(filePath: string): void {
-    const ext = extname(filePath);
-    if (!this.supportedExts.has(ext)) return;
+  /** A changed .gitignore or a removed directory affects many files: rescan. */
+  private scheduleRescan(): void {
+    if (this.rescanTimer) clearTimeout(this.rescanTimer);
+    this.rescanTimer = setTimeout(() => {
+      this.rescanTimer = null;
+      this.indexer.indexAll().catch(err => this.emit('error', { filePath: '', error: err as Error }));
+    }, Math.max(this.debounceMs, 500));
+  }
 
-    const existing = this.debounceTimers.get(filePath);
+  private schedule(rel: string, kind: 'change' | 'unlink'): void {
+    if (basename(rel) === '.gitignore') {
+      this.scheduleRescan();
+      return;
+    }
+    if (!this.indexer.rules.isSupported(rel)) return;
+    const existing = this.timers.get(rel);
     if (existing) clearTimeout(existing);
-
-    this._pendingCount++;
-    this.debounceTimers.set(
-      filePath,
+    this.timers.set(
+      rel,
       setTimeout(() => {
-        this.debounceTimers.delete(filePath);
-        this._pendingCount--;
-        this.processFile(filePath);
-      }, this.config.watch.debounceMs)
+        this.timers.delete(rel);
+        this.queue.push({ rel, kind });
+        void this.drain();
+      }, this.debounceMs)
     );
   }
 
-  private handleFileDelete(filePath: string): void {
-    const ext = extname(filePath);
-    if (!this.supportedExts.has(ext)) return;
-
-    const existing = this.debounceTimers.get(filePath);
-    if (existing) {
-      clearTimeout(existing);
-      this.debounceTimers.delete(filePath);
-      this._pendingCount--;
-    }
-
+  private async drain(): Promise<void> {
+    if (this.draining) return;
+    this.draining = true;
     try {
-      this.parser.removeFile(filePath, this.projectRoot, this.db);
-      this.emit('deleted', { filePath });
-    } catch (err) {
-      this.emit('error', { filePath, error: err as Error });
-    }
-  }
-
-  private async processFile(filePath: string): Promise<void> {
-    try {
-      const parsed = await this.parser.incrementalUpdate(filePath, this.projectRoot, this.db);
-      if (parsed) {
-        const relPath = filePath.replace(/\\/g, '/');
-        const nodes = this.db.queries.getNodesByFile(relPath);
-        this.emit('indexed', { filePath, nodesFound: nodes.length });
+      // Let a bulk index finish first; it will pick up these files anyway.
+      await this.indexer.whenIdle();
+      while (this.queue.length) {
+        const { rel, kind } = this.queue.shift()!;
+        try {
+          if (kind === 'unlink') {
+            if (this.indexer.removeFile(rel)) this.emit('deleted', { filePath: rel });
+          } else if (await this.indexer.indexFile(rel)) {
+            this.emit('indexed', { filePath: rel });
+          }
+        } catch (err) {
+          this.emit('error', { filePath: rel, error: err as Error });
+        }
       }
-    } catch (err) {
-      this.emit('error', { filePath, error: err as Error });
+    } finally {
+      this.draining = false;
     }
   }
 }

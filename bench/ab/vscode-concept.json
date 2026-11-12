@@ -1,0 +1,22 @@
+[
+  {
+    "id": "hot-exit",
+    "q": "Which class is responsible for making sure work the user has not saved survives a crash or shutdown and comes back on the next start? Name the base class and its file.",
+    "expect": ["WorkingCopyBackupTracker", "workingCopyBackupTracker.ts"]
+  },
+  {
+    "id": "extension-placement",
+    "q": "Where is it decided whether a given extension runs locally, in the web worker or on the remote machine? Name the class that keeps track of that decision and its file.",
+    "expect": ["ExtensionRunningLocationTracker", "extensionRunningLocationTracker.ts"]
+  },
+  {
+    "id": "file-event-merge",
+    "q": "When many low-level file system notifications arrive for the same path in a short time, which code merges them into fewer events before they are passed on? Name the function or class and the file.",
+    "expect": ["watcher.ts", "oalesce"]
+  },
+  {
+    "id": "indent-folding",
+    "q": "Which function works out the collapsible regions of a document from how far its lines are indented, when no language-specific provider is available? Name the function and the file.",
+    "expect": ["computeRanges", "indentRangeProvider.ts"]
+  }
+]

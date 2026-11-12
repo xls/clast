@@ -1,0 +1,20 @@
+[
+  {
+    "id": "quick-access-provider",
+    "task": true,
+    "q": "Add a new quick access provider to the workbench with the prefix \"todo \" that shows three fixed placeholder picks (\"First\", \"Second\", \"Third\"). It must build on the same base class the other pick-based quick access providers use and be registered the same way they are, with a help entry. Put it in its own file under the existing workbench quick access contribution and make sure it is loaded.",
+    "expect": ["extends PickerQuickAccessProvider", "registerQuickAccessProvider", "src/vs/workbench/contrib/quickaccess/browser", "'todo '", "helpEntries"]
+  },
+  {
+    "id": "editor-contribution",
+    "task": true,
+    "q": "Add a new editor contribution under src/vs/editor/contrib/ (its own folder) that, whenever the cursor moves to line 1, logs \"cursor at top\" through the log service. It must implement the editor contribution interface, clean up its listeners on dispose, and be registered the way other editor contributions are registered. Make sure the file is actually loaded by the editor.",
+    "expect": ["IEditorContribution", "registerEditorContribution", "onDidChangeCursorPosition", "ILogService", "editor.all.ts"]
+  },
+  {
+    "id": "terminal-copy-cwd",
+    "task": true,
+    "q": "Add a terminal command with id workbench.action.terminal.copyCwd that copies the current working directory of the active terminal instance to the clipboard. Register it the way the other terminal actions that operate on the active instance are registered, and add its id to the terminal command id enum.",
+    "expect": ["workbench.action.terminal.copyCwd", "registerActiveInstanceAction", "writeText", "terminalActions.ts", "TerminalCommandId"]
+  }
+]

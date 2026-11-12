@@ -10,3 +10,4 @@ dist/
 grammars/
 scripts/
 .claude/settings.local.json
+.bench/
