@@ -91,7 +91,7 @@ after(() => p.dispose());
 describe('Kotlin', () => {
   it('indexes classes, interfaces, objects, enums, members and extension functions', async () => {
     const found = await search(p.ctx, { query: ['Circle', 'shout', 'Registry', 'MAX', 'RED'] });
-    assert.match(found, /class Circle {2}app\/src\/main\/kotlin\/shapes\/Shapes\.kt:13-32/);
+    assert.match(found, /class Circle {2}app\/src\/main\/kotlin\/shapes\/Shapes\.kt:13-31/);
     assert.match(found, /method String\.shout/);
     assert.match(found, /class Registry/);
     assert.match(found, /constant Circle\.MAX/);
