@@ -1,0 +1,22 @@
+[
+  {
+    "id": "reset-viterbi",
+    "q": "This code base has more than a thousand methods called reset. Which reset belongs to the Viterbi decoder of the PSK modes? Name the class and the source file that defines the method.",
+    "expect": ["Viterbi", "psk_varicode.cpp"]
+  },
+  {
+    "id": "push-resampler",
+    "q": "There are hundreds of methods called push. Which push feeds samples into the root-raised-cosine resampler of the DTMB receiver? Name the class and the source file with the method body.",
+    "expect": ["SrrcResampler", "dtmb_front.cpp"]
+  },
+  {
+    "id": "decode-reed-solomon",
+    "q": "Many classes have a decode method. Which decode does the Reed-Solomon error correction for the mode builder? Name the class and the source file with the method body.",
+    "expect": ["ReedSolomon", "fec.cpp"]
+  },
+  {
+    "id": "start-hackrf-usb",
+    "q": "Many sources have a start method. Which start belongs to the HackRF source that talks to the device directly over USB? Name the class and the source file with the method body.",
+    "expect": ["UsbHackrf", "hackrf_usb.cpp"]
+  }
+]

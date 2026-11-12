@@ -220,6 +220,11 @@ callers (2 resolved; depth 2):
 No name to search for? Describe the behaviour. Search covers names, signatures, doc comments and
 what function bodies mention, and copes with partial names, abbreviations and typos.
 
+A name that is everywhere is no problem either. One code base here has 1,157 methods called `reset`
+and grep returns them all. Ask for "reset viterbi decoder" and clast puts the right one first: it
+takes every definition with that name and lets the other words choose, by the class it sits in, its
+comment, and what its body calls.
+
 ```
 > clast_search  "client ip from forwarded headers"               (gin)
 
@@ -261,6 +266,7 @@ the vscode results (TypeScript, 15.7k files) are in the full tables.
 | Find dead code in a directory | 2 / 16 | 20 s / 124 s | $0.15 / $1.89 |
 | Multi-hop questions (call chains, subclasses, impact) | 1.2 / 5.9 | 12.5 s / 25.8 s | $0.056 / $0.212 |
 | Code described by behaviour, in a repo the model has not seen | 1.8 / 4.2 | 12.0 s / 20.5 s | $0.068 / $0.197 |
+| One of many same-named methods ("which `reset` belongs to the Viterbi decoder") | 1.0 / 3.6 | 11.2 s / 17.4 s | $0.12 / $0.11 |
 | Counting ("how many receiver classes") | 1.0 / 3.3 | 11 s / 34 s | about $0.02 / $0.29 |
 | Simple lookups (where is X, who calls X) | 1.7 / 1.7 | 12.7 s / 14.3 s | $0.063 / $0.096 |
 | Cross-cutting refactors (rename a method, add a parameter everywhere) | 8.3 / 8.3 | 27 s / 26 s | $0.26 / $0.25 |
