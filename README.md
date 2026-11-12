@@ -30,32 +30,59 @@ Languages: TypeScript, TSX, JavaScript, Python, Java, C#, Go, Rust, C, C++, Ruby
 
 Requires **Node.js 22.22 or newer** (Clast uses the built-in SQLite module).
 
+### As a Claude Code plugin (recommended)
+
+In Claude Code:
+
+```
+/plugin marketplace add xls/clast
+/plugin install clast@clast
+```
+
+or from a shell: `claude plugin marketplace add xls/clast && claude plugin install clast@clast`.
+
+The plugin brings the MCP server, a short skill that teaches Claude which tool answers which question,
+and four slash commands:
+
+| Command | What it does |
+| --- | --- |
+| `/clast:deadcode [path]` | Finds unused functions, methods and types, verifies the candidates, and removes the ones you confirm |
+| `/clast:impact <symbol>` | What must change with a symbol, every caller, and the tests to run |
+| `/clast:audit [path]` | Inventory for due diligence or onboarding: size, structure, endpoints, database access, dependencies, dead code |
+| `/clast:status` | State of the index |
+
+The plugin starts the server from a global `clast-ai` 0.2.x when there is one, otherwise through
+`npx clast-ai@0.2` (downloaded on first use). Update with `/plugin update clast@clast`.
+
+### As a plain MCP server
+
 ```bash
 npm install -g clast-ai
 claude mcp add -s user clast clast-ai
 ```
 
-`-s user` registers the server for all projects. Restart Claude Code (or "Developer: Reload Window" in
-VS Code) and run `/mcp`: `clast` should be listed with 15 tools. The first start indexes the project in
-the background (seconds, about half a minute for 15k files); until that first index is ready the tools
-answer with the build progress and ask to be called again. Later starts are ready immediately.
+`-s user` registers the server for all projects. This gives the tools without the skill and the slash
+commands. Use one of the two ways, not both: with both, every tool is listed twice.
 
-Other ways to install:
+Either way, restart Claude Code (or "Developer: Reload Window" in VS Code) and run `/mcp`: `clast`
+should be listed with 15 tools. The first start indexes the project in the background (seconds, about
+half a minute for 15k files); until that first index is ready the tools answer with the build progress
+and ask to be called again. Later starts are ready immediately.
+
+### Other ways
 
 ```bash
-# from GitHub
+# from GitHub, without npm
 npm install -g github:xls/clast
 
-# from a clone
+# from a clone (also how to work on clast itself)
 git clone https://github.com/xls/clast.git && cd clast
 npm install && npm run build
 claude mcp add -s user clast node /path/to/clast/dist/cli.js
-
-# as a Claude Code plugin (bundles a skill that teaches Claude when to use the tools)
-claude plugin add /path/to/clast
+claude --plugin-dir /path/to/clast        # or: try the plugin from the clone for one session
 ```
 
-Per-project registration: put this in `.mcp.json` in the project root.
+Per-project registration for a team: put this in `.mcp.json` in the project root.
 
 ```json
 { "mcpServers": { "clast": { "command": "clast-ai" } } }
@@ -135,7 +162,7 @@ callers (3; caller  call-site):
 ## How Claude knows to use it
 
 The server sends usage instructions to the client when it connects, and every tool description says when
-to prefer it over grep or reading files. Installed as a plugin, the bundled `clast-explore` skill adds a
+to prefer it over grep or reading files. Installed as a plugin, the bundled `explore` skill adds a
 short workflow guide. You can also say it once: "use the clast tools to navigate the code".
 
 ---
@@ -424,6 +451,10 @@ Other:
 - Swift and Dart added (14 languages).
 - All dependencies updated (MCP SDK 1.32, web-tree-sitter 0.27).
 - 283 tests, plus `bench/bench.mjs`, `bench/resolution.mjs` and the A/B harness `bench/ab.mjs`.
+- Installable as a Claude Code plugin from this repository (`/plugin marketplace add xls/clast`,
+  `/plugin install clast@clast`): the MCP server, a usage skill, and the slash commands
+  `/clast:deadcode`, `/clast:impact`, `/clast:audit` and `/clast:status`. The old VS Code extension
+  scaffold that wrote the server into `.claude/settings.local.json` is removed.
 - The navigation tools ask Claude Code to keep them loaded instead of deferring them behind tool
   search; deferred, the agent never called them.
 - Ruby classes and their ancestors are compared by qualified name (`Rails::Generators::Base` is not
