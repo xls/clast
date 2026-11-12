@@ -12,6 +12,7 @@
 // all a user has to do.
 import { spawn, spawnSync } from 'node:child_process';
 import { existsSync, readFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -19,6 +20,8 @@ const root = join(dirname(fileURLToPath(import.meta.url)), '..');
 const version = JSON.parse(readFileSync(join(root, 'package.json'), 'utf8')).version;
 const [major, minor, patch] = version.split('.').map(Number);
 const windows = process.platform === 'win32';
+// The project the server indexes: the same order the server itself uses.
+const projectDir = process.env.CLAST_PROJECT_DIR ?? process.env.CLAUDE_PROJECT_DIR ?? process.cwd();
 const log = msg => process.stderr.write(`[clast plugin] ${msg}\n`);
 
 function pick() {
@@ -35,12 +38,15 @@ function pick() {
     return { command: 'clast-ai', args: [], shell: windows, what: `global clast-ai ${found}` };
   }
   if (found) log(`global clast-ai is ${found}, the plugin is ${version}: using npx instead (npm install -g clast-ai updates it)`);
-  return { command: 'npx', args: ['-y', `clast-ai@${version}`], shell: windows, what: `npx clast-ai@${version}` };
+  // npx runs from a neutral directory: inside a folder whose package.json is itself called clast-ai it
+  // would take that folder for the package and start whatever `clast-ai` is on PATH.
+  return { command: 'npx', args: ['-y', `clast-ai@${version}`], shell: windows, what: `npx clast-ai@${version}`, cwd: tmpdir() };
 }
 
 /** Run the chosen clast-ai with extra arguments. Through a shell (.cmd shims on Windows) the command is one string of fixed words. */
 function run(choice, extra, options) {
   const args = [...choice.args, ...extra];
+  if (choice.cwd) options = { ...options, cwd: choice.cwd, env: { ...process.env, CLAST_PROJECT_DIR: projectDir } };
   return choice.shell
     ? spawn([choice.command, ...args].join(' '), { ...options, shell: true, windowsHide: true })
     : spawn(choice.command, args, { ...options, windowsHide: true });

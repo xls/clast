@@ -52,22 +52,43 @@ and four slash commands:
 | `/clast:status` | State of the index |
 
 The plugin starts the server from a global `clast-ai` that is at least as new as the plugin, otherwise
-through `npx clast-ai@<plugin version>` (downloaded on first use). Update with
-`/plugin marketplace update clast` and `/plugin update clast@clast`.
+through `npx clast-ai@<plugin version>` (downloaded on first use).
 
-**Coming from an older install?** Nothing to do. The first session after installing or updating the
-plugin removes what earlier installs left behind: clast registrations made with `claude mcp add` (for
-all projects or for single ones) and by the old VS Code extension, which would otherwise list every
-tool twice, and the v0.1 index file `.clast/clast.db`. It runs once per plugin version, in the
-background, and writes what it did to `migrate.log` in the plugin's data folder. A `.mcp.json` that
-is shared with a team is never changed. To see or do the same by hand:
+### Upgrading from an older install
+
+If clast is already set up the old way (`npm install -g clast-ai` plus `claude mcp add`, or through
+the old VS Code extension), install the plugin and restart. That is all:
+
+```
+/plugin marketplace add xls/clast
+/plugin install clast@clast
+```
+
+The first session after that cleans up in the background, once per plugin version:
+
+- clast servers registered with `claude mcp add`, for all projects or for single ones, are removed
+  (the plugin provides the server; with both, every tool would be listed twice),
+- entries the old VS Code extension wrote into `.claude/settings.local.json` are removed,
+- the v0.1 index file `.clast/clast.db` is deleted (the new index is rebuilt by itself).
+
+Restart Claude Code once more and `/mcp` shows a single `clast` server. A `.mcp.json` that is shared
+with a team is never changed; remove the clast entry there yourself once everyone uses the plugin.
+
+Optional: `npm uninstall -g clast-ai` removes the old global package. The plugin does not need it; it
+only uses a global install that is at least as new as the plugin itself.
+
+To see what would be removed, or to do it by hand (for example when you keep using the plain MCP
+server and only want the old index gone):
 
 ```bash
 clast-ai migrate           # report only
 clast-ai migrate --apply   # remove the leftovers
 ```
 
-Set `CLAST_NO_MIGRATE=1` to switch the automatic run off.
+What was removed is logged to `migrate.log` in the plugin's data folder. `CLAST_NO_MIGRATE=1` switches
+the automatic clean-up off.
+
+Later plugin updates: `/plugin marketplace update clast`, then `/plugin update clast@clast`.
 
 ### As a plain MCP server
 
@@ -490,10 +511,12 @@ Other:
 
 ### Upgrading from 0.1
 
+How to upgrade: see [Upgrading from an older install](#upgrading-from-an-older-install). What changed:
+
 - Node.js 22.22+ is required (was 18).
 - The index moved from `.clast/clast.db` (sql.js) to `.clast/index.db` (`node:sqlite`). Nothing is
-  migrated: the index is a cache and is rebuilt on first start. The old file is ignored and can be
-  deleted.
+  migrated: the index is a cache and is rebuilt on first start. The old file is ignored; the plugin
+  (or `clast-ai migrate --apply`) deletes it.
 - A later schema change deletes and rebuilds the index automatically (the schema is at version 26).
 - Tool output is compact text instead of JSON.
 - `clast_call_graph` defaults to depth 1 and gained `within` and `includeTests`.
