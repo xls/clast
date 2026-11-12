@@ -3,10 +3,10 @@ name: audit
 description: Factual inventory of a code base for due diligence or onboarding - size, structure, endpoints, database access, dependencies, dead code.
 argument-hint: "[path]"
 disable-model-invocation: true
-allowed-tools: mcp__plugin_clast_clast__clast_stats, mcp__plugin_clast_clast__clast_overview, mcp__plugin_clast_clast__clast_unused, mcp__plugin_clast_clast__clast_file_summary, mcp__plugin_clast_clast__clast_grep, Grep, Read, Glob
+allowed-tools: mcp__plugin_clast_clast__clast_enable, mcp__plugin_clast_clast__clast_stats, mcp__plugin_clast_clast__clast_overview, mcp__plugin_clast_clast__clast_unused, mcp__plugin_clast_clast__clast_file_summary, mcp__plugin_clast_clast__clast_grep, Grep, Read, Glob
 ---
 
-Scope: `$ARGUMENTS` (empty = whole project). Pass it as `path` to every call.
+Scope: `$ARGUMENTS` (empty = whole project). Pass it as `path` to every call. If the clast tools are not available, call `clast_enable` first.
 
 Issue these calls together:
 

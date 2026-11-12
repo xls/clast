@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.3.0
+
+- Opt-in per project. The server process still starts in every project, but it indexes and offers
+  its tools only where a `.clast` folder exists in the project root. Elsewhere it is dormant: one
+  small tool (`clast_enable`), no index, no watcher, nothing written. `/clast:use` (or the tool, or
+  `mkdir .clast`) turns it on, also in a running session; deleting the folder turns it off.
+  Projects indexed before already have the folder and stay on. `CLAST_ALWAYS=1` restores the old
+  behaviour.
+- Benchmark tables show tokens in and out instead of price.
+
 ## 0.2.5
 
 - Search: a common name plus context words ("write socket", "reset viterbi decoder") ranks the

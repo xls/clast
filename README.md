@@ -27,18 +27,24 @@ directly, with exact `file:line` locations. The index follows every edit, so ans
 /plugin install clast@clast
 ```
 
+**Then turn it on in each project that wants it.** Type `/clast:use` once in the project. Clast does
+nothing in a project until you do: no index, no tools in the prompt, so a notes folder or a project
+where you do not want it costs nothing. `/clast:use` creates a `.clast` folder in the project root,
+which holds the index and is the on switch. Delete the folder to turn clast off again.
+
 The plugin brings the index server, a short skill that teaches Claude which tool answers which
-question, and four slash commands:
+question, and five slash commands:
 
 | Command | What it does |
 | --- | --- |
+| `/clast:use` | Turns clast on for this project |
 | `/clast:deadcode [path]` | Finds unused functions, methods and types, verifies them, and removes the ones you confirm |
 | `/clast:impact <symbol>` | What must change with a symbol, every caller, and the tests to run |
 | `/clast:audit [path]` | Inventory for due diligence or onboarding: size, structure, endpoints, database access, dependencies, dead code |
 | `/clast:status` | State of the index |
 
-Requires **Node.js 22.22 or newer**. The first start indexes the project in the background (seconds;
-about half a minute for 15,000 files). Later starts are ready immediately.
+Requires **Node.js 22.22 or newer**. Turning clast on indexes the project in the background (seconds;
+about half a minute for 15,000 files). Later sessions are ready immediately.
 
 **Codex, Gemini CLI and other agents.** Clast is a standard MCP server, so any agent that speaks MCP
 can use it:
@@ -49,6 +55,10 @@ npm install -g clast-ai
 codex mcp add clast -- clast-ai          # Codex
 gemini mcp add -s user clast clast-ai    # Gemini CLI
 ```
+
+Turn it on per project by creating the folder (`mkdir .clast`), or ask the agent to "use clast": a
+dormant server offers one tool, `clast_enable`, that does it. `CLAST_ALWAYS=1` in the server's
+environment turns it on everywhere.
 
 Then give the agent the usage guide the Claude plugin ships as a skill:
 
@@ -70,7 +80,8 @@ The first session after that cleans up in the background, once per plugin versio
 - entries the old VS Code extension wrote into `.claude/settings.local.json` are removed,
 - the v0.1 index file `.clast/clast.db` is deleted (the new index is rebuilt by itself).
 
-Restart Claude Code once more and `/mcp` shows a single `clast` server.
+Restart Claude Code once more and `/mcp` shows a single `clast` server. Projects that were indexed
+before already have a `.clast` folder and stay on; any other project is off until `/clast:use`.
 
 One case is left to you: a project whose `.mcp.json` lists clast. That file is shared with a team, so
 it is never changed, and in that project the server stays listed twice until the entry is removed
@@ -287,7 +298,7 @@ Full tables, method, answer-quality audits and index speed: [docs/benchmarks.md]
 
 ## Your first minute
 
-Open a project in Claude Code with the plugin installed, then try these:
+Open a project in Claude Code with the plugin installed, type `/clast:use`, then try these:
 
 1. **Get the lie of the land:** "Give me an overview of this repository."
 2. **Trace something:** "Who ends up calling `saveOrder`, two levels up?"
@@ -295,7 +306,8 @@ Open a project in Claude Code with the plugin installed, then try these:
 4. **Clean up:** `/clast:deadcode src/billing`
 5. **Take stock:** `/clast:audit`
 
-**Not sure it is running?** `/clast:status` shows the index, and `/mcp` lists the server with 15 tools.
+**Not sure it is running?** `/clast:status` shows the index, and `/mcp` lists the server with 15 tools
+(one tool, `clast_enable`, while clast is off for the project).
 
 ## Reference
 
@@ -392,7 +404,7 @@ Optional. Create `clast.config.json` (or `.claude/clast.config.json`) in the pro
 | `watch.debounceMs` | `200` | Debounce for file change events |
 | `llm.*` | disabled | OpenAI-compatible endpoint for `clast_comment` (Ollama, LM Studio, vLLM, OpenAI, OpenRouter) |
 
-Environment: `CLAST_PROJECT_DIR` (project root), `CLAST_DB_PATH` (index location), `CLAST_GRAMMARS_DIR`
+Environment: `CLAST_ALWAYS=1` (on in every project, no `.clast` folder needed), `CLAST_PROJECT_DIR` (project root), `CLAST_DB_PATH` (index location), `CLAST_GRAMMARS_DIR`
 (alternative grammar directory), `CLAST_NO_MIGRATE=1` (no automatic clean-up), `CLAST_DEBUG=1` (timings).
 
 | Language | id | Extensions |

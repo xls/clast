@@ -3,12 +3,12 @@ name: impact
 description: Show what a change to one symbol affects - what changes with it, every caller, the tests to run.
 argument-hint: "<symbol>"
 disable-model-invocation: true
-allowed-tools: mcp__plugin_clast_clast__clast_impact, mcp__plugin_clast_clast__clast_search, mcp__plugin_clast_clast__clast_get_context, mcp__plugin_clast_clast__clast_call_graph, mcp__plugin_clast_clast__clast_hierarchy, Grep, Read
+allowed-tools: mcp__plugin_clast_clast__clast_enable, mcp__plugin_clast_clast__clast_impact, mcp__plugin_clast_clast__clast_search, mcp__plugin_clast_clast__clast_get_context, mcp__plugin_clast_clast__clast_call_graph, mcp__plugin_clast_clast__clast_hierarchy, Grep, Read
 ---
 
 Symbol: `$ARGUMENTS`. If empty, ask. If ambiguous, pick the candidate the user means and address it as `Container.name` or `path/file.ext:name`.
 
-1. Call `clast_impact`.
+1. If the clast tools are not available, call `clast_enable`. Call `clast_impact`.
 2. Report in this order:
    - Changes together: declarations, overrides, implementations, overloads.
    - Direct callers by file and line. Read each `?` caller and state if it is real.

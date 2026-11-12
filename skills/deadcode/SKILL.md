@@ -3,10 +3,10 @@ name: deadcode
 description: Find dead code in the project or under a path, verify it, remove what the user confirms.
 argument-hint: "[path]"
 disable-model-invocation: true
-allowed-tools: mcp__plugin_clast_clast__clast_unused, mcp__plugin_clast_clast__clast_call_graph, mcp__plugin_clast_clast__clast_references, mcp__plugin_clast_clast__clast_grep, Grep, Read
+allowed-tools: mcp__plugin_clast_clast__clast_enable, mcp__plugin_clast_clast__clast_unused, mcp__plugin_clast_clast__clast_call_graph, mcp__plugin_clast_clast__clast_references, mcp__plugin_clast_clast__clast_grep, Grep, Read
 ---
 
-Scope: `$ARGUMENTS` (empty = whole project).
+Scope: `$ARGUMENTS` (empty = whole project). If the clast tools are not available, call `clast_enable` first.
 
 1. Call `clast_unused` with `path` = scope.
 2. Treat each group:

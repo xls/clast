@@ -1,6 +1,7 @@
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
-import { resolve } from 'node:path';
+import { existsSync, mkdirSync } from 'node:fs';
+import { join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { z } from 'zod';
 
@@ -32,6 +33,9 @@ When adding something new (a subclass, a handler, a provider): find the siblings
 When renaming a symbol or changing a signature: if the name is distinctive, do NOT use clast - one Grep for the name lists every site, then edit. Use clast_impact first only when the name is common (get, run, close) so that Grep would drown in unrelated hits, when overrides or interface implementations must change with it, or to choose the tests to run.
 Most tools take several names at once (arrays). Symbols: name, Container.name, or path/to/file.ext:name. "?" marks a name-based guess. The index follows file changes, including your own edits.`;
 
+const DORMANT_INSTRUCTIONS =
+  'Clast (code index) is installed but off for this project: there is no .clast folder in the project root. Do not mention it. If the user asks to use clast, call clast_enable.';
+
 const text = (t: string) => ({ content: [{ type: 'text' as const, text: t }] });
 
 const READ_ONLY = { readOnlyHint: true, idempotentHint: true, openWorldHint: false } as const;
@@ -51,12 +55,29 @@ export async function startServer(): Promise<void> {
   };
   log(`v${VERSION} project root: ${projectRoot}`);
 
+  // Opt-in per project. The client starts this process in every project, code or not. It indexes and
+  // offers its tools only where a `.clast` folder exists in the project root (`/clast:use` or the
+  // `clast_enable` tool creates it; the index lives there). Anywhere else it stays dormant: one small
+  // tool, no index, no watcher. CLAST_ALWAYS=1 or an explicit CLAST_DB_PATH switches it on regardless.
+  const marker = join(projectRoot, '.clast');
+  const wanted = (): boolean => process.env.CLAST_ALWAYS === '1' || !!process.env.CLAST_DB_PATH || existsSync(marker);
+  const startActive = wanted();
+  const server = new McpServer(
+    { name: 'clast', version: VERSION },
+    { instructions: startActive ? INSTRUCTIONS : DORMANT_INSTRUCTIONS }
+  );
+  let active: { clast: Clast; watcher: FileWatcher } | null = null;
+  let connected = false;
+  let begin: (() => void) | null = null;
+
+  const activate = (): void => {
+  if (active) return;
+  mkdirSync(marker, { recursive: true });
   const clast = new Clast(projectRoot);
   const ctx = new ToolContext(clast);
   const watcher = new FileWatcher(clast.indexer, clast.config.watch.debounceMs);
   const commentGen = new CommentGenerator(clast.db, clast.config, ctx.lines);
-
-  const server = new McpServer({ name: 'clast', version: VERSION }, { instructions: INSTRUCTIONS });
+  active = { clast, watcher };
 
   const names = z.union([z.string(), z.array(z.string()).max(20)]);
   const guard = <A>(fn: (args: A) => Promise<string>, gated = true) => async (args: A) => {
@@ -361,12 +382,8 @@ export async function startServer(): Promise<void> {
     })
   );
 
-  // Connect first so the client never waits on indexing; the index builds
-  // (or revalidates) in the background and tools report progress meanwhile.
-  const transport = new StdioServerTransport();
-  await server.connect(transport);
-  log('MCP server running on stdio');
-
+  // The index builds (or revalidates) in the background and tools report progress meanwhile.
+  begin = (): void => {
   clast.indexer
     .indexAll()
     .then(r => {
@@ -391,16 +408,71 @@ export async function startServer(): Promise<void> {
   watcher.on('error', ({ filePath, error }: { filePath: string; error: Error }) => {
     log(`watch error ${filePath}: ${error.message}`);
   });
+  };
+  if (connected) begin();
+  }; // activate
+
+  if (startActive) {
+    activate();
+  } else {
+    log('dormant: no .clast folder in the project root');
+    const enableTool = server.registerTool(
+      'clast_enable',
+      {
+        title: 'Turn clast on for this project',
+        description:
+          'Clast (code index) is off for this project. Call this only when the user asks to use clast: it creates the .clast folder in the project root, builds the index and adds the clast tools.',
+        inputSchema: {},
+        annotations: { readOnlyHint: false, idempotentHint: true, openWorldHint: false },
+      },
+      async () => {
+        try {
+          activate();
+          enableTool.remove();
+          return text(
+            `clast is on for ${projectRoot}. The index is building; the clast tools are available now ` +
+              `(reconnect the server or restart the session if they do not appear). ` +
+              `To turn it off again, delete the .clast folder.\n\n${INSTRUCTIONS}`
+          );
+        } catch (err) {
+          return { ...text(`error: ${err instanceof Error ? err.message : String(err)}`), isError: true };
+        }
+      }
+    );
+    // The folder can also appear without the tool (a skill, the CLI, the user): pick that up.
+    const poll = setInterval(() => {
+      if (active) return void clearInterval(poll);
+      if (!existsSync(marker)) return;
+      clearInterval(poll);
+      try {
+        activate();
+        enableTool.remove();
+        log('.clast folder found: active');
+      } catch (err) {
+        log(`could not activate: ${err instanceof Error ? err.message : err}`);
+      }
+    }, 2000);
+    poll.unref();
+  }
+
+  // Connect first so the client never waits on indexing.
+  const transport = new StdioServerTransport();
+  await server.connect(transport);
+  connected = true;
+  log('MCP server running on stdio');
+  (begin as (() => void) | null)?.();
 
   let closing = false;
   const shutdown = (): void => {
     if (closing) return;
     closing = true;
-    watcher
+    const live = active;
+    if (!live) return void process.exit(0);
+    live.watcher
       .stop()
       .catch(() => undefined)
       .finally(() => {
-        try { clast.close(); } catch { /* already closed */ }
+        try { live.clast.close(); } catch { /* already closed */ }
         process.exit(0);
       });
   };
