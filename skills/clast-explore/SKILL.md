@@ -27,6 +27,7 @@ right after you edit. Answers come back as compact text with `path:line` locatio
 | What implements / extends / overrides X? | `clast_hierarchy` |
 | Where does this string / comment / config key appear? | `clast_grep` (hits are labelled with their function) |
 | What did my change touch, and what may break? | `clast_changes` (vs HEAD or a base ref) |
+| How many X are there? How big is it, what is it made of? Endpoints, database access, dependencies? | `clast_stats` (exact totals grouped by directory, kind or name; do not tally search results by hand) |
 
 ## Habits that save round trips
 
