@@ -11,69 +11,71 @@ vscode (TypeScript, 15.7k files) and OnAir (C++, 7.5k files, 1.6M lines). The in
 before the first session. Answers are scored against facts verified in the source beforehand; an
 implementation task is scored on its diff.
 
-"Cost" is the API-price equivalent that Claude Code reports for the session. It weights fresh input and
-output above cached prompt tokens, so it is the closest single number to "tokens that matter".
+"Tokens in" is everything sent to the model over the session, "tokens out" what it wrote; both are
+means per question. The fixed prompt goes out again on every turn, so fewer turns means fewer tokens
+in. Price is not shown: it depends on how much of the prompt was already cached when a session
+started, which varied between sessions of the same arm by a factor of twenty.
 
-| Kind of work | Repo | Sessions per arm | Tool calls (clast / grep) | Wall time | Cost per question | Correct |
-| --- | --- | ---: | ---: | ---: | ---: | ---: |
-| Multi-hop questions (call chains, transitive subclasses, impact) | vscode | 18 | 1.3 / 3.1 | 16.0 s / 19.8 s | $0.063 / $0.126 | 18 / 18 |
-| Multi-hop questions | OnAir | 18 | 1.2 / 5.9 | 12.5 s / 25.8 s | $0.056 / $0.212 | 18 / 18 |
-| Simple lookups (where is X, who calls X, what implements X) | vscode | 30 | 1.4 / 1.4 | 13.9 s / 13.9 s | $0.053 / $0.059 | 30 / 29 |
-| Simple lookups | OnAir | 30 | 1.7 / 1.7 | 12.7 s / 14.3 s | $0.063 / $0.096 | 30 / 30 |
-| Counting ("how many receiver classes under core/") | OnAir | 3 | 1.0 / 3.3 | 11 s / 34 s | about $0.02 / $0.29 | 3 / 2 |
-| Small implementation tasks (new provider, new enum value, new subclass) | vscode | 6 | 7.5 / 8.5 | 30 s / 31 s | $0.29 / $0.24 | 6 / 6 |
-| Small implementation tasks | OnAir | 6 | 11.5 / 12.8 | 39 s / 40 s | $0.58 / $0.56 | 6 / 6 |
-| Cross-cutting refactors (rename a method in 28 files, add a parameter and update all callers) | vscode | 4 | 21.8 / 22.0 | 47 s / 48 s | $0.45 / $0.37 | 4 / 4 |
-| Cross-cutting refactors | OnAir | 4 | 9.8 / 7.8 | 26 s / 25 s | $0.25 / $0.24 | 4 / 4 |
-| Before a change (tests that reach a function, files to edit for a signature change, dead functions in a file) | vscode | 9 | 2.3 / 2.2 | 19.3 s / 19.8 s | $0.098 / $0.154 | 9 / 9 |
-| Before a change | OnAir | 9 | 1.7 / 3.6 | 14.3 s / 17.4 s | $0.126 / $0.173 | 9 / 9 |
-| Find dead code in a directory ("five unused functions under app/", answers checked by hand) | OnAir | 2 | 2.0 / 16.0 | 20 s / 124 s | $0.15 / $1.89 | 2 / 2 |
-| Questions that describe behaviour without naming anything ("what takes out the spike in the middle of the spectrum") | OnAir | 12 | 1.8 / 4.2 | 12.0 s / 20.5 s | $0.068 / $0.197 | 12 / 12 |
-| Questions that describe behaviour | vscode | 12 | 1.0 / 1.0 | 11.7 s / 11.8 s | $0.048 / $0.044 | 12 / 12 |
+| Kind of work | Repo | Sessions per arm | Tool calls (clast / grep) | Wall time | Tokens in | Tokens out | Correct |
+| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| Multi-hop questions (call chains, transitive subclasses, impact) | vscode | 18 | 1.3 / 3.1 | 16.0 s / 19.8 s | 53k / 59k | 0.7k / 1.1k | 18 / 18 |
+| Multi-hop questions | OnAir | 18 | 1.2 / 5.9 | 12.5 s / 25.8 s | 50k / 118k | 0.5k / 1.2k | 18 / 18 |
+| Simple lookups (where is X, who calls X, what implements X) | vscode | 30 | 1.4 / 1.4 | 13.9 s / 13.9 s | 54k / 45k | 0.5k / 0.5k | 30 / 29 |
+| Simple lookups | OnAir | 30 | 1.7 / 1.7 | 12.7 s / 14.3 s | 62k / 50k | 0.4k / 0.5k | 30 / 30 |
+| Counting ("how many receiver classes under core/") | OnAir | 3 | 1.0 / 3.3 | 11 s / 34 s | 52k / 91k | 0.3k / 2.5k | 3 / 2 |
+| Small implementation tasks (new provider, new enum value, new subclass) | vscode | 6 | 7.5 / 8.5 | 30 s / 31 s | 113k / 96k | 2.0k / 2.2k | 6 / 6 |
+| Small implementation tasks | OnAir | 6 | 11.5 / 12.8 | 39 s / 40 s | 185k / 172k | 2.5k / 2.7k | 6 / 6 |
+| Cross-cutting refactors (rename a method in 28 files, add a parameter and update all callers) | vscode | 4 | 21.8 / 22.0 | 47 s / 48 s | 127k / 100k | 4.2k / 4.4k | 4 / 4 |
+| Cross-cutting refactors | OnAir | 4 | 9.8 / 7.8 | 26 s / 25 s | 93k / 79k | 1.8k / 1.7k | 4 / 4 |
+| Before a change (tests that reach a function, files to edit for a signature change, dead functions in a file) | vscode | 9 | 2.3 / 2.2 | 19.3 s / 19.8 s | 62k / 67k | 0.8k / 1.0k | 9 / 9 |
+| Before a change | OnAir | 9 | 1.7 / 3.6 | 14.3 s / 17.4 s | 59k / 73k | 0.4k / 0.8k | 9 / 9 |
+| Find dead code in a directory ("five unused functions under app/", answers checked by hand) | OnAir | 2 | 2.0 / 16.0 | 20 s / 124 s | 82k / 928k | 0.6k / 9.5k | 2 / 2 |
+| Questions that describe behaviour without naming anything ("what takes out the spike in the middle of the spectrum") | OnAir | 12 | 1.8 / 4.2 | 12.0 s / 20.5 s | 69k / 100k | 0.3k / 0.8k | 12 / 12 |
+| Questions that describe behaviour | vscode | 12 | 1.0 / 1.0 | 11.7 s / 11.8 s | 50k / 40k | 0.4k / 0.5k | 12 / 12 |
+| One of many same-named methods ("which `reset` belongs to the Viterbi decoder") | OnAir | 12 | 1.0 / 3.6 | 11.2 s / 17.4 s | 53k / 68k | 0.2k / 0.6k | 12 / 12 |
 
 What this says:
 
-- **Multi-hop questions are where clast pays off**: half the cost and 20% less time on vscode, a
-  quarter of the cost and half the time on OnAir. One call returns a call chain or a full inheritance
+- **Multi-hop questions are where clast pays off**: 20% less time on vscode, and half the time and
+  less than half the tokens on OnAir. One call returns a call chain or a full inheritance
   tree that grep needs three to twelve rounds for, and the agent reads 70-85% less tool output.
 - **Simple lookups are a tie.** A current model with ripgrep answers them in one or two calls; clast
   does not make that faster, it only returns a little less text.
 - **Counting is faster and exact** with `clast_stats`. With grep the agent tallied matches by hand and
   was off by one in one of three runs.
 - **Finding dead code is the largest gap measured**: one `clast_unused` call and a confirming grep
-  against 11-21 greps, a sixth of the time and a thirteenth of the cost. Every function either arm
+  against 11-21 greps, a sixth of the time and a ninth of the tokens. Every function either arm
   named was verified unused, and all ten the grep sessions found are in clast's list.
 - **Describing behaviour instead of naming it** works on a repository the model has never seen
   (OnAir): search over names, comments and what function bodies mention finds the place in one or two
   calls where grep needs four rounds of guessing words. On vscode it is a tie at one call, because the
   model already knows where things are in vscode; that row measures the model's memory, not the tools.
-- **Questions before a change are cheaper, not always faster.** With `clast_impact` and `clast_unused`
-  the sessions cost 27-36% less because the agent reads less tool output. The clear win is "which
+- **Questions before a change take fewer tokens, not always less time.** With `clast_impact` and
+  `clast_unused` the agent reads less tool output and writes less. The clear win is "which
   tests reach this function when none names it": 1 call and 11 s against 5.7 calls and 22 s on OnAir.
   "Which files do I edit for a signature change" is one grep and stays a tie.
 - **Implementation work showed no benefit**, neither small features nor cross-cutting refactors. Both
   arms made the same edits in the same files in the same time (refactors were also checked for
   completeness: nothing of the old name or call shape left). Finding every occurrence of one name is
-  a single grep, and before editing the agent reads the neighbouring code either way. Clast costs a
-  little more here because its tool definitions are in the prompt.
+  a single grep, and before editing the agent reads the neighbouring code either way. Clast sends
+  more tokens here because its tool definitions are in the prompt on every turn.
 - **Refactors after a guidance change.** In the rows above the clast sessions made about three extra
   calls on "add a parameter" tasks: they looked the callers up in clast and then grepped anyway. The
   server instructions now say to skip clast for a rename or signature change of a distinctive name.
-  Re-run on OnAir (4 sessions per arm): 8.3 calls against 8.3, 26.9 s against 25.9 s, $0.26 against
-  $0.25, all correct, and no clast call in any session. What is left is the fixed prompt cost.
+  Re-run on OnAir (4 sessions per arm): 8.3 calls against 8.3, 26.9 s against 25.9 s, 104k tokens in
+  against 81k, all correct, and no clast call in any session. What is left is the fixed prompt size.
 - **One of many same-named methods.** Four questions on OnAir of the form "which `reset` belongs to
   the Viterbi decoder" (the repository has 1,157 methods called `reset`, 373 called `push`), 12
-  sessions per arm: clast 1.0 call and 11.2 s, grep 3.6 calls and 17.4 s, all answers correct. Median
-  cost $0.06 against $0.13. The mean is $0.12 against $0.11, because the first two clast sessions
-  wrote the whole prompt into the cache ($0.45 each, a one-off that the other ten reused). Search ranks the definitions of a common name by the context words:
-  the container, the doc comment, the calls in the body.
+  sessions per arm: clast 1.0 call and 11.2 s, grep 3.6 calls and 17.4 s, all answers correct. Search
+  ranks the definitions of a common name by the context words: the container, the doc comment, the
+  calls in the body.
 - **Small samples.** Two repositories, three runs per question, questions written by the tool's
   author. The figures show the direction, not a precise ratio.
 
 One result changed the server itself. Claude Code defers MCP tools behind its tool search by default,
 and in that state the agent never called clast: 0 of 60 sessions, every question answered with Grep.
 The navigation tools now ask the client to keep them loaded, after which the agent used clast in every
-question session where it helped. The cost is about 5k tokens of tool definitions and instructions in
+question session where it helped. The price is about 5k tokens of tool definitions and instructions in
 the cached prompt (measured with 13 tools: 23.7k against 19.3k prompt tokens for a session that calls
 no tool; `clast_impact` and `clast_unused` add about 0.6k).
 
