@@ -398,6 +398,32 @@ export function structuralImplementers(db: ClastDb, iface: SymbolRow, limit = 20
     for (const d of defs) out.push(d);
     if (out.length >= limit) break;
   }
+  // A struct that embeds an implementer gets its methods with it (promotion) and so satisfies the
+  // interface too: `type decisionRequest struct { jsonRetrieval; ... }`.
+  const seen = new Set(out.map(s => s.id));
+  let frontier = [...out];
+  for (let depth = 0; depth < 3 && frontier.length && out.length < limit; depth++) {
+    const next: SymbolRow[] = [];
+    for (const impl of frontier) {
+      const embedders = db.all<SymbolRow & { qualifier: string | null }>(
+        `SELECT ${SYMBOL_COLUMNS}, h.qualifier AS qualifier FROM heritage h
+         JOIN symbols s ON s.id = h.symbol_id JOIN files f ON f.id = s.file_id
+         WHERE h.name = ? AND f.lang = 'go' AND s.kind = 'struct' LIMIT 500`,
+        impl.name
+      );
+      const implDir = dirOf(impl.path);
+      for (const e of embedders) {
+        if (seen.has(e.id)) continue;
+        // Unqualified: the embedded type is in the same package. Qualified: the package is its directory name.
+        const samePackage = e.qualifier ? implDir.split('/').pop() === e.qualifier : dirOf(e.path) === implDir;
+        if (!samePackage) continue;
+        seen.add(e.id);
+        out.push(e);
+        next.push(e);
+      }
+    }
+    frontier = next;
+  }
   out.sort((a, b) => Number(isTestPath(a.path)) - Number(isTestPath(b.path)) || a.path.localeCompare(b.path));
   return out;
 }

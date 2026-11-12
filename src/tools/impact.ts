@@ -229,6 +229,7 @@ export interface UnusedArgs {
 
 const DEFAULT_UNUSED_KINDS = ['function', 'method', 'class', 'struct', 'interface', 'trait', 'enum', 'type'];
 const MAX_REFS = 12;
+const MINOR_DEFS = new Set(['field', 'property', 'variable', 'constant']);
 /** `getattr(x, "as_" + vendor)`, `send("on_#{e}")`, `obj["handle" + kind]`, obj[`on${Name}`]: the literal prefix of a computed member name. */
 const DYNAMIC =
   /(?:getattr|hasattr|send|public_send|method)\(\s*[^,()\n]{0,60},?\s*f?["'](\w{2,})(?:["']\s*[+%]|[{#])|\[\s*["'`](\w{2,})(?:["']\s*\+|\$\{)/g;
@@ -345,7 +346,9 @@ export async function unused(ctx: ToolContext, args: UnusedArgs = {}): Promise<s
     const list: Ref[] = [];
     let alive = false;
     outer: for (const r of rows) {
-      const inFile = defs.filter(d => d.file_id === r.file_id);
+      // A field, property or variable with the same name is a use, not another definition of it: a Go
+      // struct embedded in another (`busyCounters` as a field line) is how that struct is used.
+      const inFile = defs.filter(d => d.file_id === r.file_id && !MINOR_DEFS.has(d.kind));
       for (const part of r.lines.split(',')) {
         const line = Number(part);
         if (inFile.some(d => line >= d.start_line && line <= d.end_line && isOwn(d, nameId, line))) continue;

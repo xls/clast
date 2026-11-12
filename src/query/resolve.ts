@@ -874,6 +874,20 @@ export class Resolver {
   externalSupertype(name: string, qualifier: string | null, fileId: number, lang: string): boolean {
     if (lang === 'go') return !!qualifier && this.goImports(fileId).get(qualifier) === null;
     if (lang === 'rust') return !qualifier && this.stdNames(fileId).has(name);
+    // JavaScript family: the name is imported from a package that is not part of this repository
+    // (`import { Service } from 'cordis'`). A class of that name elsewhere, in a test for instance, is
+    // not the base class.
+    if (langFamily(lang) === 'js' && !qualifier) {
+      for (const r of this.db.all<{ source: string; names: string; resolved_id: number | null }>(
+        `SELECT source, names, resolved_id FROM imports INDEXED BY idx_imports_file WHERE file_id = ?`, fileId
+      )) {
+        if (r.resolved_id !== null || !r.names || /^(\.|\/|@\/|~\/)/.test(r.source)) continue;
+        for (const raw of r.names.split(',')) {
+          const local = raw.includes('=') ? raw.slice(0, raw.indexOf('=')) : raw;
+          if (local === name) return true;
+        }
+      }
+    }
     return false;
   }
 

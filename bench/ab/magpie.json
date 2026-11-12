@@ -1,37 +1,170 @@
 [
   {
     "id": "interface-implementers",
+    "kind": "multi-hop",
     "q": "Which struct types outside test files can be used where a streamEncoder is expected (the interface in internal/gateway/gateway.go), either because they have its methods or because they embed one? List them all.",
-    "expect": ["anthropicEncoder", "chatEncoder", "geminiEncoder", "responsesEncoder", "fenceEncoder", "wholeEncoder", "usageEncoder", "crEncoder"]
+    "expect": [
+      "anthropicEncoder",
+      "chatEncoder",
+      "geminiEncoder",
+      "responsesEncoder",
+      "fenceEncoder",
+      "wholeEncoder",
+      "usageEncoder",
+      "crEncoder"
+    ]
   },
   {
     "id": "call-chain",
+    "kind": "multi-hop",
     "q": "In internal/pii, the method backend.find ends up calling encodeCache. Through which functions does the call go, in order?",
-    "expect": ["saveSoon", "saveCache"]
+    "expect": [
+      "saveSoon",
+      "saveCache"
+    ]
   },
   {
     "id": "tests-through-callers",
+    "kind": "multi-hop",
     "q": "No test calls the method loadCache of backend (internal/pii/cache.go) by name. Which test files exercise it through the functions that call it? List the test files.",
-    "expect": ["bounded_test.go", "pieces_test.go", "turns_test.go"]
+    "expect": [
+      "bounded_test.go",
+      "pieces_test.go",
+      "turns_test.go"
+    ]
   },
   {
     "id": "same-name",
+    "kind": "same-name",
     "q": "Several Go types have a method called save. Which save writes the memory's embedding vectors to disk? Name the type and the file.",
-    "expect": ["vecs", "vectors.go"]
+    "expect": [
+      "vecs",
+      "vectors.go"
+    ]
   },
   {
     "id": "counting",
+    "kind": "counting",
     "q": "How many struct types whose name ends in Tidy are defined in the Go code? Give the number and name four of them.",
-    "expect": ["12"]
+    "expect": [
+      "12"
+    ]
   },
   {
     "id": "dead-code",
+    "kind": "dead-code",
     "q": "Which functions in internal/gateway/redact.go are dead code: defined, but never called anywhere in the repository? Name them.",
-    "expect": ["redactedPrompt", "maskedText"]
+    "expect": [
+      "redactedPrompt",
+      "maskedText"
+    ]
   },
   {
     "id": "description",
+    "kind": "behaviour",
     "q": "Which type answers the gateway's question whether a caller may still spend, by reserving against the caller's allowance? Name the type and its file.",
-    "expect": ["Limiter", "budget.go"]
+    "expect": [
+      "Limiter",
+      "budget.go"
+    ]
+  },
+  {
+    "id": "usage-observer-implementers",
+    "kind": "multi-hop",
+    "q": "Which production (non-test) types implement the Observer interface declared in internal/usage/observe.go? Give each type's name and the file it is declared in.",
+    "expect": [
+      "Exporter",
+      "points.go",
+      "otel.go"
+    ]
+  },
+  {
+    "id": "dayzone-tzif-outside-callers",
+    "kind": "multi-hop",
+    "q": "In internal/dayzone, the helper that writes zoneinfo (TZif) bytes has a single caller in that package. Which functions or methods outside internal/dayzone call that caller directly? Give each with its file path.",
+    "expect": [
+      "SpendCap",
+      "limit.go",
+      "key_spend.go",
+      "usage/zone.go"
+    ]
+  },
+  {
+    "id": "header-wait-ceiling",
+    "kind": "behaviour",
+    "q": "Which function takes a response's headers and the current time and, when the user has set a maximum in settings, rewrites the header telling a client how long to wait before trying again (read either as seconds or as an HTTP date) down to that maximum, leaving shorter waits untouched? Give its name and file.",
+    "expect": [
+      "capRetryAfter",
+      "retry_after_cap.go"
+    ]
+  },
+  {
+    "id": "clock-aligned-timer-channel",
+    "kind": "behaviour",
+    "q": "Which function returns a channel that fires at the first whole multiple of a given interval on the wall clock, so that periodic loops with different periods wake up at the same instants? Give its name and file.",
+    "expect": [
+      "Next",
+      "beat.go"
+    ]
+  },
+  {
+    "id": "read-fills-0xff",
+    "kind": "same-name",
+    "q": "About 26 production types define a Read method. Which one ignores any underlying source and simply fills the caller's whole buffer with 0xFF bytes, reporting it all as read with no error? Give the type and its file.",
+    "expect": [
+      "poison",
+      "sessions/sessions.go"
+    ]
+  },
+  {
+    "id": "close-drops-idle-on-region-refusal",
+    "kind": "same-name",
+    "q": "Many types in internal/ define a Close method. Which type's Close, after closing the body, checks the first bytes it kept of a failed upstream reply for a 'not served in your country or region' refusal and, if it finds one, closes the transport's idle connections? Give the type and its file.",
+    "expect": [
+      "regionWatch",
+      "upstream_transport.go"
+    ]
+  },
+  {
+    "id": "count-writer-structs",
+    "kind": "counting",
+    "q": "How many struct types are declared in non-test Go code whose name ends in 'Writer' (case-sensitive, a type named exactly Writer included)?",
+    "expect": [
+      "15"
+    ]
+  },
+  {
+    "id": "dead-in-gateway-prompt",
+    "kind": "dead-code",
+    "q": "Which unexported functions in internal/gateway/prompt.go are never called anywhere in the repository (not even from tests)?",
+    "expect": [
+      "windowFor"
+    ]
+  },
+  {
+    "id": "where-keepcheckedin",
+    "kind": "lookup",
+    "q": "In which file is the function keepCheckedIn defined?",
+    "expect": [
+      "workbuddy_checkin.go"
+    ]
+  },
+  {
+    "id": "callers-hermescolumns",
+    "kind": "lookup",
+    "q": "Which functions call hermesColumns directly?",
+    "expect": [
+      "almaFiles",
+      "newHermesDB"
+    ]
+  },
+  {
+    "id": "hubconn-implementers",
+    "kind": "lookup",
+    "q": "Which types implement the hubConn interface in internal/library?",
+    "expect": [
+      "streamConn",
+      "httpConn"
+    ]
   }
 ]

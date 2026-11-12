@@ -1,32 +1,157 @@
 [
   {
     "id": "subclasses",
+    "kind": "lookup",
     "q": "Which classes extend ConversationDefinitionRegistry? List them all.",
-    "expect": ["ConversationEventRegistry", "ConversationGroupRegistry", "ConversationInteractionRegistry", "UserTextRegistry", "ConversationViewRegistry"]
+    "expect": [
+      "ConversationEventRegistry",
+      "ConversationGroupRegistry",
+      "ConversationInteractionRegistry",
+      "UserTextRegistry",
+      "ConversationViewRegistry"
+    ]
   },
   {
     "id": "call-chain",
+    "kind": "multi-hop",
     "q": "In packages/core/tools/src/batch.ts, runGroup ends up calling createToolResultMessage. Through which functions or methods does the call go, in order?",
-    "expect": ["commitReady", "commit"]
+    "expect": [
+      "commitReady",
+      "commit"
+    ]
   },
   {
     "id": "same-name",
+    "kind": "same-name",
     "q": "Many classes have a close method. Which close stops every process the SSH helper owns when the lease expires or the connection drops? Name the class and the file.",
-    "expect": ["RemoteProcesses", "helper-processes.ts"]
+    "expect": [
+      "RemoteProcesses",
+      "helper-processes.ts"
+    ]
   },
   {
     "id": "counting",
+    "kind": "counting",
     "q": "How many class declarations with a name ending in Registry exist under packages, not counting tests, specs and fixtures? Give the number.",
-    "expect": ["37"]
+    "expect": [
+      "37"
+    ]
   },
   {
     "id": "dead-code",
+    "kind": "dead-code",
     "q": "Which method of the class ToolCallTree (packages/client/ui-chat/src/client/model/tool-call-tree.ts) is never called anywhere in the repository? Name it.",
-    "expect": ["projectNodes"]
+    "expect": [
+      "projectNodes"
+    ]
   },
   {
-    "id": "description",
-    "q": "Which function decides the title shown for a session in the workspace tree, including the case of a blank session? Name the function and its file.",
-    "expect": ["sessionTitle", "tree.ts"]
+    "id": "shell-executor-descendants",
+    "kind": "multi-hop",
+    "q": "List every non-test class that directly or indirectly extends the abstract ShellExecutor class from the shell package, including subclasses of its subclasses.",
+    "expect": [
+      "LocalBashExecutor",
+      "SandboxBashExecutor",
+      "PwshLocalExecutor",
+      "SandboxPwshExecutor"
+    ]
+  },
+  {
+    "id": "plugin-manager-wsl-path",
+    "kind": "multi-hop",
+    "q": "The PluginManager class in the boot plugin-manager package can end up calling the WSL detection helper isWsl from native-command. Which app-boot function sits between them, and which PluginManager methods call that function directly?",
+    "expect": [
+      "assertBundlePlatform",
+      "readBundles",
+      "selectBundle"
+    ]
+  },
+  {
+    "id": "spill-notice-test-reach",
+    "kind": "multi-hop",
+    "q": "No test mentions the private helper isOmission in the spill-policy package's notice module. Through which exported function do tests reach it, and which test file inside the spill-policy package does so?",
+    "expect": [
+      "hasSpillNotice",
+      "notice.spec.ts"
+    ]
+  },
+  {
+    "id": "zone-bracket-time-string",
+    "kind": "behaviour",
+    "q": "Which function turns an epoch-milliseconds value into an ISO-8601-style local date and time string that ends with the numeric UTC offset followed by the IANA zone name in square brackets (like ...+08:00[Asia/Shanghai])? Give its name and file.",
+    "expect": [
+      "formatTimestamp",
+      "timestamp.ts"
+    ]
+  },
+  {
+    "id": "collapse-duplicate-handlers",
+    "kind": "behaviour",
+    "q": "When Apple's LaunchServices reports several on-disk copies of the same program (same bundle identifier and display name) as handlers for a file, which function reduces the list to one entry per program, keeping the system default copy or otherwise the highest version? Give its name and file.",
+    "expect": [
+      "dedupeMacApplications",
+      "file-applications.ts"
+    ]
+  },
+  {
+    "id": "flush-terminal-fragment",
+    "kind": "same-name",
+    "q": "Dozens of classes define a flush method. Which class's flush returns the leftover printable text when a PTY process exits, discarding any incomplete escape sequence still buffered? Give the class and file.",
+    "expect": [
+      "TerminalSanitizer",
+      "sanitize.ts"
+    ]
+  },
+  {
+    "id": "cancel-lsp-request",
+    "kind": "same-name",
+    "q": "Dozens of classes define a cancel method. Which class's cancel sends the language server protocol's $/cancelRequest notification for an in-flight request id, ignoring write failures? Give the class and file.",
+    "expect": [
+      "LspConnection",
+      "connection.ts"
+    ]
+  },
+  {
+    "id": "backend-class-count",
+    "kind": "counting",
+    "q": "How many classes in non-test code have a name ending in Backend? Count abstract classes too; exclude tests, specs and fixtures.",
+    "expect": [
+      "14"
+    ]
+  },
+  {
+    "id": "cordis-registry-dead-method",
+    "kind": "dead-code",
+    "q": "The DynamicCordisRegistry class in the cordis-host-runner extension keeps an index of pending plugin approval requests. One of its methods, which cancels a single pending approval, is never called anywhere. Which method is it?",
+    "expect": [
+      "disarmRequest"
+    ]
+  },
+  {
+    "id": "instruction-digest-file",
+    "kind": "lookup",
+    "q": "In which file is the function trimmedInstructionDigest defined?",
+    "expect": [
+      "digest.ts"
+    ]
+  },
+  {
+    "id": "watch-path-callers",
+    "kind": "lookup",
+    "q": "Which production functions or methods directly call canonicalizeWatchPath from the home-paths utility package?",
+    "expect": [
+      "assertOwnerOnly",
+      "resolveRootWatchMode",
+      "LocalCredentialProvider"
+    ]
+  },
+  {
+    "id": "subprocess-runtime-subclasses",
+    "kind": "lookup",
+    "q": "Which non-test classes extend the abstract SubprocessRuntime service class?",
+    "expect": [
+      "LocalSubprocessRuntime",
+      "SshSubprocessRuntime"
+    ]
   }
 ]
