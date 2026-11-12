@@ -35,7 +35,11 @@ export function isTestPath(path: string): boolean {
   let hit = testPathCache.get(path);
   if (hit === undefined) {
     // Also .NET / Java style project directories: FunctionalTests/, Foo.Tests/, UnitTest/ (case matters here).
-    hit = TEST_PATH_RE.test(path) || /(^|\/)[^/]*[a-z.](Tests?|Specs)\//.test(path);
+    // Below a Maven / Gradle main source root the directories are package names:
+    // `src/main/java/org/springframework/samples/petclinic` is production code, not a sample.
+    const main = /^(.*?)src\/main\/(?:java|kotlin|scala|groovy|resources)\/(?:.*\/)?([^/]+)$/.exec(path);
+    const probe = main ? `${main[1]}${main[2]}` : path;
+    hit = TEST_PATH_RE.test(probe) || /(^|\/)[^/]*[a-z.](Tests?|Specs)\//.test(probe);
     if (testPathCache.size > 100_000) testPathCache.clear();
     testPathCache.set(path, hit);
   }

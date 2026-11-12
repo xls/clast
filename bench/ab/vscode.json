@@ -1,0 +1,52 @@
+[
+  {
+    "id": "coalesce",
+    "q": "In the file watcher, where are raw file change events deduplicated / coalesced before they are emitted, and which production (non-test) code calls that function?",
+    "expect": ["coalesceEvents", "watcher.ts", "nodejsWatcherLib", "parcelWatcher"]
+  },
+  {
+    "id": "terminal-hierarchy",
+    "q": "What does the class TerminalInstance extend and implement? Give the full chain of supertypes (classes and interfaces, including what those extend).",
+    "expect": ["Disposable", "ITerminalInstance", "IBaseTerminalInstance"]
+  },
+  {
+    "id": "quick-access",
+    "q": "Which method picks the quick access provider for a typed prefix, in which class and file is it implemented, and what does it return when no registered prefix matches?",
+    "expect": ["QuickAccessRegistry", "quickAccess.ts", "defaultProvider"]
+  },
+  {
+    "id": "keybinding",
+    "q": "Which method decides what command a keypress maps to given the current context and pending chords, where is it defined, and which production file calls it?",
+    "expect": ["KeybindingResolver", "keybindingResolver.ts", "abstractKeybindingService"]
+  },
+  {
+    "id": "folding-contrib",
+    "q": "Which class under src/vs/editor/contrib/folding implements IEditorContribution, and in which file?",
+    "expect": ["FoldingController", "folding.ts"]
+  },
+  {
+    "id": "open-code-editor",
+    "q": "I want to change the signature of ICodeEditorService.openCodeEditor. Which class implements it, and which non-test files under src/vs/editor/contrib call it?",
+    "expect": ["AbstractCodeEditorService", "gotoError.ts", "goToCommands.ts", "referencesController.ts", "symbolNavigation.ts", "inlineCompletionsModel.ts", "linkedEditing.ts", "rename.ts"]
+  },
+  {
+    "id": "activate-by-event",
+    "q": "Which classes (not interfaces) under src/vs/workbench define a method named activateByEvent? List every one.",
+    "expect": ["ExtensionsActivator", "AbstractExtensionService", "ExtensionHostManager", "LazyCreateExtensionHostManager", "NullExtensionService", "ExtensionHostProxy"]
+  },
+  {
+    "id": "code-editor-service-subclasses",
+    "q": "Which classes extend AbstractCodeEditorService, including test helpers?",
+    "expect": ["StandaloneCodeEditorService", "TestCodeEditorService", "workbench/services/editor/browser/codeEditorService.ts"]
+  },
+  {
+    "id": "show-message",
+    "q": "When an extension calls vscode.window.showInformationMessage, which main-thread class receives the request, and in which file is it?",
+    "expect": ["MainThreadMessageService", "mainThreadMessageService.ts"]
+  },
+  {
+    "id": "glob-regexp",
+    "q": "In the base glob implementation, which function turns a glob pattern string into regular expression source, and which function in the same file calls it to build the RegExp matcher?",
+    "expect": ["parseRegExp", "glob.ts", "toRegExp"]
+  }
+]

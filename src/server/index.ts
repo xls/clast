@@ -13,6 +13,7 @@ import { symLine } from '../query/format.js';
 import { ToolContext } from '../tools/context.js';
 import { callGraph, getContext, hierarchy, search } from '../tools/search.js';
 import { changes, fileSummary, grep, overview, references, reindex, status } from '../tools/explore.js';
+import { stats } from '../tools/stats.js';
 import { VERSION } from '../version.js';
 
 const INSTRUCTIONS = `Clast is a pre-built, always-fresh code index for this repository (symbols, call graph, references, imports). Its tools answer in one call what would otherwise take several grep + file-read round trips, and they return exact file:line locations.
@@ -24,6 +25,7 @@ Use it first for code navigation:
 - "Who calls X / what breaks if I change X?" -> clast_call_graph (callers/callees, depth N) and clast_references (every usage, including non-call uses, types and imports).
 - "What implements / extends / overrides X?" -> clast_hierarchy.
 - Text that is not a symbol (strings, comments, config keys) -> clast_grep (matches are labelled with the enclosing function).
+- "How many X are there / how big is this / what does it consist of?" -> clast_stats (exact totals grouped by directory, kind or name; inventory, endpoints, database access, dependencies). Do not count search results by hand.
 - Reviewing or finishing a change -> clast_changes (symbols touched by the git diff, their callers, and the tests that exercise them).
 
 Tips: most tools accept several names at once (arrays) - batch lookups instead of calling repeatedly. Symbols can be addressed as name, Container.name, or path/to/file.ext:name. Results marked "?" are name-based guesses. The index updates itself when files change; edits you make are visible immediately.`;
@@ -31,6 +33,12 @@ Tips: most tools accept several names at once (arrays) - batch lookups instead o
 const text = (t: string) => ({ content: [{ type: 'text' as const, text: t }] });
 
 const READ_ONLY = { readOnlyHint: true, idempotentHint: true, openWorldHint: false } as const;
+
+// Claude Code defers MCP tools behind its tool search by default. Measured on vscode and OnAir
+// (bench/ab.mjs): with the tools deferred the agent answered every question with Grep and never
+// called clast (0 of 60 sessions); loaded up front it used clast in 8 of 10. This asks the client
+// to keep the navigation tools loaded.
+const ALWAYS_LOAD = { 'anthropic/alwaysLoad': true } as const;
 
 export async function startServer(): Promise<void> {
   const projectRoot = resolve(
@@ -77,6 +85,7 @@ export async function startServer(): Promise<void> {
         limit: z.number().int().min(1).max(100).default(10).describe('Max results per query'),
       },
       annotations: READ_ONLY,
+      _meta: ALWAYS_LOAD,
     },
     guard(args => search(ctx, args))
   );
@@ -95,6 +104,7 @@ export async function startServer(): Promise<void> {
         includeCalls: z.boolean().default(true).describe('Include callers and callees'),
       },
       annotations: READ_ONLY,
+      _meta: ALWAYS_LOAD,
     },
     guard(args => getContext(ctx, args))
   );
@@ -116,6 +126,7 @@ export async function startServer(): Promise<void> {
         uncertain: z.boolean().default(false).describe('List every unconfirmed caller instead of a short summary'),
       },
       annotations: READ_ONLY,
+      _meta: ALWAYS_LOAD,
     },
     guard(args => callGraph(ctx, args))
   );
@@ -135,6 +146,7 @@ export async function startServer(): Promise<void> {
         within: z.string().optional().describe('Only subtypes / overrides located under this path'),
       },
       annotations: READ_ONLY,
+      _meta: ALWAYS_LOAD,
     },
     guard(args => hierarchy(ctx, args))
   );
@@ -152,6 +164,7 @@ export async function startServer(): Promise<void> {
         includeTests: z.boolean().default(true),
       },
       annotations: READ_ONLY,
+      _meta: ALWAYS_LOAD,
     },
     guard(args => references(ctx, args))
   );
@@ -171,6 +184,7 @@ export async function startServer(): Promise<void> {
         limit: z.number().int().min(20).max(5000).default(300).describe('Max outline lines for a file'),
       },
       annotations: READ_ONLY,
+      _meta: ALWAYS_LOAD,
     },
     guard(args => fileSummary(ctx, args))
   );
@@ -185,6 +199,7 @@ export async function startServer(): Promise<void> {
         path: z.string().optional().describe('Sub-directory to map (default: whole repository)'),
       },
       annotations: READ_ONLY,
+      _meta: ALWAYS_LOAD,
     },
     guard(args => overview(ctx, args))
   );
@@ -205,8 +220,35 @@ export async function startServer(): Promise<void> {
         includeTests: z.boolean().default(true),
       },
       annotations: READ_ONLY,
+      _meta: ALWAYS_LOAD,
     },
     guard(args => grep(ctx, args))
+  );
+
+  server.registerTool(
+    'clast_stats',
+    {
+      title: 'Count and aggregate',
+      description:
+        'Exact counts over the whole repository for "how many ..." questions, grouped by directory, file, kind or name: no need to tally search results by hand. what=inventory (default): files and lines per language, production vs tests vs vendored, symbols by kind, longest functions, largest files and types. what=symbols: definitions matching a name pattern ("*Receiver", "*Controller|*Service") and/or kind. what=subtypes: all direct and indirect subclasses / implementers of a type. what=calls: call sites of a name ("query|execute"), optionally only on a receiver ("*Repository|db"). what=text: regex matches. what=imports: external dependencies. what=endpoints: HTTP / RPC route declarations of common frameworks. what=database: SQL, schema, ORM models and query calls (heuristic).',
+      inputSchema: {
+        what: z.enum(['inventory', 'symbols', 'subtypes', 'calls', 'text', 'imports', 'endpoints', 'database']).optional()
+          .describe('What to count (default inventory, or symbols when name is given)'),
+        name: z.string().optional().describe('symbols: name pattern with * and | ; subtypes: base type; calls: called name(s); text: regular expression'),
+        kind: z.string().optional().describe('symbols: only these kinds, comma separated (class, interface, function, method, ...)'),
+        on: z.string().optional().describe('calls: only on receivers / receiver types matching this pattern'),
+        path: z.string().optional().describe('Only files under / matching this path'),
+        lang: z.string().optional().describe('Only this language id'),
+        groupBy: z.enum(['dir', 'file', 'kind', 'lang', 'name', 'container', 'callee', 'caller', 'receiver', 'match']).optional()
+          .describe('Grouping of the main table (default dir)'),
+        depth: z.number().int().min(1).max(12).optional().describe('Directory depth for groupBy=dir (default 2)'),
+        limit: z.number().int().min(1).max(500).optional().describe('Rows per table (default 25)'),
+        includeTests: z.boolean().optional().describe('Include tests/examples in the tables (default: counted separately)'),
+      },
+      annotations: READ_ONLY,
+      _meta: ALWAYS_LOAD,
+    },
+    guard(args => stats(ctx, args))
   );
 
   server.registerTool(
@@ -230,6 +272,7 @@ export async function startServer(): Promise<void> {
       description: 'Index statistics and health: files, symbols, languages, whether indexing is in progress, watcher state.',
       inputSchema: {},
       annotations: READ_ONLY,
+      _meta: ALWAYS_LOAD,
     },
     guard(() => status(ctx, watcher), false)
   );

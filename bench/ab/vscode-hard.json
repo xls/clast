@@ -1,0 +1,32 @@
+[
+  {
+    "id": "picker-subclasses-transitive",
+    "q": "List every non-test class that is a direct or indirect subclass of PickerQuickAccessProvider (follow the inheritance chain to the leaves).",
+    "expect": ["AbstractCommandsQuickAccessProvider", "AbstractEditorCommandsQuickAccessProvider", "StandaloneCommandsQuickAccessProvider", "CommandsQuickAccessProvider", "BaseEditorQuickAccessProvider", "ActiveGroupEditorsByMostRecentlyUsedQuickAccess", "AllEditorsByAppearanceQuickAccess", "AllEditorsByMostRecentlyUsedQuickAccess", "DebugConsoleQuickAccess", "StartDebugQuickAccessProvider", "InstallExtensionQuickAccessProvider", "ManageExtensionsQuickAccessProvider", "IssueQuickAccess", "ViewQuickAccessProvider", "AnythingQuickAccessProvider", "TextSearchQuickAccess", "SymbolsQuickAccessProvider", "TasksQuickAccessProvider", "TerminalQuickAccessProvider"]
+  },
+  {
+    "id": "coalesce-chain",
+    "q": "Trace upwards from the file watcher's coalesceEvents function in production code: which methods call it, and which methods call those? Give method names.",
+    "expect": ["handleFileChanges", "fileChangesAggregator", "handleParcelEvents", "startPolling", "startWatching"]
+  },
+  {
+    "id": "resolver-users-and-subclasses",
+    "q": "Which methods of AbstractKeybindingService call _getResolver(), and which classes (including tests, direct or indirect) extend AbstractKeybindingService?",
+    "expect": ["getDefaultKeybindings", "getKeybindings", "lookupKeybindings", "lookupKeybinding", "softDispatch", "_doDispatch", "StandaloneKeybindingService", "WorkbenchKeybindingService", "MobileKeybindingService", "TestKeybindingService", "TestStandaloneKeybindingService"]
+  },
+  {
+    "id": "soft-dispatch-callers",
+    "q": "Which non-test files call softDispatch on the keybinding service? List every file.",
+    "expect": ["contentHoverController.ts", "actionList.ts", "hoverService.ts", "listService.ts", "agentsWindowExtensionsWidget.ts", "developerActions.ts", "dialog.ts", "modalEditorPart.ts", "accessibleView.ts", "issueReporterKeybindings.ts", "nativeIssueFormService.ts", "markersView.ts", "terminalInstance.ts"]
+  },
+  {
+    "id": "resolve-impact",
+    "q": "I want to add a required parameter to KeybindingResolver.resolve. Which methods call it directly, and which methods of the same service call the dispatching one of those (one more level up)?",
+    "expect": ["softDispatch", "_doDispatch", "_dispatch", "_singleModifierDispatch", "dispatchByUserSettingsLabel"]
+  },
+  {
+    "id": "mobile-keybinding-chain",
+    "q": "Give the complete supertype chain of MobileKeybindingService: every class it inherits from and every interface those implement.",
+    "expect": ["WorkbenchKeybindingService", "AbstractKeybindingService", "Disposable", "IKeybindingService", "IDisposable"]
+  }
+]

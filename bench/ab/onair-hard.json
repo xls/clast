@@ -1,0 +1,32 @@
+[
+  {
+    "id": "iqsource-transitive",
+    "q": "List every non-test class that is a direct or indirect subclass of IqSource (follow the inheritance chain to the leaves).",
+    "expect": ["BeamIqSource", "DiversitySource", "SyntheticWideSource", "UsbHackrf", "NativeSource", "AirspySource", "AirspyHfSource", "BladeSource", "FobosSource", "HpsdrSource", "HydraSource", "IcomSource", "KiwiSource", "LimeSource", "NrspStSource", "PlutoSource", "RfnmSource", "RtlSource", "RtlTcpSource", "Rx888Source", "SdrplaySource", "SdrppSource", "SpyServerSource", "TciSource", "UsrpSource", "AudioSource", "HamlibSource", "SoapySource", "HackrfSource", "HackrfAuto", "PacedSource", "FileSource", "SyntheticSource"]
+  },
+  {
+    "id": "classify-adc-core",
+    "q": "Inside core/ (not the app UI), which classes' methods call classifyAdc? Name the class and method for each.",
+    "expect": ["AutoGain", "GainOptimiser", "GainSweep"]
+  },
+  {
+    "id": "vfo-chain",
+    "q": "Give the full call chain by which the per-frame UI draw code ends up calling VfoBank::setChannels: every function from the draw loop down to setChannels, with files.",
+    "expect": ["floatingWindows", "draw_ui.cpp", "vfoSync", "vfo_ui.cpp", "setVfoChannels", "engine.h"]
+  },
+  {
+    "id": "generic-gain-chain",
+    "q": "Which functions call genericGain outside tests, and for the one in the app status bar, which functions call it in turn? Give function names and files.",
+    "expect": ["gainControl", "statusbar.cpp", "GainSweep", "AutoGain", "jni_onair.cpp", "specx_ui.cpp", "draw_ui.cpp"]
+  },
+  {
+    "id": "set-channels-other",
+    "q": "Besides Engine::setVfoChannels, which other code in core calls setChannels on a VfoBank? Give the file and the enclosing functions.",
+    "expect": ["wide_session.cpp", "clearState", "bankPlace"]
+  },
+  {
+    "id": "paced-sources",
+    "q": "Which classes derive from PacedSource, what does PacedSource itself derive from, and in which file are they all defined?",
+    "expect": ["FileSource", "SyntheticSource", "IqSource", "core/src/source/source.cpp"]
+  }
+]

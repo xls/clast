@@ -53,7 +53,7 @@ describe('MCP server', () => {
     assert.deepEqual(tools.map(t => t.name).sort(), [
       'clast_call_graph', 'clast_changes', 'clast_comment', 'clast_file_summary', 'clast_get_context',
       'clast_grep', 'clast_hierarchy', 'clast_overview', 'clast_references', 'clast_reindex', 'clast_search',
-      'clast_status',
+      'clast_stats', 'clast_status',
     ]);
     for (const tool of tools) {
       assert.ok(tool.description && tool.description.length > 40, `${tool.name} description`);

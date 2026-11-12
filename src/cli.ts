@@ -10,6 +10,7 @@ import { SourceParser } from './parser/index.js';
 import { ToolContext } from './tools/context.js';
 import { callGraph, getContext, hierarchy, search } from './tools/search.js';
 import { changes, fileSummary, grep, overview, references, reindex, status } from './tools/explore.js';
+import { stats, type StatsArgs } from './tools/stats.js';
 import { VERSION } from './version.js';
 
 const HELP = `clast-ai ${VERSION} - code index for LLM agents
@@ -29,6 +30,8 @@ usage: clast-ai [command] [args] [--root <dir>]
   refs <name>                all references to an identifier   [--path p] [--limit n]
   grep <pattern>             text search with enclosing symbols   [--regex] [--path p] [--limit n]
   changes [base]             symbols touched by the git diff and their impact
+  stats [what] [name]        exact counts: inventory | symbols | subtypes | calls | text | imports | endpoints | database
+                             [--kind k] [--on receiver] [--path p] [--lang l] [--group-by g] [--depth n] [--limit n] [--tests]
   parse <file> [--json]      debug: show what the extractor produces for a file
   ast <file>                 debug: dump the tree-sitter syntax tree
 
@@ -44,6 +47,7 @@ const CLI_NAMES: Record<string, string> = {
   clast_overview: 'clast-ai overview',
   clast_grep: 'clast-ai grep',
   clast_changes: 'clast-ai changes',
+  clast_stats: 'clast-ai stats',
   clast_reindex: 'clast-ai index',
   clast_status: 'clast-ai status',
 };
@@ -199,6 +203,19 @@ async function main(): Promise<void> {
       case 'changes':
         out = await changes(ctx, { base: positional[0] });
         break;
+      case 'stats':
+      case 'count': {
+        const WHATS = ['inventory', 'symbols', 'subtypes', 'calls', 'text', 'imports', 'endpoints', 'database'];
+        const hasWhat = WHATS.includes(positional[0] ?? '');
+        out = await stats(ctx, {
+          what: hasWhat ? (positional[0] as StatsArgs['what']) : undefined,
+          name: (hasWhat ? positional.slice(1) : positional).join(' ') || undefined,
+          kind: str('kind'), on: str('on'), path: str('path'), lang: str('lang'),
+          groupBy: str('group-by') as StatsArgs['groupBy'], depth: num('depth'), limit: num('limit'),
+          includeTests: includeTests === true,
+        });
+        break;
+      }
       default:
         console.error(`unknown command: ${cmd}\n\n${HELP}`);
         process.exitCode = 1;

@@ -1,0 +1,52 @@
+[
+  {
+    "id": "iqsource-subclasses",
+    "q": "Which classes derive directly from IqSource (outside tests)? List every one with its file.",
+    "expect": ["BeamIqSource", "DiversitySource", "SyntheticWideSource", "UsbHackrf", "NativeSource", "HackrfSource", "HackrfAuto", "PacedSource", "AudioSource", "HamlibSource", "SoapySource"]
+  },
+  {
+    "id": "prefs-implementers",
+    "q": "The app has an abstract Prefs interface with a pure virtual setChannels. Where is it declared and which structs implement it?",
+    "expect": ["platform.h", "DefaultsPrefs", "FilePrefs", "RxPrefs"]
+  },
+  {
+    "id": "gain-for-total",
+    "q": "Where is gainForTotal implemented, and which code outside tests calls it? Give file paths.",
+    "expect": ["core/src/source/gain.cpp", "jni_onair.cpp"]
+  },
+  {
+    "id": "vfo-default-bandwidth",
+    "q": "Where is vfoDefaultBandwidthHz defined, and where is it called (outside tests)?",
+    "expect": ["core/src/engine/vfo.cpp", "vfo_state.h"]
+  },
+  {
+    "id": "vfo-set-channels",
+    "q": "How do the multi-VFO channels reach VfoBank::setChannels from the UI? Name the Engine method in between and the UI file that calls it.",
+    "expect": ["setVfoChannels", "engine.h", "vfo_ui.cpp"]
+  },
+  {
+    "id": "mode-tunings",
+    "q": "Where is modeTunings() implemented and which non-test code calls it?",
+    "expect": ["modes.cpp", "jni_onair.cpp"]
+  },
+  {
+    "id": "crash-check",
+    "q": "Which function tells whether the previous run of the program crashed, where is it implemented, and where is it called at startup?",
+    "expect": ["lastRunCrashed", "crash_report.cpp", "main.cpp"]
+  },
+  {
+    "id": "generic-gain",
+    "q": "Which non-test files call genericGain, and in which file is it implemented?",
+    "expect": ["core/src/source/gain.cpp", "jni_onair.cpp", "statusbar.cpp"]
+  },
+  {
+    "id": "adc-advice",
+    "q": "Which function produces the one-line advice text for an ADC status, where is it implemented, and which app UI files use it?",
+    "expect": ["adcAdvice", "gain.cpp", "atsc3_ui.cpp", "dab_ui.cpp", "dtmb_ui.cpp", "fm_ui.cpp", "isdbt_ui.cpp", "statusbar.cpp"]
+  },
+  {
+    "id": "classify-adc",
+    "q": "Where is classifyAdc implemented, what are the possible AdcStatus values, and roughly how many app UI files call it?",
+    "expect": ["gain.cpp", "NoSignal", "Overload", "Good"]
+  }
+]
