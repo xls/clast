@@ -63,8 +63,9 @@ What this says:
   $0.25, all correct, and no clast call in any session. What is left is the fixed prompt cost.
 - **One of many same-named methods.** Four questions on OnAir of the form "which `reset` belongs to
   the Viterbi decoder" (the repository has 1,157 methods called `reset`, 373 called `push`), 12
-  sessions per arm: clast 1.0 call and 11.2 s, grep 3.6 calls and 17.4 s, cost equal ($0.12 against
-  $0.11), all answers correct. Search ranks the definitions of a common name by the context words:
+  sessions per arm: clast 1.0 call and 11.2 s, grep 3.6 calls and 17.4 s, all answers correct. Median
+  cost $0.06 against $0.13. The mean is $0.12 against $0.11, because the first two clast sessions
+  wrote the whole prompt into the cache ($0.45 each, a one-off that the other ten reused). Search ranks the definitions of a common name by the context words:
   the container, the doc comment, the calls in the body.
 - **Small samples.** Two repositories, three runs per question, questions written by the tool's
   author. The figures show the direction, not a precise ratio.

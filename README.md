@@ -266,7 +266,7 @@ the vscode results (TypeScript, 15.7k files) are in the full tables.
 | Find dead code in a directory | 2 / 16 | 20 s / 124 s | $0.15 / $1.89 |
 | Multi-hop questions (call chains, subclasses, impact) | 1.2 / 5.9 | 12.5 s / 25.8 s | $0.056 / $0.212 |
 | Code described by behaviour, in a repo the model has not seen | 1.8 / 4.2 | 12.0 s / 20.5 s | $0.068 / $0.197 |
-| One of many same-named methods ("which `reset` belongs to the Viterbi decoder") | 1.0 / 3.6 | 11.2 s / 17.4 s | $0.12 / $0.11 |
+| One of many same-named methods ("which `reset` belongs to the Viterbi decoder") | 1.0 / 3.6 | 11.2 s / 17.4 s | $0.06 / $0.13 (median) |
 | Counting ("how many receiver classes") | 1.0 / 3.3 | 11 s / 34 s | about $0.02 / $0.29 |
 | Simple lookups (where is X, who calls X) | 1.7 / 1.7 | 12.7 s / 14.3 s | $0.063 / $0.096 |
 | Cross-cutting refactors (rename a method, add a parameter everywhere) | 8.3 / 8.3 | 27 s / 26 s | $0.26 / $0.25 |
