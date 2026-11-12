@@ -1086,6 +1086,15 @@ export class Resolver {
         fam.add(other.id);
       }
     }
+    // The native bridge: a Kotlin `external fun` / Java `native` method and the C or C++ function of
+    // the same name are one function written in two languages (JNI). Calls of either reach the other.
+    const bridge = (s: SymbolRow): boolean =>
+      (s.lang === 'kotlin' || s.lang === 'java') && /\bexternal\s+fun\b|\bnative\b/.test(s.signature);
+    const native = (s: SymbolRow): boolean => langFamily(s.lang) === 'c' && (s.kind === 'function' || s.kind === 'declaration');
+    if (bridge(sym) || native(sym)) {
+      const other = bridge(sym) ? native : bridge;
+      for (const twin of this.candidates(sym.name)) if (twin.id !== sym.id && other(twin)) fam.add(twin.id);
+    }
     this.familyCache.set(sym.id, fam);
     return fam;
   }

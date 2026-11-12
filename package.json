@@ -37,6 +37,7 @@
     "src",
     "skills",
     "plugin",
+    "grammars",
     ".claude-plugin",
     "bench",
     "tsconfig.json",
