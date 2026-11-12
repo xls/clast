@@ -1,0 +1,37 @@
+[
+  {
+    "id": "interface-implementers",
+    "q": "Which struct types outside test files can be used where a streamEncoder is expected (the interface in internal/gateway/gateway.go), either because they have its methods or because they embed one? List them all.",
+    "expect": ["anthropicEncoder", "chatEncoder", "geminiEncoder", "responsesEncoder", "fenceEncoder", "wholeEncoder", "usageEncoder", "crEncoder"]
+  },
+  {
+    "id": "call-chain",
+    "q": "In internal/pii, the method backend.find ends up calling encodeCache. Through which functions does the call go, in order?",
+    "expect": ["saveSoon", "saveCache"]
+  },
+  {
+    "id": "tests-through-callers",
+    "q": "No test calls the method loadCache of backend (internal/pii/cache.go) by name. Which test files exercise it through the functions that call it? List the test files.",
+    "expect": ["bounded_test.go", "pieces_test.go", "turns_test.go"]
+  },
+  {
+    "id": "same-name",
+    "q": "Several Go types have a method called save. Which save writes the memory's embedding vectors to disk? Name the type and the file.",
+    "expect": ["vecs", "vectors.go"]
+  },
+  {
+    "id": "counting",
+    "q": "How many struct types whose name ends in Tidy are defined in the Go code? Give the number and name four of them.",
+    "expect": ["12"]
+  },
+  {
+    "id": "dead-code",
+    "q": "Which functions in internal/gateway/redact.go are dead code: defined, but never called anywhere in the repository? Name them.",
+    "expect": ["redactedPrompt", "maskedText"]
+  },
+  {
+    "id": "description",
+    "q": "Which type answers the gateway's question whether a caller may still spend, by reserving against the caller's allowance? Name the type and its file.",
+    "expect": ["Limiter", "budget.go"]
+  }
+]

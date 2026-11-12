@@ -437,7 +437,10 @@ export async function unused(ctx: ToolContext, args: UnusedArgs = {}): Promise<s
     const container = s.qname.includes('.') ? s.qname.split('.').slice(-2, -1)[0]! : null;
     if (
       IMPLICIT.has(s.name) || /^__\w+__$/.test(s.name) || s.name.startsWith('~') || s.name.startsWith('operator') ||
-      s.name === container || (s.lang === 'go' && /^(Test|Benchmark|Example|Fuzz)/.test(s.name))
+      s.name === container || (s.lang === 'go' && /^(Test|Benchmark|Example|Fuzz)/.test(s.name)) ||
+      // A computed name (`[Service.init]()`) or one that is not an identifier (`'agent/created'(...)` in an
+      // event map) is reached through a symbol or a string, never by writing the name.
+      !/^[A-Za-z_$][\w$]*$/.test(s.name)
     ) return 'implicit';
     if (marked(s)) return 'marked';
     if (
@@ -455,9 +458,15 @@ export async function unused(ctx: ToolContext, args: UnusedArgs = {}): Promise<s
       (defsOf.get(s.name) ?? []).some(d => d.parent_id !== null && db.symbolById(d.parent_id)?.kind === 'interface')
     ) return 'structural';
     // A member of an object literal: the object is handed to something that calls it by shape.
-    if ((s.lang === 'typescript' || s.lang === 'javascript') && s.kind === 'method') {
+    if (langFamily(s.lang) === 'js' && s.kind === 'method') {
       const parent = s.parent_id !== null ? db.symbolById(s.parent_id) : undefined;
       if (!parent || !CONTAINER_KINDS.has(parent.kind)) return 'structural';
+    }
+    // A named function expression (`useMemo(function bind() { ... })`, `x = function f() {}`) is used
+    // where it is written: its name is only a label.
+    if (langFamily(s.lang) === 'js' && s.kind === 'function') {
+      const line = srcOf(s.path)?.[s.start_line - 1] ?? '';
+      if (new RegExp(`[(=,:?&|]\\s*(async\\s+)?function\\s*\\*?\\s*${s.name.replace(/[$]/g, '\\$&')}\\b`).test(line)) return 'structural';
     }
     // A class with a main method is a program: something outside the code starts it.
     if (CONTAINER_KINDS.has(s.kind) && isProgram(s)) return 'implicit';

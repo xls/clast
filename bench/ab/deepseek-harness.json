@@ -1,0 +1,32 @@
+[
+  {
+    "id": "subclasses",
+    "q": "Which classes extend ConversationDefinitionRegistry? List them all.",
+    "expect": ["ConversationEventRegistry", "ConversationGroupRegistry", "ConversationInteractionRegistry", "UserTextRegistry", "ConversationViewRegistry"]
+  },
+  {
+    "id": "call-chain",
+    "q": "In packages/core/tools/src/batch.ts, runGroup ends up calling createToolResultMessage. Through which functions or methods does the call go, in order?",
+    "expect": ["commitReady", "commit"]
+  },
+  {
+    "id": "same-name",
+    "q": "Many classes have a close method. Which close stops every process the SSH helper owns when the lease expires or the connection drops? Name the class and the file.",
+    "expect": ["RemoteProcesses", "helper-processes.ts"]
+  },
+  {
+    "id": "counting",
+    "q": "How many class declarations with a name ending in Registry exist under packages, not counting tests, specs and fixtures? Give the number.",
+    "expect": ["37"]
+  },
+  {
+    "id": "dead-code",
+    "q": "Which method of the class ToolCallTree (packages/client/ui-chat/src/client/model/tool-call-tree.ts) is never called anywhere in the repository? Name it.",
+    "expect": ["projectNodes"]
+  },
+  {
+    "id": "description",
+    "q": "Which function decides the title shown for a session in the workspace tree, including the case of a blank session? Name the function and its file.",
+    "expect": ["sessionTitle", "tree.ts"]
+  }
+]

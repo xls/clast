@@ -766,7 +766,11 @@ export class Resolver {
         const eq = raw.indexOf('=');
         if (eq !== -1) {
           if (raw.slice(eq + 1) === sym.name && raw.slice(0, eq) !== sym.name) out.push({ fileId: r.file_id, alias: raw.slice(0, eq) });
-        } else if (isDefault && parts.length === 1 && raw !== sym.name && raw !== '*') {
+        } else if (
+          isDefault && parts.length === 1 && raw !== sym.name && raw !== '*' &&
+          // A name the file defines or re-exports is a named import of that, not a local name for the default.
+          !this.candidates(raw).some(c => c.file_id === sym.file_id || this.importsOf(sym.file_id).has(c.file_id))
+        ) {
           // `const express = require('./express')` / `import express from './express'`
           out.push({ fileId: r.file_id, alias: raw });
         }
@@ -1797,7 +1801,9 @@ export class Resolver {
         const original = imported.aliases.get(name);
         // ... or the file it is imported from re-exports it under this name (`export { parseId as getId } from`).
         let real: string | null = original ?? this.importedNames(from).aliases.get(name) ?? null;
-        if (!real && !this.candidates(name).some(c => c.file_id === from)) {
+        // Not when the name itself is defined there, or in a file it re-exports (`export * from './message'`
+        // in a package's index): then the import means that definition, not the default export.
+        if (!real && !this.candidates(name).some(c => c.file_id === from || this.importsOf(from).has(c.file_id))) {
           real = this.defaultExportOf(from);
           if (real === '*') {
             // The imported file re-exports another module's default export.

@@ -328,8 +328,10 @@ export function searchSymbols(db: ClastDb, query: string, opts: SearchOptions = 
   // Every definition with exactly that name is a candidate, and the other words choose among them by
   // what surrounds each one: its container, what its body calls and on which receivers, its signature
   // and doc comment, its path. Grep cannot do this: it returns every line that says "write".
+  // Only the first word is taken for the name ("reset viterbi decoder"): in a sentence that describes
+  // behaviour, later words such as "send" or "model" are part of the description, not a name.
   if (isMultiWord && terms.length >= 2) {
-    for (const t of terms) {
+    for (const t of terms.slice(0, 1)) {
       const context = terms.filter(o => o !== t);
       const named = db.all<SymbolRow>(`${select} WHERE s.name_lc = ? LIMIT 3000`, t).filter(accept);
       if (named.length === 0) continue;
@@ -345,7 +347,8 @@ export function searchSymbols(db: ClastDb, query: string, opts: SearchOptions = 
           sum += hit(container, c) ? 1 : hit(text, c) ? 0.8 : hit(body, c) || hit(path, c) ? 0.5 : 0;
         }
         // No context word anywhere near it: not this one (scored below every other kind of match).
-        return sum === 0 ? -1000 : 52 + (sum / context.length) * 30;
+        // At least half of the other words must be near it; one stray match is not context.
+        return sum === 0 || sum / context.length < 0.5 ? -1000 : 52 + (sum / context.length) * 30;
       });
     }
     for (const [id, h] of found) if (h.score < 0) found.delete(id);

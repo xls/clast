@@ -1,4 +1,5 @@
-import { posix } from 'node:path';
+import { existsSync, readFileSync } from 'node:fs';
+import { join, posix } from 'node:path';
 import type { ClastDb } from '../db/index.js';
 
 const JS_LANGS = new Set(['typescript', 'tsx', 'javascript', 'vue']);
@@ -96,6 +97,80 @@ class PathIndex {
   }
 }
 
+/**
+ * The packages of a monorepo by name: `import { x } from '@scope/pkg'` names a directory of this
+ * repository, not a dependency. Read from every package.json next to indexed code.
+ */
+class Workspace {
+  private readonly packages = new Map<string, { dir: string; targets: Map<string, string> }>();
+
+  constructor(root: string, files: Array<{ path: string }>) {
+    const dirs = new Set<string>();
+    for (const f of files) {
+      const parts = f.path.split('/');
+      for (let n = Math.min(parts.length - 1, 8); n >= 1; n--) dirs.add(parts.slice(0, n).join('/'));
+    }
+    for (const dir of dirs) {
+      const file = join(root, dir, 'package.json');
+      if (!existsSync(file)) continue;
+      try {
+        const pkg = JSON.parse(readFileSync(file, 'utf8')) as {
+          name?: string; main?: string; module?: string; types?: string; exports?: unknown;
+        };
+        if (!pkg.name) continue;
+        const targets = new Map<string, string>();
+        const entry = (v: unknown): string | undefined => {
+          if (typeof v === 'string') return v;
+          if (v && typeof v === 'object') {
+            const o = v as Record<string, unknown>;
+            return entry(o.source ?? o.import ?? o.default ?? o.require ?? o.types);
+          }
+          return undefined;
+        };
+        const main = pkg.module ?? pkg.main ?? pkg.types;
+        if (main) targets.set('.', main);
+        if (typeof pkg.exports === 'string') targets.set('.', pkg.exports);
+        else if (pkg.exports && typeof pkg.exports === 'object') {
+          for (const [key, value] of Object.entries(pkg.exports as Record<string, unknown>)) {
+            const t = key.startsWith('.') ? entry(value) : key === 'import' || key === 'default' ? entry(value) : undefined;
+            if (t) targets.set(key.startsWith('.') ? key : '.', t);
+          }
+        }
+        this.packages.set(pkg.name, { dir, targets });
+      } catch {
+        // not valid JSON: not a package we can read
+      }
+    }
+  }
+
+  get size(): number {
+    return this.packages.size;
+  }
+
+  /** File id for `@scope/pkg` or `@scope/pkg/sub/path`, or undefined when it is not a package of this repository. */
+  resolve(spec: string, index: PathIndex): number | undefined {
+    const parts = spec.split('/');
+    const name = spec.startsWith('@') ? parts.slice(0, 2).join('/') : parts[0]!;
+    const pkg = this.packages.get(name);
+    if (!pkg) return undefined;
+    const sub = parts.slice(spec.startsWith('@') ? 2 : 1).join('/');
+    const tries: string[] = [];
+    // The declared target points at build output (lib/index.js); the source sits beside it.
+    const declared = pkg.targets.get(sub ? './' + sub : '.');
+    if (declared) {
+      const t = declared.replace(/^\.\//, '').replace(EXT_RE, '').replace(/\.d$/, '');
+      tries.push(t, t.replace(/^(lib|dist|build|out|esm|cjs)\//, 'src/'), 'src/' + t.slice(t.lastIndexOf('/') + 1));
+    }
+    if (sub) tries.push('src/' + sub, sub);
+    else tries.push('src/index', 'index', 'src/main', 'lib/index');
+    for (const t of tries) {
+      const hit = index.lookup(pkg.dir + '/' + t);
+      if (hit !== undefined) return hit;
+    }
+    return undefined;
+  }
+}
+
 function commonPrefixSegments(a: string, b: string): number {
   const as = a.split('/');
   const bs = b.split('/');
@@ -104,7 +179,7 @@ function commonPrefixSegments(a: string, b: string): number {
   return n;
 }
 
-function resolveOne(row: ImportRow, index: PathIndex): number | undefined {
+function resolveOne(row: ImportRow, index: PathIndex, workspace: Workspace | null): number | undefined {
   const dir = posix.dirname(row.path);
   let src = row.source;
 
@@ -117,6 +192,8 @@ function resolveOne(row: ImportRow, index: PathIndex): number | undefined {
       return index.lookup(target);
     }
     if (src.startsWith('/')) return index.lookup(src.slice(1));
+    const local = workspace?.resolve(src, index);
+    if (local !== undefined) return local;
     // tsconfig-style aliases: "@/x", "~/x", "src/x", bare "vs/base/common/x"
     const stripped = src.replace(/^(@|~)\//, '');
     if (!stripped.includes('/')) return undefined; // bare package name
@@ -195,9 +272,22 @@ function resolveOne(row: ImportRow, index: PathIndex): number | undefined {
  * Resolve import specifiers to indexed files. With `fileIds`, only imports of
  * those files are (re)resolved; otherwise every import is.
  */
-export function resolveImports(db: ClastDb, fileIds?: number[], newPaths?: string[]): number {
+/** Workspace packages per project root, re-read at most once a minute (package.json files rarely change). */
+const workspaces = new Map<string, { at: number; ws: Workspace }>();
+
+export function resolveImports(db: ClastDb, fileIds?: number[], newPaths?: string[], root?: string): number {
   const files = db.all<{ id: number; path: string }>(`SELECT id, path FROM files`);
   const index = new PathIndex(files);
+  let workspace: Workspace | null = null;
+  if (root) {
+    const cached = workspaces.get(root);
+    if (cached && fileIds && Date.now() - cached.at < 60_000) workspace = cached.ws;
+    else {
+      workspace = new Workspace(root, files);
+      workspaces.set(root, { at: Date.now(), ws: workspace });
+    }
+    if (workspace.size === 0) workspace = null;
+  }
 
   const base = `SELECT i.rowid AS rowid, i.file_id, i.source, f.path, f.lang
                 FROM imports i JOIN files f ON f.id = i.file_id`;
@@ -228,7 +318,7 @@ export function resolveImports(db: ClastDb, fileIds?: number[], newPaths?: strin
     for (const row of rows) {
       let target: number | undefined;
       try {
-        target = resolveOne(row, index);
+        target = resolveOne(row, index, workspace);
       } catch {
         target = undefined;
       }
