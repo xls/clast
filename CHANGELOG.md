@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.2.4
+
+- The server instructions and the usage skill tell the agent not to use clast for a rename or a
+  signature change of a distinctive name (one grep finds every site). In the refactor benchmark the
+  clast sessions had made about three extra calls on such tasks; after the change they make none
+  (8.3 calls against 8.3 for plain grep on OnAir).
+
 ## 0.2.3
 
 - `clast-ai guide` prints the usage guide (the Claude Code plugin's `explore` skill) as Markdown,

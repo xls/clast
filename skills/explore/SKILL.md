@@ -12,7 +12,7 @@ description: >
 Clast answers structural questions in one call. It does not replace Grep for "where is this exact
 name" or Read for code you are about to edit: measured against plain grep, clast wins on questions that
 take several hops, on counting, on dead code and on finding code by what it does; simple lookups are a
-tie. Use it where it wins.
+tie, and for mechanical edits it only adds calls. Use it where it wins.
 
 ## Pick the tool by question
 
@@ -40,8 +40,12 @@ tie. Use it where it wins.
   Grep or Read before you rely on it; unmarked edges are resolved through types and imports.
 - Callers of a method include calls through its interface or base class, not calls bound to an override
   in a subclass. For every implementation's callers ask for the interface or base method.
-- Before a signature change: `clast_impact` lists the overrides and declarations that change with it,
-  the callers by file and line, and the tests that reach it even when none names it.
+- Renaming a symbol or changing a signature: when the name is distinctive, skip clast. One Grep for
+  the name lists every site; edit from that. Looking the callers up in clast first and then grepping
+  anyway is what made clast sessions slower on refactors.
+- Use `clast_impact` before such a change only when Grep cannot do the job: the name is common
+  (`get`, `run`, `close`), overrides or interface implementations must change with it, or you need
+  to know which tests reach it.
 - `clast_unused` lists candidates judged by name. Members with common names (`get`, `run`) are never
   listed, and reflection or framework wiring can keep a listed symbol alive: confirm with the compiler
   or the tests before deleting.
