@@ -8,7 +8,7 @@
     {
       "name": "clast",
       "source": "./",
-      "description": "Code index MCP server (symbol search, call graph, hierarchy, impact, dead code, counts) plus /clast:deadcode, /clast:impact, /clast:audit and /clast:status."
+      "description": "Code index MCP server (symbol search, call graph, hierarchy, impact, dead code, counts) plus /clast:use, /clast:deadcode, /clast:impact, /clast:audit and /clast:status. Off in a project until /clast:use."
     }
   ]
 }

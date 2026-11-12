@@ -75,9 +75,29 @@ What this says:
 One result changed the server itself. Claude Code defers MCP tools behind its tool search by default,
 and in that state the agent never called clast: 0 of 60 sessions, every question answered with Grep.
 The navigation tools now ask the client to keep them loaded, after which the agent used clast in every
-question session where it helped. The price is about 5k tokens of tool definitions and instructions in
-the cached prompt (measured with 13 tools: 23.7k against 19.3k prompt tokens for a session that calls
-no tool; `clast_impact` and `clast_unused` add about 0.6k).
+question session where it helped.
+
+The price of that is the size of the tool definitions in the prompt, sent again on every turn.
+Measured with one trivial request and the same built-in tools each time:
+
+| Setup | Prompt tokens | Added by clast |
+| --- | ---: | ---: |
+| No clast | 34,327 | |
+| clast off for the project (no `.clast` folder) | 34,784 | 457 |
+| clast on, six tools kept loaded (0.3.0) | 37,791 | 3,464 |
+| clast on, eleven tools kept loaded (0.2.x) | 39,613 | 5,286 |
+
+Six tools hold the behaviour. On a ten-question set (dead code, tests that reach a function,
+same-named methods, behaviour descriptions, inheritance, call chains, counting; 20 sessions) the
+six-tool server needed 1.2 calls and 12.2 s with 20 of 20 correct, against 1.4 calls and 12.7 s
+with eleven tools loaded, and 4.5 calls and 22.3 s for plain grep (19 of 20). The multi-hop sets
+stayed at 12 of 12 on both repositories.
+
+A mode with no tools in the prompt at all (a skill plus a `clast` shell command, about 0.4k
+tokens) was tried on the same set. Without a hint at session start the agent never ran the
+command. With the hint it matched the tool mode on nine of ten question types, 2 to 4 s slower
+each, but on counting it fell back to shell grep and hand tallies (6 to 14 calls). The tool
+descriptions are what makes the agent choose the index; removing them removes the choice.
 
 Reproduce with `node bench/ab.mjs <repo> bench/ab/<set>.json --runs 3`. The question sets are in
 `bench/ab/`.
