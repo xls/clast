@@ -18,20 +18,16 @@ import { impact, unused } from '../tools/impact.js';
 import { stats } from '../tools/stats.js';
 import { VERSION } from '../version.js';
 
-const INSTRUCTIONS = `Clast is a pre-built, always-fresh code index for this repository. One call answers what otherwise takes several grep + read round trips, with exact file:line locations. Use it first for code navigation:
-- Unfamiliar repo or directory -> clast_overview, then clast_file_summary.
-- Where is X / what is it called -> clast_search (names, partial names, Class.method, words describing behaviour, or a common name plus context: "write socket").
-- Show me X, or before editing X -> clast_get_context (source of that symbol plus callers and callees).
-- Who calls X -> clast_call_graph (depth N), clast_references (every use, including types and imports).
-- Before changing or deleting X: what else must change, and which tests to run -> clast_impact.
-- Dead code, cleanup after a refactor -> clast_unused.
-- What implements / extends / overrides X, which base class to extend -> clast_hierarchy.
-- How many X, how big, what is it made of -> clast_stats (exact totals; do not count search results by hand).
-- Strings, comments, config keys -> clast_grep. After a change -> clast_changes (touched symbols, affected callers, tests).
-
-When adding something new (a subclass, a handler, a provider): find the siblings with clast_hierarchy or clast_search and read one with clast_get_context.
-When renaming a symbol or changing a signature: if the name is distinctive, do NOT use clast - one Grep for the name lists every site, then edit. Use clast_impact first only when the name is common (get, run, close) so that Grep would drown in unrelated hits, when overrides or interface implementations must change with it, or to choose the tests to run.
-Most tools take several names at once (arrays). Symbols: name, Container.name, or path/to/file.ext:name. "?" marks a name-based guess. The index follows file changes, including your own edits.`;
+const INSTRUCTIONS = `Clast is a code index for this repository. One call answers what takes several grep + read round trips, with exact file:line locations.
+- Find code by name, partial name, description of what it does, or a common name plus context ("write socket") -> clast_search.
+- Who calls X, what X calls, N levels deep -> clast_call_graph.
+- What implements / extends / overrides X -> clast_hierarchy.
+- Before changing or deleting X: what changes with it, which tests to run -> clast_impact.
+- How many X, size, endpoints, database access, dependencies -> clast_stats (never count search results by hand).
+- Dead code -> clast_unused.
+Further clast tools load through tool search when needed: clast_get_context (source of one symbol with callers and callees), clast_references, clast_file_summary, clast_overview, clast_grep, clast_changes, clast_status.
+For one exact, distinctive name plain Grep is as good. Renaming a distinctive name or changing its signature: no clast, Grep then edit.
+Symbols: name, Container.name, or path/to/file.ext:name. "?" marks a name-only match. The index follows file changes, including your own edits.`;
 
 const DORMANT_INSTRUCTIONS =
   'Clast (code index) is installed but off for this project: there is no .clast folder in the project root. Do not mention it. If the user asks to use clast, call clast_enable.';
@@ -43,7 +39,9 @@ const READ_ONLY = { readOnlyHint: true, idempotentHint: true, openWorldHint: fal
 // Claude Code defers MCP tools behind its tool search by default. Measured on vscode and OnAir
 // (bench/ab.mjs): with the tools deferred the agent answered every question with Grep and never
 // called clast (0 of 60 sessions); loaded up front it used clast in 8 of 10. This asks the client
-// to keep the navigation tools loaded.
+// to keep tools loaded. Only six ask for it: the ones whose description has to be in view for the
+// agent to choose them over grep (a count, a call chain, a hierarchy, impact, dead code, search).
+// The rest stay behind tool search; that cut the fixed prompt cost by more than half.
 const ALWAYS_LOAD = { 'anthropic/alwaysLoad': true } as const;
 
 export async function startServer(): Promise<void> {
@@ -127,7 +125,6 @@ export async function startServer(): Promise<void> {
         includeCalls: z.boolean().default(true).describe('Include callers and callees'),
       },
       annotations: READ_ONLY,
-      _meta: ALWAYS_LOAD,
     },
     guard(args => getContext(ctx, args))
   );
@@ -187,7 +184,6 @@ export async function startServer(): Promise<void> {
         includeTests: z.boolean().default(true),
       },
       annotations: READ_ONLY,
-      _meta: ALWAYS_LOAD,
     },
     guard(args => references(ctx, args))
   );
@@ -207,7 +203,6 @@ export async function startServer(): Promise<void> {
         limit: z.number().int().min(20).max(5000).default(300).describe('Max outline lines for a file'),
       },
       annotations: READ_ONLY,
-      _meta: ALWAYS_LOAD,
     },
     guard(args => fileSummary(ctx, args))
   );
@@ -222,7 +217,6 @@ export async function startServer(): Promise<void> {
         path: z.string().optional().describe('Sub-directory to map (default: whole repository)'),
       },
       annotations: READ_ONLY,
-      _meta: ALWAYS_LOAD,
     },
     guard(args => overview(ctx, args))
   );
@@ -243,7 +237,6 @@ export async function startServer(): Promise<void> {
         includeTests: z.boolean().default(true),
       },
       annotations: READ_ONLY,
-      _meta: ALWAYS_LOAD,
     },
     guard(args => grep(ctx, args))
   );

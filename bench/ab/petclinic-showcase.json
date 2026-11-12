@@ -1,0 +1,10 @@
+[
+  {
+    "id": "endpoint-count",
+    "q": "How many HTTP handler methods (methods annotated with @GetMapping or @PostMapping) does the application under src/main define, and which controller class has the most? Give the number and the class.",
+    "expect": [
+      "17",
+      "OwnerController"
+    ]
+  }
+]
