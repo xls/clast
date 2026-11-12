@@ -12,6 +12,18 @@
   regular expression cannot describe, not a speed gain.
 - Vue single-file components: the script blocks of `.vue` files are indexed as TypeScript, with the
   line numbers of the file, and calls link into `.ts` files and back.
+- Kotlin: classes, interfaces, objects, enums, properties, functions, extension functions, calls,
+  imports and inheritance. The grammar is vendored (`grammars/tree-sitter-kotlin.wasm`, MIT).
+- The JNI bridge: a Kotlin `external fun` or Java `native` method and the C or C++ function of the
+  same name are treated as one function. Callers of the native function include the Kotlin callers,
+  and `clast_impact` lists the declaration on the other side under "change together".
+- Search by meaning (optional, off by default): `embeddings.enabled` in the configuration. A local
+  model (`clast-ai embeddings install`, then `clast-ai embed`) or an OpenAI-compatible endpoint
+  turns every function, method and type into a vector; `clast_search` merges the nearest ones into
+  its ranking for questions of several words and marks them `[meaning]`. Vectors are stored in
+  `.clast/embeddings.db`, survive an index rebuild, and only changed code is embedded again.
+  Measured on gin with twelve descriptions that avoid the code's words: the target was in the first
+  five results 4 times with word search and 7 times with embeddings.
 
 ## 0.3.1
 

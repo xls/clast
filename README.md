@@ -7,7 +7,7 @@
 A code index for coding agents. One call tells Claude who calls a function, what implements an<br>
 interface, what breaks if you change it, and what nobody uses any more.
 
-**Built for Claude Code** &nbsp; | &nbsp; **Works with Codex, Gemini CLI and any MCP client** &nbsp; | &nbsp; **14 languages** &nbsp; | &nbsp; **MIT licensed**
+**Built for Claude Code** &nbsp; | &nbsp; **Works with Codex, Gemini CLI and any MCP client** &nbsp; | &nbsp; **15 languages** &nbsp; | &nbsp; **MIT licensed**
 
 [Install](#install) &nbsp; / &nbsp; [What it does](#made-for-the-questions-grep-cannot-answer) &nbsp; / &nbsp; [Measured results](#measured-not-promised) &nbsp; / &nbsp; [First steps](#your-first-minute) &nbsp; / &nbsp; [Changelog](CHANGELOG.md)
 
@@ -232,6 +232,12 @@ callers (2 resolved; depth 2):
 No name to search for? Describe the behaviour. Search covers names, signatures, doc comments and
 what function bodies mention, and copes with partial names, abbreviations and typos.
 
+Optionally, search can also go by meaning. With embeddings switched on, a local model turns every
+function into a vector, and a question finds the code that is about the same thing even when no
+word matches. On twelve descriptions of gin functions written to avoid the code's own vocabulary,
+word search put the target in the first five results four times, and seven times with embeddings.
+It is off by default; see Configuration.
+
 A name that is everywhere is no problem either. A large code base can have a thousand methods called
 `reset` or `write`, and grep returns them all. Ask for "write socket" and clast puts the right one
 first: it takes every definition with that name and lets the other words choose, by the class it
@@ -265,7 +271,9 @@ numbers are right even a second after the agent edited a file. The index is a ca
 delete it whenever you like. Grammars are WebAssembly and storage is Node's built-in SQLite, so
 there is nothing to compile.
 
-**Languages:** TypeScript, TSX, JavaScript, Vue (script blocks), Python, Java, C#, Go, Rust, C, C++, Ruby, PHP, Swift, Dart.
+**Languages:** TypeScript, TSX, JavaScript, Vue (script blocks), Python, Java, Kotlin, C#, Go, Rust, C, C++, Ruby, PHP, Swift, Dart.
+A Kotlin `external fun` or Java `native` method is linked to the C or C++ function behind it, so a
+caller search crosses the JNI bridge.
 
 ## Measured, not promised
 
@@ -406,6 +414,22 @@ Optional. Create `clast.config.json` (or `.claude/clast.config.json`) in the pro
 | `watch.enabled` | `true` | Re-index files as they change |
 | `watch.debounceMs` | `200` | Debounce for file change events |
 | `llm.*` | disabled | OpenAI-compatible endpoint for `clast_comment` (Ollama, LM Studio, vLLM, OpenAI, OpenRouter) |
+| `embeddings.enabled` | `false` | Search by meaning (see below) |
+| `embeddings.provider` | `local` | `local` runs the model on this machine; `endpoint` calls an OpenAI-compatible `/embeddings` API |
+| `embeddings.model` | `jinaai/jina-embeddings-v2-base-code` | Model id (a Hugging Face repository with ONNX weights, or the endpoint's model name) |
+| `embeddings.device` | `cpu` | Local only: `cpu`, or `dml` / `cuda` for a graphics card |
+| `embeddings.endpoint`, `embeddings.apiKey` | empty | For `provider: endpoint` (for example `http://localhost:11434/v1` for Ollama) |
+
+**Search by meaning.** Do these steps once:
+
+1. Run `clast-ai embeddings install`. This puts the model runtime into `~/.clast-ai/embeddings` (about 500 MB).
+2. Put `{ "embeddings": { "enabled": true } }` into `clast.config.json` of the project.
+3. Run `clast-ai embed`. The first run downloads the model (about 160 MB) and embeds every function, method and type.
+
+After that the server keeps the vectors current in the background, and only changed code is embedded
+again. Nothing leaves the machine with the local provider. Expect about 15 to 20 symbols per second
+on a processor: a minute or two for a small project, an hour for 70,000 symbols. Vectors are stored
+in `.clast/embeddings.db` and survive an index rebuild.
 
 Environment: `CLAST_ALWAYS=1` (on in every project, no `.clast` folder needed), `CLAST_PROJECT_DIR` (project root), `CLAST_DB_PATH` (index location), `CLAST_GRAMMARS_DIR`
 (alternative grammar directory), `CLAST_NO_MIGRATE=1` (no automatic clean-up), `CLAST_DEBUG=1` (timings).
@@ -416,6 +440,7 @@ Environment: `CLAST_ALWAYS=1` (on in every project, no `.clast` folder needed), 
 | JavaScript | `javascript` | `.js`, `.jsx`, `.mjs`, `.cjs` |
 | Python | `python` | `.py`, `.pyi`, `.pyw` |
 | Java | `java` | `.java` |
+| Kotlin | `kotlin` | `.kt`, `.kts` |
 | C# | `csharp` | `.cs` |
 | Go | `go` | `.go` |
 | Rust | `rust` | `.rs` |
@@ -470,11 +495,14 @@ under 50 ms.
   injected by string are not modelled. Endpoint and database statistics are pattern-based.
 - **Python**: a local variable that holds a class is not followed.
 - **Go**: the module path is inferred from imports, not from go.mod.
+- **Kotlin**: new. The grammar fails on some files (8 of 82 in the Android app it was tried on); what
+  it does parse is indexed.
 - **Ruby, Swift, Dart**: the least exercised languages. Ruby methods defined by metaprogramming are
   invisible; the Swift grammar fails on some files.
-- **Search is lexical**: a description that shares no word with the code finds the neighbourhood, not
-  always the function.
-- **Not indexed**: Kotlin, Scala and other languages without a bundled grammar. `clast_grep` still
+- **Search is by words unless embeddings are on**: a description that shares no word with the code
+  finds the neighbourhood, not always the function. With embeddings it does better (7 of 12 against 4
+  of 12 in our test), not perfectly.
+- **Not indexed**: Scala, Lua and other languages without a bundled grammar. `clast_grep` still
   searches those files as text.
 - **Prompt size**: in a project where clast is on, its tool definitions add about 3.5k tokens to every
   turn (six tools stay loaded, the other ten load on demand). Where it is off: about 0.5k.

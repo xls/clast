@@ -24,6 +24,18 @@ export interface ClastConfig {
     debounceMs: number;
     enabled: boolean;
   };
+  /** Search by meaning (off by default). */
+  embeddings: {
+    enabled: boolean;
+    /** "local" runs the model on this machine; "endpoint" calls an OpenAI-compatible /embeddings API. */
+    provider: 'local' | 'endpoint';
+    /** Model id: a Hugging Face repository with ONNX weights (local) or the model name of the endpoint. */
+    model: string;
+    /** Local only: "cpu", or "dml" / "cuda" for a graphics card. */
+    device: string;
+    endpoint: string;
+    apiKey: string;
+  };
 }
 
 export const DEFAULT_IGNORED = [
@@ -75,5 +87,13 @@ export const DEFAULT_CONFIG: ClastConfig = {
   watch: {
     debounceMs: 200,
     enabled: true,
+  },
+  embeddings: {
+    enabled: false,
+    provider: 'local',
+    model: 'jinaai/jina-embeddings-v2-base-code',
+    device: 'cpu',
+    endpoint: '',
+    apiKey: '',
   },
 };

@@ -8,7 +8,8 @@ import {
   directSubtypes, directSupertypes, structuralImplementers, structuralInterfaces,
 } from '../query/hierarchy.js';
 import { findSymbols, isFileLocal, otherDefinitions, parseSymbolRef, pathMatches } from '../query/resolve.js';
-import { searchSymbols, type SearchOptions } from '../query/search.js';
+import { searchSymbols, type SearchHit, type SearchOptions } from '../query/search.js';
+import { searchByMeaning } from '../embed/index.js';
 import { ToolContext, toList } from './context.js';
 
 // ---------------------------------------------------------------------------
@@ -29,7 +30,35 @@ export async function search(ctx: ToolContext, args: SearchArgs): Promise<string
   const out: string[] = [];
 
   for (const q of queries) {
-    const { hits, truncated } = searchSymbols(ctx.db, q, args);
+    const lexical = searchSymbols(ctx.db, q, args);
+    const truncated = lexical.truncated;
+    let hits = lexical.hits;
+    // A description (several words) is also looked up by meaning when embeddings are on: code that is
+    // about the same thing in other words. The two rankings are merged by reciprocal rank.
+    if (/\s/.test(q.trim()) && ctx.clast.config.embeddings.enabled) {
+      const limit = Math.max(1, Math.min(args.limit ?? 20, 200));
+      // Tests mention every concept; they only belong here when the question is about tests.
+      const wantTests = /test|spec|mock|fixture|bench|example/i.test(q);
+      const near = await searchByMeaning(ctx, q, 8, {
+        path: args.path, kind: args.kind, lang: args.lang, includeTests: wantTests ? undefined : false,
+      }).catch(() => null);
+      if (near && near.length) {
+        const K = 8;
+        const merged = new Map<number, { hit: SearchHit; score: number }>();
+        hits.forEach((h, i) => merged.set(h.sym.id, { hit: h, score: 1 / (K + i) }));
+        near.forEach((n, i) => {
+          if (n.score < 0.2) return;
+          const have = merged.get(n.sym.id);
+          if (have) {
+            have.score += 1 / (K + i);
+            have.hit = { ...have.hit, match: `${have.hit.match} meaning` };
+          } else {
+            merged.set(n.sym.id, { hit: { sym: n.sym, score: 0, match: 'meaning', refs: 0, unique: false }, score: 1 / (K + i) });
+          }
+        });
+        hits = [...merged.values()].sort((a, b) => b.score - a.score).slice(0, limit).map(m => m.hit);
+      }
+    }
     if (hits.length === 0) {
       out.push(
         `"${q}": no symbols found. The name may be defined dynamically or outside the indexed code: ` +
@@ -47,6 +76,9 @@ export async function search(ctx: ToolContext, args: SearchArgs): Promise<string
       out.push(`${symLine(s)}${tags.length ? '  [' + tags.join(' ') + ']' : ''}`);
       if (s.signature && s.signature !== s.name) out.push(`  ${firstLine(s.signature, 180)}`);
       if (s.doc) out.push(`  // ${firstLine(s.doc, 140)}`);
+    }
+    if (hits.some(h => h.match.includes('meaning'))) {
+      out.push('([meaning] = found by what the code is about (embeddings), not by shared words)');
     }
     if (hits.some(h => h.match === 'body')) {
       out.push('([body] = matched by what the function\'s code mentions, not by its name or documentation)');

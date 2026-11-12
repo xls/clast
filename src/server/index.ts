@@ -16,6 +16,7 @@ import { callGraph, getContext, hierarchy, search } from '../tools/search.js';
 import { changes, fileSummary, grep, overview, references, reindex, status } from '../tools/explore.js';
 import { impact, unused } from '../tools/impact.js';
 import { match } from '../tools/match.js';
+import { embedAll } from '../embed/index.js';
 import { stats } from '../tools/stats.js';
 import { VERSION } from '../version.js';
 
@@ -407,6 +408,11 @@ export async function startServer(): Promise<void> {
     })
     .catch(err => log(`indexing failed: ${err instanceof Error ? err.stack : err}`))
     .finally(() => {
+      if (clast.config.embeddings.enabled) {
+        embedAll(ctx)
+          .then(r => log(r.error ? `embeddings: ${r.error}` : `embeddings: ${r.embedded} embedded, ${r.kept} unchanged in ${r.seconds.toFixed(0)} s`))
+          .catch(err => log(`embeddings failed: ${err instanceof Error ? err.message : err}`));
+      }
       if (clast.config.watch.enabled) {
         try {
           watcher.start();
