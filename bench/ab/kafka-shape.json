@@ -1,0 +1,7 @@
+[
+  {
+    "id": "empty-catch-java",
+    "q": "How many catch blocks under clients/src/main are empty, meaning they contain no statement (a comment inside does not count as a statement)? Give the number and name the files.",
+    "expect": ["7", "AsyncKafkaConsumer", "OAuthBearerSaslServer", "ShareConsumerImpl"]
+  }
+]

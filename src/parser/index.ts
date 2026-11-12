@@ -1,4 +1,4 @@
-import { Parser, Language } from 'web-tree-sitter';
+import { Parser, Language, type Tree } from 'web-tree-sitter';
 import { existsSync } from 'node:fs';
 import { dirname, extname, join } from 'node:path';
 import { createRequire } from 'node:module';
@@ -84,6 +84,7 @@ export class SourceParser {
     const compiled = await this.load(spec);
     if (!compiled || !this.parser) return null;
     this.parser.setLanguage(compiled.language);
+    if (spec.preprocess) source = spec.preprocess(source, path);
     const tree = this.parser.parse(source);
     if (!tree) return null;
     try {
@@ -91,6 +92,17 @@ export class SourceParser {
     } finally {
       tree.delete();
     }
+  }
+
+  /** Parse a text as the given language. The caller deletes the tree. Null if the grammar is unavailable. */
+  async parseAs(specId: string, source: string, path?: string): Promise<Tree | null> {
+    const spec = specById(specId);
+    if (!spec) return null;
+    if (path && spec.preprocess) source = spec.preprocess(source, path);
+    const compiled = await this.load(spec);
+    if (!compiled || !this.parser) return null;
+    this.parser.setLanguage(compiled.language);
+    return this.parser.parse(source);
   }
 
   /** Debug helper: S-expression-ish dump of the tree with field names. */

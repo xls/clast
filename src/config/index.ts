@@ -16,6 +16,15 @@ const WatchConfigSchema = z.object({
   enabled: z.boolean().default(DEFAULT_CONFIG.watch.enabled),
 });
 
+const EmbeddingsConfigSchema = z.object({
+  enabled: z.boolean().default(DEFAULT_CONFIG.embeddings.enabled),
+  provider: z.enum(['local', 'endpoint']).default(DEFAULT_CONFIG.embeddings.provider),
+  model: z.string().default(DEFAULT_CONFIG.embeddings.model),
+  device: z.string().default(DEFAULT_CONFIG.embeddings.device),
+  endpoint: z.string().default(DEFAULT_CONFIG.embeddings.endpoint),
+  apiKey: z.string().default(DEFAULT_CONFIG.embeddings.apiKey),
+});
+
 const ClastConfigSchema = z.object({
   languages: z.array(z.string()).default(DEFAULT_CONFIG.languages),
   ignoredPaths: z.array(z.string()).default(DEFAULT_CONFIG.ignoredPaths),
@@ -26,6 +35,7 @@ const ClastConfigSchema = z.object({
   workers: z.number().int().min(0).max(64).default(DEFAULT_CONFIG.workers),
   llm: LlmConfigSchema.default(DEFAULT_CONFIG.llm),
   watch: WatchConfigSchema.default(DEFAULT_CONFIG.watch),
+  embeddings: EmbeddingsConfigSchema.default(DEFAULT_CONFIG.embeddings),
 });
 
 export type { ClastConfig } from './defaults.js';

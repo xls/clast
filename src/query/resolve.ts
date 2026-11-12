@@ -766,7 +766,11 @@ export class Resolver {
         const eq = raw.indexOf('=');
         if (eq !== -1) {
           if (raw.slice(eq + 1) === sym.name && raw.slice(0, eq) !== sym.name) out.push({ fileId: r.file_id, alias: raw.slice(0, eq) });
-        } else if (isDefault && parts.length === 1 && raw !== sym.name && raw !== '*') {
+        } else if (
+          isDefault && parts.length === 1 && raw !== sym.name && raw !== '*' &&
+          // A name the file defines or re-exports is a named import of that, not a local name for the default.
+          !this.candidates(raw).some(c => c.file_id === sym.file_id || this.importsOf(sym.file_id).has(c.file_id))
+        ) {
           // `const express = require('./express')` / `import express from './express'`
           out.push({ fileId: r.file_id, alias: raw });
         }
@@ -870,6 +874,20 @@ export class Resolver {
   externalSupertype(name: string, qualifier: string | null, fileId: number, lang: string): boolean {
     if (lang === 'go') return !!qualifier && this.goImports(fileId).get(qualifier) === null;
     if (lang === 'rust') return !qualifier && this.stdNames(fileId).has(name);
+    // JavaScript family: the name is imported from a package that is not part of this repository
+    // (`import { Service } from 'cordis'`). A class of that name elsewhere, in a test for instance, is
+    // not the base class.
+    if (langFamily(lang) === 'js' && !qualifier) {
+      for (const r of this.db.all<{ source: string; names: string; resolved_id: number | null }>(
+        `SELECT source, names, resolved_id FROM imports INDEXED BY idx_imports_file WHERE file_id = ?`, fileId
+      )) {
+        if (r.resolved_id !== null || !r.names || /^(\.|\/|@\/|~\/)/.test(r.source)) continue;
+        for (const raw of r.names.split(',')) {
+          const local = raw.includes('=') ? raw.slice(0, raw.indexOf('=')) : raw;
+          if (local === name) return true;
+        }
+      }
+    }
     return false;
   }
 
@@ -1085,6 +1103,15 @@ export class Resolver {
         }
         fam.add(other.id);
       }
+    }
+    // The native bridge: a Kotlin `external fun` / Java `native` method and the C or C++ function of
+    // the same name are one function written in two languages (JNI). Calls of either reach the other.
+    const bridge = (s: SymbolRow): boolean =>
+      (s.lang === 'kotlin' || s.lang === 'java') && /\bexternal\s+fun\b|\bnative\b/.test(s.signature);
+    const native = (s: SymbolRow): boolean => langFamily(s.lang) === 'c' && (s.kind === 'function' || s.kind === 'declaration');
+    if (bridge(sym) || native(sym)) {
+      const other = bridge(sym) ? native : bridge;
+      for (const twin of this.candidates(sym.name)) if (twin.id !== sym.id && other(twin)) fam.add(twin.id);
     }
     this.familyCache.set(sym.id, fam);
     return fam;
@@ -1788,7 +1815,9 @@ export class Resolver {
         const original = imported.aliases.get(name);
         // ... or the file it is imported from re-exports it under this name (`export { parseId as getId } from`).
         let real: string | null = original ?? this.importedNames(from).aliases.get(name) ?? null;
-        if (!real && !this.candidates(name).some(c => c.file_id === from)) {
+        // Not when the name itself is defined there, or in a file it re-exports (`export * from './message'`
+        // in a package's index): then the import means that definition, not the default export.
+        if (!real && !this.candidates(name).some(c => c.file_id === from || this.importsOf(from).has(c.file_id))) {
           real = this.defaultExportOf(from);
           if (real === '*') {
             // The imported file re-exports another module's default export.

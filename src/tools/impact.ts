@@ -229,6 +229,7 @@ export interface UnusedArgs {
 
 const DEFAULT_UNUSED_KINDS = ['function', 'method', 'class', 'struct', 'interface', 'trait', 'enum', 'type'];
 const MAX_REFS = 12;
+const MINOR_DEFS = new Set(['field', 'property', 'variable', 'constant']);
 /** `getattr(x, "as_" + vendor)`, `send("on_#{e}")`, `obj["handle" + kind]`, obj[`on${Name}`]: the literal prefix of a computed member name. */
 const DYNAMIC =
   /(?:getattr|hasattr|send|public_send|method)\(\s*[^,()\n]{0,60},?\s*f?["'](\w{2,})(?:["']\s*[+%]|[{#])|\[\s*["'`](\w{2,})(?:["']\s*\+|\$\{)/g;
@@ -345,7 +346,9 @@ export async function unused(ctx: ToolContext, args: UnusedArgs = {}): Promise<s
     const list: Ref[] = [];
     let alive = false;
     outer: for (const r of rows) {
-      const inFile = defs.filter(d => d.file_id === r.file_id);
+      // A field, property or variable with the same name is a use, not another definition of it: a Go
+      // struct embedded in another (`busyCounters` as a field line) is how that struct is used.
+      const inFile = defs.filter(d => d.file_id === r.file_id && !MINOR_DEFS.has(d.kind));
       for (const part of r.lines.split(',')) {
         const line = Number(part);
         if (inFile.some(d => line >= d.start_line && line <= d.end_line && isOwn(d, nameId, line))) continue;
@@ -437,7 +440,10 @@ export async function unused(ctx: ToolContext, args: UnusedArgs = {}): Promise<s
     const container = s.qname.includes('.') ? s.qname.split('.').slice(-2, -1)[0]! : null;
     if (
       IMPLICIT.has(s.name) || /^__\w+__$/.test(s.name) || s.name.startsWith('~') || s.name.startsWith('operator') ||
-      s.name === container || (s.lang === 'go' && /^(Test|Benchmark|Example|Fuzz)/.test(s.name))
+      s.name === container || (s.lang === 'go' && /^(Test|Benchmark|Example|Fuzz)/.test(s.name)) ||
+      // A computed name (`[Service.init]()`) or one that is not an identifier (`'agent/created'(...)` in an
+      // event map) is reached through a symbol or a string, never by writing the name.
+      !/^[A-Za-z_$][\w$]*$/.test(s.name)
     ) return 'implicit';
     if (marked(s)) return 'marked';
     if (
@@ -455,9 +461,15 @@ export async function unused(ctx: ToolContext, args: UnusedArgs = {}): Promise<s
       (defsOf.get(s.name) ?? []).some(d => d.parent_id !== null && db.symbolById(d.parent_id)?.kind === 'interface')
     ) return 'structural';
     // A member of an object literal: the object is handed to something that calls it by shape.
-    if ((s.lang === 'typescript' || s.lang === 'javascript') && s.kind === 'method') {
+    if (langFamily(s.lang) === 'js' && s.kind === 'method') {
       const parent = s.parent_id !== null ? db.symbolById(s.parent_id) : undefined;
       if (!parent || !CONTAINER_KINDS.has(parent.kind)) return 'structural';
+    }
+    // A named function expression (`useMemo(function bind() { ... })`, `x = function f() {}`) is used
+    // where it is written: its name is only a label.
+    if (langFamily(s.lang) === 'js' && s.kind === 'function') {
+      const line = srcOf(s.path)?.[s.start_line - 1] ?? '';
+      if (new RegExp(`[(=,:?&|]\\s*(async\\s+)?function\\s*\\*?\\s*${s.name.replace(/[$]/g, '\\$&')}\\b`).test(line)) return 'structural';
     }
     // A class with a main method is a program: something outside the code starts it.
     if (CONTAINER_KINDS.has(s.kind) && isProgram(s)) return 'implicit';

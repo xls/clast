@@ -3,7 +3,7 @@
 // dominant warm-start cost. Must be set before the first async fs call.
 process.env.UV_THREADPOOL_SIZE ??= '16';
 
-import { readFileSync } from 'node:fs';
+import { mkdirSync, readFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { Clast } from './engine.js';
@@ -12,6 +12,7 @@ import { ToolContext } from './tools/context.js';
 import { callGraph, getContext, hierarchy, search } from './tools/search.js';
 import { changes, fileSummary, grep, overview, references, reindex, status } from './tools/explore.js';
 import { impact, unused } from './tools/impact.js';
+import { match } from './tools/match.js';
 import { stats, type StatsArgs } from './tools/stats.js';
 import { VERSION } from './version.js';
 
@@ -30,12 +31,16 @@ usage: clast-ai [command] [args] [--root <dir>]
   callees <name>             what it calls  [--depth n] [--limit n]
   hierarchy <name>           supertypes / subtypes / overrides   [--depth n] [--limit n] [--within path]
   refs <name>                all references to an identifier   [--path p] [--limit n]
+  match <code pattern>       code by shape: $X = any one node, $$$X = any arguments or statements,
+                             e.g. 'fetch($URL, $$$REST)'   [--lang l] [--path p] [--limit n]
   grep <pattern>             text search with enclosing symbols   [--regex] [--path p] [--limit n]
   changes [base]             symbols touched by the git diff and their impact
   impact <name>              what must change with it, who reaches it, which tests to run   [--depth n] [--limit n]
   unused [path]              dead code   [--kind k] [--lang l] [--limit n] [--no-exported]
   stats [what] [name]        exact counts: inventory | symbols | subtypes | calls | text | imports | endpoints | database
                              [--kind k] [--on receiver] [--path p] [--lang l] [--group-by g] [--depth n] [--limit n] [--tests]
+  embeddings install         install the local model runtime for search by meaning (once, about 500 MB)
+  embed                      build or update the vectors for search by meaning (needs embeddings.enabled)
   guide                      print the usage guide for agents (append it to AGENTS.md, GEMINI.md or a rules file)
   migrate [--apply]          find (and with --apply remove) what older installs left behind: duplicate
                              MCP registrations next to the plugin, the v0.1 index file
@@ -53,6 +58,7 @@ const CLI_NAMES: Record<string, string> = {
   clast_file_summary: 'clast-ai outline',
   clast_overview: 'clast-ai overview',
   clast_grep: 'clast-ai grep',
+  clast_match: 'clast-ai match',
   clast_changes: 'clast-ai changes',
   clast_stats: 'clast-ai stats',
   clast_impact: 'clast-ai impact',
@@ -106,6 +112,21 @@ async function main(): Promise<void> {
     if (str('root')) process.env.CLAST_PROJECT_DIR = resolve(str('root')!);
     const { startServer } = await import('./server/index.js');
     await startServer();
+    return;
+  }
+
+  if (cmd === 'embeddings' && positional[0] === 'install') {
+    // The local model runtime is too large to be a dependency: it goes into its own folder, once.
+    const { EMBED_HOME } = await import('./embed/embedder.js');
+    const { spawnSync } = await import('node:child_process');
+    mkdirSync(EMBED_HOME, { recursive: true });
+    console.log(`installing the embedding runtime into ${EMBED_HOME} (about 500 MB) ...`);
+    const line = 'npm install @huggingface/transformers --prefix . --no-audit --no-fund --loglevel=error';
+    const r = process.platform === 'win32'
+      ? spawnSync(line, { cwd: EMBED_HOME, shell: true, stdio: 'inherit' })
+      : spawnSync('npm', line.split(' ').slice(1), { cwd: EMBED_HOME, stdio: 'inherit' });
+    console.log(r.status === 0 ? 'done. Turn it on with {"embeddings": {"enabled": true}} in clast.config.json, then run: clast-ai embed' : 'npm install failed.');
+    process.exitCode = r.status ?? 1;
     return;
   }
 
@@ -173,6 +194,23 @@ async function main(): Promise<void> {
       return;
     }
 
+    if (cmd === 'embed') {
+      await clast.indexer.indexAll();
+      const { embedAll } = await import('./embed/index.js');
+      let last = 0;
+      const r = await embedAll(ctx, p => {
+        if (Date.now() - last < 2000 && p.done < p.total) return;
+        last = Date.now();
+        process.stderr.write(`\rembedding ${p.done} / ${p.total}   `);
+      });
+      process.stderr.write('\n');
+      console.log(
+        (r.error ? `error: ${r.error}\n` : '') +
+          `embedded ${r.embedded} symbols in ${r.seconds.toFixed(0)} s, ${r.kept} unchanged, ${r.removed} removed`
+      );
+      if (r.error) process.exitCode = 1;
+      return;
+    }
     if (!flags.has('no-scan')) await clast.indexer.indexAll();
     const includeTests = flags.has('no-tests') ? false : flags.has('tests') ? true : undefined;
     let out: string;
@@ -218,6 +256,11 @@ async function main(): Promise<void> {
       case 'refs':
       case 'references':
         out = await references(ctx, { name: positional[0] ?? '', path: str('path'), limit: num('limit'), includeTests });
+        break;
+      case 'match':
+        out = await match(ctx, {
+          pattern: positional.join(' '), path: str('path'), lang: str('lang'), limit: num('limit'), includeTests,
+        });
         break;
       case 'grep':
         out = await grep(ctx, {

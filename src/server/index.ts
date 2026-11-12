@@ -15,6 +15,8 @@ import { ToolContext } from '../tools/context.js';
 import { callGraph, getContext, hierarchy, search } from '../tools/search.js';
 import { changes, fileSummary, grep, overview, references, reindex, status } from '../tools/explore.js';
 import { impact, unused } from '../tools/impact.js';
+import { match } from '../tools/match.js';
+import { embedAll } from '../embed/index.js';
 import { stats } from '../tools/stats.js';
 import { VERSION } from '../version.js';
 
@@ -25,7 +27,7 @@ const INSTRUCTIONS = `Clast is a code index for this repository. One call answer
 - Before changing or deleting X: what changes with it, which tests to run -> clast_impact.
 - How many X, size, endpoints, database access, dependencies -> clast_stats (never count search results by hand).
 - Dead code -> clast_unused.
-Further clast tools load through tool search when needed: clast_get_context (source of one symbol with callers and callees), clast_references, clast_file_summary, clast_overview, clast_grep, clast_changes, clast_status.
+Further clast tools load through tool search when needed: clast_get_context (source of one symbol with callers and callees), clast_match (code by shape: "fetch($URL, $$$REST)", every empty catch), clast_references, clast_file_summary, clast_overview, clast_grep, clast_changes, clast_status.
 For one exact, distinctive name plain Grep is as good. Renaming a distinctive name or changing its signature: no clast, Grep then edit.
 Symbols: name, Container.name, or path/to/file.ext:name. "?" marks a name-only match. The index follows file changes, including your own edits.`;
 
@@ -305,6 +307,24 @@ export async function startServer(): Promise<void> {
   );
 
   server.registerTool(
+    'clast_match',
+    {
+      title: 'Find code by shape',
+      description:
+        'Find code by its syntax, not its text: write the code you look for with holes. `$NAME` stands for any one node (expression, name, type), `$$$NAME` for any run of arguments or statements; the same name twice must match the same text. Examples: `fetch($URL, $$$REST)`, `if ($X == null) { $$$BODY }`, `catch ($E) { }`, `class $N extends Component { $$$B }`. Layout and comments do not matter; strings and comments never match. Use for "every call of X with N arguments", "every empty catch", "every place that does X in this form", before a mechanical refactor or for an audit.',
+      inputSchema: {
+        pattern: z.string().describe('Code with holes: $NAME = one node, $$$NAME = any run of siblings'),
+        lang: z.string().optional().describe('Only this language id (default: every indexed language the pattern is valid in)'),
+        path: z.string().optional().describe('Only files under / matching this path'),
+        limit: z.number().int().min(1).max(500).optional().describe('Max matches listed (default 40)'),
+        includeTests: z.boolean().optional(),
+      },
+      annotations: READ_ONLY,
+    },
+    guard(args => match(ctx, args))
+  );
+
+  server.registerTool(
     'clast_changes',
     {
       title: 'Changed symbols and impact',
@@ -388,6 +408,11 @@ export async function startServer(): Promise<void> {
     })
     .catch(err => log(`indexing failed: ${err instanceof Error ? err.stack : err}`))
     .finally(() => {
+      if (clast.config.embeddings.enabled) {
+        embedAll(ctx)
+          .then(r => log(r.error ? `embeddings: ${r.error}` : `embeddings: ${r.embedded} embedded, ${r.kept} unchanged in ${r.seconds.toFixed(0)} s`))
+          .catch(err => log(`embeddings failed: ${err instanceof Error ? err.message : err}`));
+      }
       if (clast.config.watch.enabled) {
         try {
           watcher.start();

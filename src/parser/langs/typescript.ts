@@ -478,12 +478,35 @@ export const javascript: LangSpec = {
   visit: jsVisitors,
 };
 
+/**
+ * The script blocks of a Vue single-file component, everything else blanked out. Lines and columns stay
+ * where they are, so the template and the styles simply are not there for the parser. Plain JavaScript
+ * in a block is valid input for the TypeScript grammar.
+ */
+export function vueScript(source: string): string {
+  const keep: Array<[number, number]> = [];
+  const block = /<script\b[^>]*>([\s\S]*?)<\/script\s*>/gi;
+  let m: RegExpExecArray | null;
+  while ((m = block.exec(source)) !== null) {
+    const start = m.index + m[0].indexOf('>') + 1;
+    keep.push([start, start + m[1]!.length]);
+  }
+  let out = '';
+  let pos = 0;
+  for (const [a, b] of keep) {
+    out += source.slice(pos, a).replace(/[^\n\r]/g, ' ') + source.slice(a, b);
+    pos = b;
+  }
+  return out + source.slice(pos).replace(/[^\n\r]/g, ' ');
+}
+
 export const typescript: LangSpec = {
   id: 'typescript',
   grammar: 'typescript',
-  extensions: ['.ts', '.mts', '.cts'],
+  extensions: ['.ts', '.mts', '.cts', '.vue'],
   identifiers: [...JS_IDENTIFIERS, 'type_identifier'],
   visit: tsVisitors,
+  preprocess: (source, path) => (path.toLowerCase().endsWith('.vue') ? vueScript(source) : source),
 };
 
 export const tsx: LangSpec = {

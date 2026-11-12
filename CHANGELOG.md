@@ -1,5 +1,37 @@
 # Changelog
 
+## 0.4.0
+
+- `clast_match` / `clast-ai match`: find code by shape. The pattern is code with holes: `$NAME` is any
+  one node, `$$$NAME` any run of arguments or statements, and the same name twice must match the same
+  text. It is compared on the syntax tree, so layout and comments do not matter and strings never
+  match: `fetch($URL, $$$REST)`, `if ($X == null) { $$$BODY }`, `catch ($T $E) { }`. Counts agree with
+  an independent check on kafka (7 empty catch blocks under clients/src/main) and vscode (7 under
+  src/vs/base/common). The tool loads on demand and adds nothing to the prompt. In sessions, plain
+  grep with a multi-line expression answered the same two questions faster, so this is for shapes a
+  regular expression cannot describe, not a speed gain.
+- Monorepos: an import by package name (`from '@scope/pkg'`) is resolved to that package of the
+  repository through its package.json, and names re-exported by its index file (`export * from`) are
+  followed. Before, a function used across packages showed no callers.
+- Dead code: computed member names (`[Service.init]()`), names that are not identifiers (event maps),
+  object-literal members in `.tsx` files and named function expressions are no longer reported.
+- Benchmark on two repositories created after the model's training data (Go and TypeScript, 1.5 and
+  1.6 million lines): 1.2 to 1.7 tool calls with clast against 2.8 to 4.0 with grep.
+- Vue single-file components: the script blocks of `.vue` files are indexed as TypeScript, with the
+  line numbers of the file, and calls link into `.ts` files and back.
+- Kotlin: classes, interfaces, objects, enums, properties, functions, extension functions, calls,
+  imports and inheritance. The grammar is vendored (`grammars/tree-sitter-kotlin.wasm`, MIT).
+- The JNI bridge: a Kotlin `external fun` or Java `native` method and the C or C++ function of the
+  same name are treated as one function. Callers of the native function include the Kotlin callers,
+  and `clast_impact` lists the declaration on the other side under "change together".
+- Search by meaning (optional, off by default): `embeddings.enabled` in the configuration. A local
+  model (`clast-ai embeddings install`, then `clast-ai embed`) or an OpenAI-compatible endpoint
+  turns every function, method and type into a vector; `clast_search` merges the nearest ones into
+  its ranking for questions of several words and marks them `[meaning]`. Vectors are stored in
+  `.clast/embeddings.db`, survive an index rebuild, and only changed code is embedded again.
+  Measured on gin with twelve descriptions that avoid the code's words: the target was in the first
+  five results 4 times with word search and 7 times with embeddings.
+
 ## 0.3.1
 
 - Six tools stay loaded in Claude Code instead of eleven (search, call graph, hierarchy, impact,

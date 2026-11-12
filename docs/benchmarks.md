@@ -5,9 +5,55 @@ and how fast the index is. All were run on real open-source repositories.
 
 ## Clast against grep + read
 
+### Repositories the model has never seen
+
+Two public repositories created after the model's training data ends. Every expected answer was
+confirmed with grep before the run; three runs per question (two for the refactor tasks). Each cell
+reads clast / grep.
+
+**[yetone/magpie](https://github.com/yetone/magpie)** - Go, 7,750 files, 1.5 million lines.
+
+| Kind of work | Sessions per side | Tool calls (clast / grep) | Time | Tokens in | Tokens out | Correct |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| Multi-hop questions (call chains, implementers, tests that reach a function) | 15 | 1.9 / 5.7 | 14 s / 24 s | 124k / 223k | 0.5k / 1.1k | 15 / 15 |
+| Code described by behaviour | 9 | 1.8 / 2.8 | 13 s / 16 s | 126k / 155k | 0.3k / 0.5k | 9 / 9 |
+| One of many same-named methods | 9 | 2.0 / 2.7 | 16 s / 15 s | 157k / 146k | 0.4k / 0.5k | 9 / 9 |
+| Counting | 6 | 1.5 / 1.5 | 14 s / 14 s | 112k / 105k | 0.6k / 0.7k | 6 / 6 |
+| Dead code | 6 | 2.0 / 4.8 | 18 s / 33 s | 168k / 266k | 0.3k / 1.8k | 6 / 5 |
+| Simple lookups (where is X, who calls X, what extends X) | 9 | 1.0 / 2.6 | 11 s / 15 s | 112k / 158k | 0.2k / 0.4k | 9 / 9 |
+| Refactors (rename everywhere, add a parameter) | 4 | 8.5 / 9.3 | 27 s / 26 s | 188k / 178k | 1.5k / 1.7k | 4 / 4 |
+| **All questions (refactors not counted)** | 54 | 1.7 / 3.6 | 14 s / 20 s | 132k / 180k | 0.4k / 0.8k | 54 / 53 |
+
+**[deepseek-ai/deepseek-harness](https://github.com/deepseek-ai/deepseek-harness)** - TypeScript, 7,633 files, 1.6 million lines.
+
+| Kind of work | Sessions per side | Tool calls (clast / grep) | Time | Tokens in | Tokens out | Correct |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| Multi-hop questions (call chains, implementers, tests that reach a function) | 12 | 1.1 / 3.8 | 12 s / 20 s | 48k / 73k | 0.3k / 0.7k | 12 / 12 |
+| Code described by behaviour | 6 | 1.2 / 2.3 | 11 s / 15 s | 49k / 66k | 0.2k / 0.4k | 6 / 6 |
+| One of many same-named methods | 9 | 1.4 / 3.8 | 14 s / 20 s | 61k / 82k | 0.3k / 0.7k | 9 / 9 |
+| Counting | 6 | 1.5 / 1.0 | 15 s / 19 s | 60k / 42k | 0.6k / 1.2k | 6 / 6 |
+| Dead code | 6 | 2.0 / 3.3 | 18 s / 22 s | 64k / 89k | 0.3k / 0.7k | 6 / 6 |
+| Simple lookups (where is X, who calls X, what extends X) | 12 | 1.0 / 2.8 | 11 s / 17 s | 47k / 65k | 0.3k / 0.5k | 12 / 12 |
+| Refactors (rename everywhere, add a parameter) | 2 | 15.0 / 18.5 | 38 s / 51 s | 112k / 130k | 3.0k / 4.1k | 2 / 2 |
+| **All questions (refactors not counted)** | 51 | 1.3 / 3.0 | 13 s / 19 s | 54k / 70k | 0.3k / 0.7k | 51 / 51 |
+
+Across the 105 question sessions per side: 54% fewer tool calls, 30% less time, 26% fewer input
+tokens.
+
+Preparing these runs found errors in clast that no earlier repository had shown; all but one are
+fixed in 0.4.0 (imports by package name in a monorepo, index re-exports, Go interfaces satisfied
+through an embedded struct, an embedded struct reported as dead code, a library base class bound to
+a same-named test class, four kinds of wrong dead-code reports in framework-style TypeScript). Not
+fixed: a call through a TypeScript interface is not attributed to a class that matches the interface
+by shape only, without an `implements` clause.
+
+### One C++ application
+
 Measured with real headless Claude Code sessions (`bench/ab.mjs`): every question runs in its own
-fresh session, once with clast connected and once with only Read / Grep / Glob. Two large repositories:
-vscode (TypeScript, 15.7k files) and OnAir (C++, 7.5k files, 1.6M lines). The index was fully built
+fresh session, once with clast connected and once with only Read / Grep / Glob, on OnAir (C++, 7.5k
+files, 1.6M lines). An earlier version of this page also had rows for vscode. They were removed: the
+model knows vscode from its training and answers many questions about it from memory, so those rows
+measured the model, not the tool. The index was fully built
 before the first session. Answers are scored against facts verified in the source beforehand; an
 implementation task is scored on its diff.
 
@@ -18,26 +64,19 @@ started, which varied between sessions of the same arm by a factor of twenty.
 
 | Kind of work | Repo | Sessions per arm | Tool calls (clast / grep) | Wall time | Tokens in | Tokens out | Correct |
 | --- | --- | ---: | ---: | ---: | ---: | ---: | ---: |
-| Multi-hop questions (call chains, transitive subclasses, impact) | vscode | 18 | 1.3 / 3.1 | 16.0 s / 19.8 s | 53k / 59k | 0.7k / 1.1k | 18 / 18 |
-| Multi-hop questions | OnAir | 18 | 1.2 / 5.9 | 12.5 s / 25.8 s | 50k / 118k | 0.5k / 1.2k | 18 / 18 |
-| Simple lookups (where is X, who calls X, what implements X) | vscode | 30 | 1.4 / 1.4 | 13.9 s / 13.9 s | 54k / 45k | 0.5k / 0.5k | 30 / 29 |
-| Simple lookups | OnAir | 30 | 1.7 / 1.7 | 12.7 s / 14.3 s | 62k / 50k | 0.4k / 0.5k | 30 / 30 |
+| Multi-hop questions (call chains, transitive subclasses, impact) | OnAir | 18 | 1.2 / 5.9 | 12.5 s / 25.8 s | 50k / 118k | 0.5k / 1.2k | 18 / 18 |
+| Simple lookups (where is X, who calls X, what implements X) | OnAir | 30 | 1.7 / 1.7 | 12.7 s / 14.3 s | 62k / 50k | 0.4k / 0.5k | 30 / 30 |
 | Counting ("how many receiver classes under core/") | OnAir | 3 | 1.0 / 3.3 | 11 s / 34 s | 52k / 91k | 0.3k / 2.5k | 3 / 2 |
-| Small implementation tasks (new provider, new enum value, new subclass) | vscode | 6 | 7.5 / 8.5 | 30 s / 31 s | 113k / 96k | 2.0k / 2.2k | 6 / 6 |
-| Small implementation tasks | OnAir | 6 | 11.5 / 12.8 | 39 s / 40 s | 185k / 172k | 2.5k / 2.7k | 6 / 6 |
-| Cross-cutting refactors (rename a method in 28 files, add a parameter and update all callers) | vscode | 4 | 21.8 / 22.0 | 47 s / 48 s | 127k / 100k | 4.2k / 4.4k | 4 / 4 |
-| Cross-cutting refactors | OnAir | 4 | 9.8 / 7.8 | 26 s / 25 s | 93k / 79k | 1.8k / 1.7k | 4 / 4 |
-| Before a change (tests that reach a function, files to edit for a signature change, dead functions in a file) | vscode | 9 | 2.3 / 2.2 | 19.3 s / 19.8 s | 62k / 67k | 0.8k / 1.0k | 9 / 9 |
-| Before a change | OnAir | 9 | 1.7 / 3.6 | 14.3 s / 17.4 s | 59k / 73k | 0.4k / 0.8k | 9 / 9 |
+| Small implementation tasks (new provider, new enum value, new subclass) | OnAir | 6 | 11.5 / 12.8 | 39 s / 40 s | 185k / 172k | 2.5k / 2.7k | 6 / 6 |
+| Cross-cutting refactors (rename a method, add a parameter and update all callers) | OnAir | 4 | 9.8 / 7.8 | 26 s / 25 s | 93k / 79k | 1.8k / 1.7k | 4 / 4 |
+| Before a change (tests that reach a function, files to edit for a signature change, dead functions in a file) | OnAir | 9 | 1.7 / 3.6 | 14.3 s / 17.4 s | 59k / 73k | 0.4k / 0.8k | 9 / 9 |
 | Find dead code in a directory ("five unused functions under app/", answers checked by hand) | OnAir | 2 | 2.0 / 16.0 | 20 s / 124 s | 82k / 928k | 0.6k / 9.5k | 2 / 2 |
 | Questions that describe behaviour without naming anything ("what takes out the spike in the middle of the spectrum") | OnAir | 12 | 1.8 / 4.2 | 12.0 s / 20.5 s | 69k / 100k | 0.3k / 0.8k | 12 / 12 |
-| Questions that describe behaviour | vscode | 12 | 1.0 / 1.0 | 11.7 s / 11.8 s | 50k / 40k | 0.4k / 0.5k | 12 / 12 |
 | One of many same-named methods ("which `reset` belongs to the Viterbi decoder") | OnAir | 12 | 1.0 / 3.6 | 11.2 s / 17.4 s | 53k / 68k | 0.2k / 0.6k | 12 / 12 |
 
 What this says:
 
-- **Multi-hop questions are where clast pays off**: 20% less time on vscode, and half the time and
-  less than half the tokens on OnAir. One call returns a call chain or a full inheritance
+- **Multi-hop questions are where clast pays off**: half the time and less than half the tokens. One call returns a call chain or a full inheritance
   tree that grep needs three to twelve rounds for, and the agent reads 70-85% less tool output.
 - **Simple lookups are a tie.** A current model with ripgrep answers them in one or two calls; clast
   does not make that faster, it only returns a little less text.
@@ -48,8 +87,7 @@ What this says:
   named was verified unused, and all ten the grep sessions found are in clast's list.
 - **Describing behaviour instead of naming it** works on a repository the model has never seen
   (OnAir): search over names, comments and what function bodies mention finds the place in one or two
-  calls where grep needs four rounds of guessing words. On vscode it is a tie at one call, because the
-  model already knows where things are in vscode; that row measures the model's memory, not the tools.
+  calls where grep needs four rounds of guessing words.
 - **Questions before a change take fewer tokens, not always less time.** With `clast_impact` and
   `clast_unused` the agent reads less tool output and writes less. The clear win is "which
   tests reach this function when none names it": 1 call and 11 s against 5.7 calls and 22 s on OnAir.

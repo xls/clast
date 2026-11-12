@@ -7,7 +7,9 @@ dist/
 *.db
 *.db-wal
 *.db-shm
-grammars/
+/grammars/*
+!/grammars/tree-sitter-kotlin.wasm
+!/grammars/tree-sitter-kotlin.LICENSE
 scripts/
 .claude/settings.local.json
 .bench/

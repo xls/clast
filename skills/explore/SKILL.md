@@ -21,6 +21,7 @@ Skip clast for one exact name (Grep) and for mechanical edits.
 | What is unused? | `clast_unused` |
 | What did the diff touch? | `clast_changes` |
 | Every use of an identifier / a string or config key | `clast_references` / `clast_grep` |
+| Code of a given shape (same variable twice, nested structure) | `clast_match` with `$X` / `$$$X` holes |
 
 Rules:
 

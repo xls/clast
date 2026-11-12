@@ -7,7 +7,7 @@
 A code index for coding agents. One call tells Claude who calls a function, what implements an<br>
 interface, what breaks if you change it, and what nobody uses any more.
 
-**Built for Claude Code** &nbsp; | &nbsp; **Works with Codex, Gemini CLI and any MCP client** &nbsp; | &nbsp; **14 languages** &nbsp; | &nbsp; **MIT licensed**
+**Built for Claude Code** &nbsp; | &nbsp; **Works with Codex, Gemini CLI and any MCP client** &nbsp; | &nbsp; **15 languages** &nbsp; | &nbsp; **MIT licensed**
 
 [Install](#install) &nbsp; / &nbsp; [What it does](#made-for-the-questions-grep-cannot-answer) &nbsp; / &nbsp; [Measured results](#measured-not-promised) &nbsp; / &nbsp; [First steps](#your-first-minute) &nbsp; / &nbsp; [Changelog](CHANGELOG.md)
 
@@ -232,6 +232,12 @@ callers (2 resolved; depth 2):
 No name to search for? Describe the behaviour. Search covers names, signatures, doc comments and
 what function bodies mention, and copes with partial names, abbreviations and typos.
 
+Optionally, search can also go by meaning. With embeddings switched on, a local model turns every
+function into a vector, and a question finds the code that is about the same thing even when no
+word matches. On twelve descriptions of gin functions written to avoid the code's own vocabulary,
+word search put the target in the first five results four times, and seven times with embeddings.
+It is off by default; see Configuration.
+
 A name that is everywhere is no problem either. A large code base can have a thousand methods called
 `reset` or `write`, and grep returns them all. Ask for "write socket" and clast puts the right one
 first: it takes every definition with that name and lets the other words choose, by the class it
@@ -265,48 +271,76 @@ numbers are right even a second after the agent edited a file. The index is a ca
 delete it whenever you like. Grammars are WebAssembly and storage is Node's built-in SQLite, so
 there is nothing to compile.
 
-**Languages:** TypeScript, TSX, JavaScript, Python, Java, C#, Go, Rust, C, C++, Ruby, PHP, Swift, Dart.
+**Languages:** TypeScript, TSX, JavaScript, Vue (script blocks), Python, Java, Kotlin, C#, Go, Rust, C, C++, Ruby, PHP, Swift, Dart.
+A Kotlin `external fun` or Java `native` method is linked to the C or C++ function behind it, so a
+caller search crosses the JNI bridge.
 
 ## Measured, not promised
 
-Every figure comes from real headless Claude Code sessions: the same question asked once with clast
-and once with only grep and file reads. The rows below are from a 1.6-million-line C++ application
-that the model had never seen; results on vscode are in the full tables.
+**54% fewer tool calls, 30% less time and 26% fewer input tokens** than grep and file reads, on
+105 question sessions per side in two large repositories the model has never seen, with 105 of 105
+answers correct against 104 of 105.
 
-| Kind of work | Tool calls (clast / grep) | Time | Tokens in | Tokens out |
-| --- | ---: | ---: | ---: | ---: |
-| Find dead code in a directory | 2 / 16 | 20 s / 124 s | 82k / 928k | 0.6k / 9.5k |
-| Multi-hop questions (call chains, subclasses, impact) | 1.2 / 5.9 | 12.5 s / 25.8 s | 50k / 118k | 0.5k / 1.2k |
-| Code described by behaviour | 1.8 / 4.2 | 12.0 s / 20.5 s | 69k / 100k | 0.3k / 0.8k |
-| One of many same-named methods ("which of a thousand `reset` methods is the decoder's") | 1.0 / 3.6 | 11.2 s / 17.4 s | 53k / 68k | 0.2k / 0.6k |
-| Counting ("how many classes of this kind") | 1.0 / 3.3 | 11 s / 34 s | 52k / 91k | 0.3k / 2.5k |
-| Simple lookups (where is X, who calls X) | 1.7 / 1.7 | 12.7 s / 14.3 s | 62k / 50k | 0.4k / 0.5k |
-| Cross-cutting refactors (rename a method, add a parameter everywhere) | 8.3 / 8.3 | 27 s / 26 s | 104k / 81k | 1.7k / 1.7k |
+Every figure comes from real headless Claude Code sessions: the same question asked in a fresh
+session, once with clast and once with only grep and file reads. A model answers questions about
+famous code from memory, which hides what a tool does, so the benchmark uses code it cannot know:
+two public repositories created after its training data ends, and one application that was never
+published in it. Every expected answer was confirmed with grep before the run; three runs per
+question. Each cell reads clast / grep.
+
+**[yetone/magpie](https://github.com/yetone/magpie)** - Go, 7,750 files, 1.5 million lines, created September 2026.
+
+| Kind of work | Sessions per side | Tool calls (clast / grep) | Time | Tokens in | Tokens out | Correct |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| Multi-hop questions (call chains, implementers, tests that reach a function) | 15 | 1.9 / 5.7 | 14 s / 24 s | 124k / 223k | 0.5k / 1.1k | 15 / 15 |
+| Code described by behaviour | 9 | 1.8 / 2.8 | 13 s / 16 s | 126k / 155k | 0.3k / 0.5k | 9 / 9 |
+| One of many same-named methods | 9 | 2.0 / 2.7 | 16 s / 15 s | 157k / 146k | 0.4k / 0.5k | 9 / 9 |
+| Counting | 6 | 1.5 / 1.5 | 14 s / 14 s | 112k / 105k | 0.6k / 0.7k | 6 / 6 |
+| Dead code | 6 | 2.0 / 4.8 | 18 s / 33 s | 168k / 266k | 0.3k / 1.8k | 6 / 5 |
+| Simple lookups (where is X, who calls X, what extends X) | 9 | 1.0 / 2.6 | 11 s / 15 s | 112k / 158k | 0.2k / 0.4k | 9 / 9 |
+| Refactors (rename everywhere, add a parameter) | 4 | 8.5 / 9.3 | 27 s / 26 s | 188k / 178k | 1.5k / 1.7k | 4 / 4 |
+| **All questions (refactors not counted)** | 54 | 1.7 / 3.6 | 14 s / 20 s | 132k / 180k | 0.4k / 0.8k | 54 / 53 |
+
+**[deepseek-ai/deepseek-harness](https://github.com/deepseek-ai/deepseek-harness)** - a TypeScript monorepo, 7,633 files, 1.6 million lines, created August 2026.
+
+| Kind of work | Sessions per side | Tool calls (clast / grep) | Time | Tokens in | Tokens out | Correct |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| Multi-hop questions (call chains, implementers, tests that reach a function) | 12 | 1.1 / 3.8 | 12 s / 20 s | 48k / 73k | 0.3k / 0.7k | 12 / 12 |
+| Code described by behaviour | 6 | 1.2 / 2.3 | 11 s / 15 s | 49k / 66k | 0.2k / 0.4k | 6 / 6 |
+| One of many same-named methods | 9 | 1.4 / 3.8 | 14 s / 20 s | 61k / 82k | 0.3k / 0.7k | 9 / 9 |
+| Counting | 6 | 1.5 / 1.0 | 15 s / 19 s | 60k / 42k | 0.6k / 1.2k | 6 / 6 |
+| Dead code | 6 | 2.0 / 3.3 | 18 s / 22 s | 64k / 89k | 0.3k / 0.7k | 6 / 6 |
+| Simple lookups (where is X, who calls X, what extends X) | 12 | 1.0 / 2.8 | 11 s / 17 s | 47k / 65k | 0.3k / 0.5k | 12 / 12 |
+| Refactors (rename everywhere, add a parameter) | 2 | 15.0 / 18.5 | 38 s / 51 s | 112k / 130k | 3.0k / 4.1k | 2 / 2 |
+| **All questions (refactors not counted)** | 51 | 1.3 / 3.0 | 13 s / 19 s | 54k / 70k | 0.3k / 0.7k | 51 / 51 |
+
+**A C++ application** - 7,463 files, 1.6 million lines.
+
+| Kind of work | Sessions per side | Tool calls (clast / grep) | Time | Tokens in | Tokens out | Correct |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| Multi-hop questions (call chains, subclasses, impact) | 18 | 1.2 / 5.9 | 13 s / 26 s | 50k / 118k | 0.5k / 1.2k | 18 / 18 |
+| Code described by behaviour | 12 | 1.8 / 4.2 | 12 s / 21 s | 69k / 100k | 0.3k / 0.8k | 12 / 12 |
+| One of many same-named methods | 12 | 1.0 / 3.6 | 11 s / 17 s | 53k / 68k | 0.2k / 0.6k | 12 / 12 |
+| Counting | 3 | 1.0 / 3.3 | 11 s / 34 s | 52k / 91k | 0.3k / 2.5k | 3 / 2 |
+| Dead code (five unused functions in a directory) | 2 | 2.0 / 16.0 | 20 s / 124 s | 82k / 928k | 0.6k / 9.5k | 2 / 2 |
+| Simple lookups (where is X, who calls X, what implements X) | 30 | 1.7 / 1.7 | 13 s / 14 s | 62k / 50k | 0.4k / 0.5k | 30 / 30 |
+| Refactors (rename everywhere, add a parameter) | 4 | 8.3 / 8.3 | 27 s / 26 s | 104k / 81k | 1.7k / 1.7k | 4 / 4 |
 
 "Tokens in" is everything sent to the model over the session. The fixed prompt goes out again on
-every turn, and clast's tool definitions add about 3.5k to it, which is why clast reads more on the
-two ties. Fewer turns is what brings the total down everywhere else.
+every turn, so fewer turns means fewer tokens; each repository also brings its own instructions into
+the session, which is why the totals differ between repositories but not between the two sides.
+Clast's tool definitions add about 3.5k tokens per turn, which shows where the two sides need the
+same number of turns.
 
-Both sides answered correctly almost everywhere; the difference is how much searching it took.
+**Where it does not help.** Refactors are a tie: the agent has to open and edit every file either
+way, and clast tells it to go straight to grep for a rename. Counting by a plain name pattern is a
+tie when one grep can count it. On the first application, simple lookups of a distinctive name were
+a tie too. Clast earns its place on questions that take several hops, on same-named methods, on
+code described by what it does, and on dead code.
 
-**Where it does not help.** Looking up one name is a tie: a current model with ripgrep does that in
-one call. Writing code is a tie too: the agent reads the surrounding code before it edits, index or
-not. Clast tells the agent to skip it for those edits, so it adds no calls there, only the fixed size of its tool definitions in the prompt. Clast earns its place on questions that take several hops, on counting, and on dead code. The
-samples are small (two repositories, three runs per question), so read them as direction.
-
-### On vscode
-
-The same sessions on vscode (TypeScript, 15,726 files). The model knows vscode from its training,
-so where a question can be answered from memory the two sides tie.
-
-| Kind of work | Tool calls (clast / grep) | Time | Tokens in | Tokens out |
-| --- | ---: | ---: | ---: | ---: |
-| Multi-hop questions | 1.3 / 3.1 | 16.0 s / 19.8 s | 53k / 59k | 0.7k / 1.1k |
-| Before a change (tests that reach a function, signature change, dead functions in a file) | 2.3 / 2.2 | 19.3 s / 19.8 s | 62k / 67k | 0.8k / 1.0k |
-| Simple lookups | 1.4 / 1.4 | 13.9 s / 13.9 s | 54k / 45k | 0.5k / 0.5k |
-| Code described by behaviour | 1.0 / 1.0 | 11.7 s / 11.8 s | 50k / 40k | 0.4k / 0.5k |
-| Small implementation tasks | 7.5 / 8.5 | 30 s / 31 s | 113k / 96k | 2.0k / 2.2k |
-| Cross-cutting refactors | 21.8 / 22.0 | 47 s / 48 s | 127k / 100k | 4.2k / 4.4k |
+Both sides answered correctly almost everywhere; the difference is how much searching it took. The
+questions, with the expected answers, are in `bench/ab/`; `node bench/ab.mjs <repo> <questions>`
+reproduces a run.
 
 ### Is the call graph right?
 
@@ -367,13 +401,13 @@ Open a project in Claude Code with the plugin installed, type `/clast:use`, then
 4. **Clean up:** `/clast:deadcode src/billing`
 5. **Take stock:** `/clast:audit`
 
-**Not sure it is running?** `/clast:status` shows the index, and `/mcp` lists the server with 15 tools
+**Not sure it is running?** `/clast:status` shows the index, and `/mcp` lists the server with 16 tools
 (one tool, `clast_enable`, while clast is off for the project).
 
 ## Reference
 
 <details>
-<summary><strong>All 15 tools</strong></summary>
+<summary><strong>All 16 tools</strong></summary>
 
 | Tool | Answers |
 |------|---------|
@@ -387,6 +421,7 @@ Open a project in Claude Code with the plugin installed, type `/clast:use`, then
 | `clast_impact` | What must change with X, who reaches it, which tests to run |
 | `clast_unused` | What is dead code? |
 | `clast_stats` | How many X? Inventory, endpoints, database access, dependencies |
+| `clast_match` | Where is code of this shape? `fetch($URL, $$$REST)`, `catch ($E) { }`: a pattern with holes, matched on the syntax tree |
 | `clast_grep` | Where does this text appear? Each hit labelled with its function |
 | `clast_changes` | What did this git diff touch, and who calls it? |
 | `clast_status` | Is the index healthy? |
@@ -394,7 +429,7 @@ Open a project in Claude Code with the plugin installed, type `/clast:use`, then
 | `clast_comment` | Doc comment for X, optionally generated by a local model |
 
 Six of them stay loaded in Claude Code (search, call graph, hierarchy, impact, unused, stats); the
-others load through tool search when the agent needs them. All tools return compact plain text: one line per fact, `path:line` locations, and a hint about the
+other ten load through tool search when the agent needs them. All tools return compact plain text: one line per fact, `path:line` locations, and a hint about the
 next useful call when something is not found.
 
 **Addressing symbols.** Anywhere a tool takes a name you can write:
@@ -427,6 +462,7 @@ clast-ai refs DEFAULT_CONFIG
 clast-ai impact Shape.area             # what must change with it, callers, tests to run
 clast-ai unused src/billing            # dead code under a directory (or the whole project)
 clast-ai stats endpoints               # exact counts: inventory, symbols, endpoints, database, ...
+clast-ai match 'catch ($E) { }'         # code by shape: $X = one node, $$$X = any arguments or statements
 clast-ai changes main                  # symbols changed vs main and their impact
 clast-ai guide                         # the usage guide for agents, as Markdown
 clast-ai migrate                       # leftovers of older installs
@@ -465,16 +501,33 @@ Optional. Create `clast.config.json` (or `.claude/clast.config.json`) in the pro
 | `watch.enabled` | `true` | Re-index files as they change |
 | `watch.debounceMs` | `200` | Debounce for file change events |
 | `llm.*` | disabled | OpenAI-compatible endpoint for `clast_comment` (Ollama, LM Studio, vLLM, OpenAI, OpenRouter) |
+| `embeddings.enabled` | `false` | Search by meaning (see below) |
+| `embeddings.provider` | `local` | `local` runs the model on this machine; `endpoint` calls an OpenAI-compatible `/embeddings` API |
+| `embeddings.model` | `jinaai/jina-embeddings-v2-base-code` | Model id (a Hugging Face repository with ONNX weights, or the endpoint's model name) |
+| `embeddings.device` | `cpu` | Local only: `cpu`, or `dml` / `cuda` for a graphics card |
+| `embeddings.endpoint`, `embeddings.apiKey` | empty | For `provider: endpoint` (for example `http://localhost:11434/v1` for Ollama) |
+
+**Search by meaning.** Do these steps once:
+
+1. Run `clast-ai embeddings install`. This puts the model runtime into `~/.clast-ai/embeddings` (about 500 MB).
+2. Put `{ "embeddings": { "enabled": true } }` into `clast.config.json` of the project.
+3. Run `clast-ai embed`. The first run downloads the model (about 160 MB) and embeds every function, method and type.
+
+After that the server keeps the vectors current in the background, and only changed code is embedded
+again. Nothing leaves the machine with the local provider. Expect about 15 to 20 symbols per second
+on a processor: a minute or two for a small project, an hour for 70,000 symbols. Vectors are stored
+in `.clast/embeddings.db` and survive an index rebuild.
 
 Environment: `CLAST_ALWAYS=1` (on in every project, no `.clast` folder needed), `CLAST_PROJECT_DIR` (project root), `CLAST_DB_PATH` (index location), `CLAST_GRAMMARS_DIR`
 (alternative grammar directory), `CLAST_NO_MIGRATE=1` (no automatic clean-up), `CLAST_DEBUG=1` (timings).
 
 | Language | id | Extensions |
 |----------|----|------------|
-| TypeScript | `typescript` (also enables `tsx`) | `.ts`, `.mts`, `.cts`, `.tsx` |
+| TypeScript | `typescript` (also enables `tsx`) | `.ts`, `.mts`, `.cts`, `.tsx`, `.vue` (script blocks) |
 | JavaScript | `javascript` | `.js`, `.jsx`, `.mjs`, `.cjs` |
 | Python | `python` | `.py`, `.pyi`, `.pyw` |
 | Java | `java` | `.java` |
+| Kotlin | `kotlin` | `.kt`, `.kts` |
 | C# | `csharp` | `.cs` |
 | Go | `go` | `.go` |
 | Rust | `rust` | `.rs` |
@@ -529,14 +582,19 @@ under 50 ms.
   injected by string are not modelled. Endpoint and database statistics are pattern-based.
 - **Python**: a local variable that holds a class is not followed.
 - **Go**: the module path is inferred from imports, not from go.mod.
+- **Kotlin**: new. The grammar fails on some files (8 of 82 in the Android app it was tried on); what
+  it does parse is indexed.
 - **Ruby, Swift, Dart**: the least exercised languages. Ruby methods defined by metaprogramming are
   invisible; the Swift grammar fails on some files.
-- **Search is lexical**: a description that shares no word with the code finds the neighbourhood, not
-  always the function.
-- **Not indexed**: Kotlin, Scala and other languages without a bundled grammar. `clast_grep` still
+- **TypeScript interfaces matched by shape**: a call through an interface is not attributed to a class
+  that fits the interface without an `implements` clause.
+- **Search is by words unless embeddings are on**: a description that shares no word with the code
+  finds the neighbourhood, not always the function. With embeddings it does better (7 of 12 against 4
+  of 12 in our test), not perfectly.
+- **Not indexed**: Scala, Lua and other languages without a bundled grammar. `clast_grep` still
   searches those files as text.
 - **Prompt size**: in a project where clast is on, its tool definitions add about 3.5k tokens to every
-  turn (six tools stay loaded, the other nine load on demand). Where it is off: about 0.5k.
+  turn (six tools stay loaded, the other ten load on demand). Where it is off: about 0.5k.
 
 More detail and examples: [docs/v0.2-summary.md](docs/v0.2-summary.md).
 

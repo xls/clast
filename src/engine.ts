@@ -13,6 +13,8 @@ export class Clast {
   readonly config: ClastConfig;
   readonly db: ClastDb;
   readonly indexer: Indexer;
+  /** Run when the engine closes: other files kept open next to the index (the embedding store). */
+  readonly closers: Array<() => void> = [];
 
   constructor(root: string, config?: ClastConfig) {
     this.root = resolve(root);
@@ -25,6 +27,9 @@ export class Clast {
   }
 
   close(): void {
+    for (const c of this.closers.splice(0)) {
+      try { c(); } catch { /* already closed */ }
+    }
     this.db.close();
   }
 }

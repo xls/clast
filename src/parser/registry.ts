@@ -4,6 +4,7 @@ import { python } from './langs/python.js';
 import { go } from './langs/go.js';
 import { rust } from './langs/rust.js';
 import { java } from './langs/java.js';
+import { kotlin } from './langs/kotlin.js';
 import { csharp } from './langs/csharp.js';
 import { c, cpp } from './langs/c.js';
 import { ruby } from './langs/ruby.js';
@@ -23,6 +24,7 @@ export const SPECS: LangSpec[] = [
   go,
   rust,
   java,
+  kotlin,
   csharp,
   c,
   cpp,

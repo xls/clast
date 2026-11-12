@@ -52,7 +52,7 @@ describe('MCP server', () => {
     const { tools } = await client.listTools();
     assert.deepEqual(tools.map(t => t.name).sort(), [
       'clast_call_graph', 'clast_changes', 'clast_comment', 'clast_file_summary', 'clast_get_context',
-      'clast_grep', 'clast_hierarchy', 'clast_impact', 'clast_overview', 'clast_references', 'clast_reindex', 'clast_search',
+      'clast_grep', 'clast_hierarchy', 'clast_impact', 'clast_match', 'clast_overview', 'clast_references', 'clast_reindex', 'clast_search',
       'clast_stats', 'clast_status', 'clast_unused',
     ]);
     for (const tool of tools) {

@@ -192,7 +192,7 @@ export class Indexer {
     if (parsed > 0 || removed > 0 || this.structureChanged) {
       // New or removed files can change how *other* files' imports resolve.
       const full = removed > 0 || this.structureChanged || parsed > 200;
-      resolveImports(this.db, full ? undefined : touchedIds);
+      resolveImports(this.db, full ? undefined : touchedIds, undefined, this.root);
       this.structureChanged = false;
       try { this.db.db.exec('PRAGMA optimize'); } catch { /* ignore */ }
     }
@@ -318,7 +318,7 @@ export class Indexer {
     if (fileId !== undefined) {
       // A new file can also satisfy other files' previously unresolved imports;
       // only those that mention its name are retried (not the whole project).
-      resolveImports(this.db, [fileId], this.structureChanged ? [rel] : undefined);
+      resolveImports(this.db, [fileId], this.structureChanged ? [rel] : undefined, this.root);
       this.structureChanged = false;
     }
     return changed;

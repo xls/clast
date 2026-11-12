@@ -6,6 +6,7 @@ import { callersOf } from '../query/callgraph.js';
 import { firstLine, isTestPath, isVendoredPath, loc, plural } from '../query/format.js';
 import { findFiles, findSymbols, parseSymbolRef, pathMatches, type FileHit } from '../query/resolve.js';
 import { splitIdentifier } from '../query/words.js';
+import { embeddingStatus } from '../embed/index.js';
 import { ToolContext } from './context.js';
 
 // ---------------------------------------------------------------------------
@@ -826,6 +827,14 @@ export async function status(ctx: ToolContext, watcher?: { isActive: boolean; pe
     );
   }
   if (s.lastIndexed) out.push(`last file indexed: ${new Date(s.lastIndexed).toISOString()}`);
+  if (ctx.clast.config.embeddings.enabled) {
+    const e = embeddingStatus(ctx);
+    out.push(
+      e
+        ? `embeddings: ${e.have} of ${e.want} symbols (${e.model})${e.have < e.want ? ' - run clast-ai embed, or wait for the background run' : ''}`
+        : 'embeddings: on in the configuration but not usable (run clast-ai embed for the reason)'
+    );
+  }
   if (ctx.indexer.rules.skippedLarge) {
     out.push(`skipped: ${plural(ctx.indexer.rules.skippedLarge, 'file')} larger than ${ctx.clast.config.maxFileSize} bytes (maxFileSize)`);
   }
