@@ -4,7 +4,8 @@
 process.env.UV_THREADPOOL_SIZE ??= '16';
 
 import { readFileSync } from 'node:fs';
-import { resolve } from 'node:path';
+import { dirname, join, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { Clast } from './engine.js';
 import { SourceParser } from './parser/index.js';
 import { ToolContext } from './tools/context.js';
@@ -35,6 +36,7 @@ usage: clast-ai [command] [args] [--root <dir>]
   unused [path]              dead code   [--kind k] [--lang l] [--limit n] [--no-exported]
   stats [what] [name]        exact counts: inventory | symbols | subtypes | calls | text | imports | endpoints | database
                              [--kind k] [--on receiver] [--path p] [--lang l] [--group-by g] [--depth n] [--limit n] [--tests]
+  guide                      print the usage guide for agents (append it to AGENTS.md, GEMINI.md or a rules file)
   migrate [--apply]          find (and with --apply remove) what older installs left behind: duplicate
                              MCP registrations next to the plugin, the v0.1 index file
   parse <file> [--json]      debug: show what the extractor produces for a file
@@ -105,6 +107,15 @@ async function main(): Promise<void> {
     const { startServer } = await import('./server/index.js');
     await startServer();
     return;
+  }
+
+  if (cmd === 'guide') {
+    // The usage guide the Claude Code plugin ships as a skill, as plain Markdown for agents that take
+    // their instructions from a file: `clast-ai guide >> AGENTS.md`.
+    const file = join(dirname(fileURLToPath(import.meta.url)), '..', 'skills', 'explore', 'SKILL.md');
+    const text = readFileSync(file, 'utf-8').replace(/\r\n/g, '\n');
+    const body = text.replace(/^---\n[\s\S]*?\n---\n+/, '').replace(/\nSlash commands in this plugin:[\s\S]*$/, '\n');
+    return void console.log(body.trimEnd());
   }
 
   if (cmd === 'migrate') {
