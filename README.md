@@ -263,13 +263,13 @@ the vscode results (TypeScript, 15.7k files) are in the full tables.
 | Code described by behaviour, in a repo the model has not seen | 1.8 / 4.2 | 12.0 s / 20.5 s | $0.068 / $0.197 |
 | Counting ("how many receiver classes") | 1.0 / 3.3 | 11 s / 34 s | about $0.02 / $0.29 |
 | Simple lookups (where is X, who calls X) | 1.7 / 1.7 | 12.7 s / 14.3 s | $0.063 / $0.096 |
-| Cross-cutting refactors (rename a method, add a parameter everywhere) | 9.8 / 7.8 | 26 s / 25 s | $0.25 / $0.24 |
+| Cross-cutting refactors (rename a method, add a parameter everywhere) | 8.3 / 8.3 | 27 s / 26 s | $0.26 / $0.25 |
 
 Both sides answered correctly almost everywhere; the difference is how much searching it took.
 
 **Where it does not help.** Looking up one name is a tie: a current model with ripgrep does that in
 one call. Writing code is a tie too: the agent reads the surrounding code before it edits, index or
-not. Clast earns its place on questions that take several hops, on counting, and on dead code. The
+not. Clast tells the agent to skip it for those edits, so it adds no calls there, only the fixed size of its tool definitions in the prompt. Clast earns its place on questions that take several hops, on counting, and on dead code. The
 samples are small (two repositories, three runs per question), so read them as direction.
 
 Full tables, method, answer-quality audits and index speed: [docs/benchmarks.md](docs/benchmarks.md).

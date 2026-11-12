@@ -5,6 +5,9 @@ import { extname, join } from 'node:path';
 import type { ClastConfig } from '../config/index.js';
 import { supportedExtensions } from '../parser/registry.js';
 
+/** A project has thousands of directories; a home, temp or system directory has hundreds of thousands. */
+const MAX_DIRS = 150_000;
+
 // `ignore` is CJS; under NodeNext the default import may be the module object.
 const createIgnore: () => Ignore =
   (ignoreFactory as unknown as { default?: () => Ignore }).default ?? (ignoreFactory as unknown as () => Ignore);
@@ -119,8 +122,12 @@ export class IgnoreRules {
 
   /** Files skipped by the last scan because they exceed maxFileSize. */
   skippedLarge = 0;
-  /** True when the last scan stopped at the maxFiles cap. */
+  /** True when the last scan stopped at the maxFiles cap or the directory cap. */
   truncated = false;
+  /** True when the last scan stopped because the tree has more directories than a project plausibly has. */
+  tooBroad = false;
+  private dirsWalked = 0;
+  private sliceStart = 0;
   private readonly maxFiles: number;
 
   /**
@@ -166,8 +173,11 @@ export class IgnoreRules {
     const candidates: string[] = [];
     this.skippedLarge = 0;
     this.truncated = false;
+    this.tooBroad = false;
+    this.dirsWalked = 0;
+    this.sliceStart = performance.now();
     const rules: Rule[] = [this.rootRule];
-    this.walk('', rules, candidates, 0);
+    await this.walk('', rules, candidates, 0);
 
     // stat() dominates a warm start (especially on Windows); run it on the
     // libuv thread pool instead of serially on the main thread.
@@ -191,11 +201,25 @@ export class IgnoreRules {
     return out.filter(Boolean);
   }
 
-  private walk(dirRel: string, parentRules: Rule[], out: string[], depth: number): void {
-    if (depth > 40) return;
+  /**
+   * Reads directories synchronously (fastest for a normal project) but hands the event loop back every
+   * few milliseconds: the walk starts right after the server connects, and a client that gets no answer
+   * to its first request gives up. A tree far larger than a project (a home or temp directory) is cut off.
+   */
+  private async walk(dirRel: string, parentRules: Rule[], out: string[], depth: number): Promise<void> {
+    if (depth > 40 || this.truncated) return;
     if (out.length >= this.maxFiles) {
       this.truncated = true;
       return;
+    }
+    if (++this.dirsWalked > MAX_DIRS) {
+      this.truncated = true;
+      this.tooBroad = true;
+      return;
+    }
+    if (performance.now() - this.sliceStart > 15) {
+      await new Promise<void>(done => setImmediate(done));
+      this.sliceStart = performance.now();
     }
     const rule = this.ruleFor(dirRel);
     const rules = rule ? [...parentRules, rule] : parentRules;
@@ -213,7 +237,7 @@ export class IgnoreRules {
         if (name.startsWith('.')) continue;
         const rel = dirRel + name;
         if (IgnoreRules.test(rules, rel, true)) continue;
-        this.walk(rel + '/', rules, out, depth + 1);
+        await this.walk(rel + '/', rules, out, depth + 1);
       } else if (e.isFile()) {
         if (!this.extensions.has(extname(name).toLowerCase())) continue;
         const rel = dirRel + name;

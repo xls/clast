@@ -56,6 +56,11 @@ What this says:
   completeness: nothing of the old name or call shape left). Finding every occurrence of one name is
   a single grep, and before editing the agent reads the neighbouring code either way. Clast costs a
   little more here because its tool definitions are in the prompt.
+- **Refactors after a guidance change.** In the rows above the clast sessions made about three extra
+  calls on "add a parameter" tasks: they looked the callers up in clast and then grepped anyway. The
+  server instructions now say to skip clast for a rename or signature change of a distinctive name.
+  Re-run on OnAir (4 sessions per arm): 8.3 calls against 8.3, 26.9 s against 25.9 s, $0.26 against
+  $0.25, all correct, and no clast call in any session. What is left is the fixed prompt cost.
 - **Small samples.** Two repositories, three runs per question, questions written by the tool's
   author. The figures show the direction, not a precise ratio.
 

@@ -829,7 +829,12 @@ export async function status(ctx: ToolContext, watcher?: { isActive: boolean; pe
   if (ctx.indexer.rules.skippedLarge) {
     out.push(`skipped: ${plural(ctx.indexer.rules.skippedLarge, 'file')} larger than ${ctx.clast.config.maxFileSize} bytes (maxFileSize)`);
   }
-  if (ctx.indexer.rules.truncated) {
+  if (ctx.indexer.rules.tooBroad) {
+    out.push(
+      `warning: ${ctx.clast.root} has more directories than a project (the scan stopped). ` +
+        `Start the agent inside a project, or set CLAST_PROJECT_DIR to one.`
+    );
+  } else if (ctx.indexer.rules.truncated) {
     out.push(
       `warning: stopped at ${ctx.clast.config.maxFiles} source files (maxFiles). Is the project root too broad? ` +
         `Set CLAST_PROJECT_DIR or raise maxFiles in clast.config.json.`

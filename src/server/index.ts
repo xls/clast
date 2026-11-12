@@ -28,7 +28,8 @@ const INSTRUCTIONS = `Clast is a pre-built, always-fresh code index for this rep
 - How many X, how big, what is it made of -> clast_stats (exact totals; do not count search results by hand).
 - Strings, comments, config keys -> clast_grep. After a change -> clast_changes (touched symbols, affected callers, tests).
 
-When implementing a change: find the sibling implementations with clast_hierarchy or clast_search, read one with clast_get_context, and list every caller or switch you must update with clast_call_graph / clast_references before editing.
+When adding something new (a subclass, a handler, a provider): find the siblings with clast_hierarchy or clast_search and read one with clast_get_context.
+When renaming a symbol or changing a signature: if the name is distinctive, do NOT use clast - one Grep for the name lists every site, then edit. Use clast_impact first only when the name is common (get, run, close) so that Grep would drown in unrelated hits, when overrides or interface implementations must change with it, or to choose the tests to run.
 Most tools take several names at once (arrays). Symbols: name, Container.name, or path/to/file.ext:name. "?" marks a name-based guess. The index follows file changes, including your own edits.`;
 
 const text = (t: string) => ({ content: [{ type: 'text' as const, text: t }] });
