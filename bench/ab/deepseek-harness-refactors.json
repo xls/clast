@@ -5,7 +5,7 @@
     "task": true,
     "q": "Rename the function freezeMessage (packages/llm/llm/src/message.ts) to sealMessage. Update its definition, every import and every caller under packages and apps, tests included, so that nothing refers to the old name any more.",
     "expect": ["sealMessage", "packages/llm/llm/src/message.ts", "packages/api/session-controller/src/commands.ts", "packages/context/session-reference/src/index.ts"],
-    "mustNotRemain": "\bfreezeMessage\b",
+    "mustNotRemain": "\\bfreezeMessage\\b",
     "paths": ["packages", "apps"]
   }
 ]

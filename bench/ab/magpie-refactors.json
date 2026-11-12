@@ -5,7 +5,7 @@
     "task": true,
     "q": "Rename the exported function ServesModel in internal/provider to ServesModelID. Update its definition, its doc comment and every caller in the repository, tests included, so that nothing calls the old name any more.",
     "expect": ["ServesModelID", "internal/provider/modelprefs.go", "internal/cli/model_cli.go", "internal/cli/model_api_cli.go"],
-    "mustNotRemain": "\bServesModel\(",
+    "mustNotRemain": "\\bServesModel\\(",
     "paths": ["internal"]
   },
   {
@@ -14,7 +14,7 @@
     "task": true,
     "q": "Add a required third parameter strict bool to the function ServesModel in internal/provider. When strict is false the result is as it is now; when strict is true, also return false for an empty model name. Update the definition and every caller in the repository, tests included; existing callers pass false.",
     "expect": ["strict bool", "internal/provider/modelprefs.go", "internal/cli/model_cli.go", "internal/cli/model_api_cli.go"],
-    "mustNotRemain": "ServesModel\(\*?p, [^,()]+\)",
+    "mustNotRemain": "ServesModel\\(\\*?p, [^,()]+\\)",
     "paths": ["internal"]
   }
 ]

@@ -7,43 +7,47 @@ and how fast the index is. All were run on real open-source repositories.
 
 ### Repositories the model has never seen
 
-A model answers questions about famous code from memory, which hides what a tool does. These two
-repositories were created after the model's training data ends, so it cannot know them. Every answer
-was confirmed with grep before the run. Two sessions per question and side.
+Two public repositories created after the model's training data ends. Every expected answer was
+confirmed with grep before the run; three runs per question (two for the refactor tasks). Each cell
+reads clast / grep.
 
-**[yetone/magpie](https://github.com/yetone/magpie)** - Go, 7,750 files, 1.5 million lines, created September 2026.
-Both sides answered all seven questions correctly.
+**[yetone/magpie](https://github.com/yetone/magpie)** - Go, 7,750 files, 1.5 million lines.
 
-| Question | Tool calls (clast / grep) | Time | Tokens in | Tokens out |
-| --- | ---: | ---: | ---: | ---: |
-| The chain of calls between two functions | 2.0 / 4.0 | 12 s / 22 s | 114k / 216k | 0.4k / 0.8k |
-| Every type that satisfies an interface (8, four of them by embedding) | 3.0 / 5.0 | 17 s / 23 s | 141k / 191k | 0.8k / 1.3k |
-| Tests that reach a function no test names | 2.0 / 7.0 | 16 s / 27 s | 172k / 262k | 0.7k / 1.5k |
-| One of several same-named methods, described by what it does | 1.0 / 3.0 | 10 s / 14 s | 114k / 159k | 0.2k / 0.4k |
-| Counting types by name pattern | 1.0 / 2.0 | 10 s / 12 s | 112k / 105k | 0.3k / 0.5k |
-| Dead functions in one file | 2.0 / 3.5 | 17 s / 26 s | 168k / 222k | 0.3k / 1.4k |
-| A function described by behaviour | 1.0 / 3.5 | 11 s / 15 s | 114k / 160k | 0.3k / 0.6k |
-| **All questions** | 1.7 / 4.0 | 13 s / 20 s | 134k / 188k | 0.4k / 0.9k |
+| Kind of work | Sessions per side | Tool calls (clast / grep) | Time | Tokens in | Tokens out | Correct |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| Multi-hop questions (call chains, implementers, tests that reach a function) | 15 | 1.9 / 5.7 | 14 s / 24 s | 124k / 223k | 0.5k / 1.1k | 15 / 15 |
+| Code described by behaviour | 9 | 1.8 / 2.8 | 13 s / 16 s | 126k / 155k | 0.3k / 0.5k | 9 / 9 |
+| One of many same-named methods | 9 | 2.0 / 2.7 | 16 s / 15 s | 157k / 146k | 0.4k / 0.5k | 9 / 9 |
+| Counting | 6 | 1.5 / 1.5 | 14 s / 14 s | 112k / 105k | 0.6k / 0.7k | 6 / 6 |
+| Dead code | 6 | 2.0 / 4.8 | 18 s / 33 s | 168k / 266k | 0.3k / 1.8k | 6 / 5 |
+| Simple lookups (where is X, who calls X, what extends X) | 9 | 1.0 / 2.6 | 11 s / 15 s | 112k / 158k | 0.2k / 0.4k | 9 / 9 |
+| Refactors (rename everywhere, add a parameter) | 4 | 8.5 / 9.3 | 27 s / 26 s | 188k / 178k | 1.5k / 1.7k | 4 / 4 |
+| **All questions (refactors not counted)** | 54 | 1.7 / 3.6 | 14 s / 20 s | 132k / 180k | 0.4k / 0.8k | 54 / 53 |
 
-**[deepseek-ai/deepseek-harness](https://github.com/deepseek-ai/deepseek-harness)** - a TypeScript monorepo, 7,633 files,
-1.6 million lines, created August 2026. Both sides answered correctly, with one caveat: on the
-behaviour question grep named a different function that also fits the wording, so that question
-does not separate them on correctness.
+**[deepseek-ai/deepseek-harness](https://github.com/deepseek-ai/deepseek-harness)** - TypeScript, 7,633 files, 1.6 million lines.
 
-| Question | Tool calls (clast / grep) | Time | Tokens in | Tokens out |
-| --- | ---: | ---: | ---: | ---: |
-| Every subclass of a base class | 1.0 / 1.0 | 11 s / 12 s | 47k / 41k | 0.3k / 0.3k |
-| The chain of calls between two functions | 1.0 / 2.0 | 13 s / 12 s | 52k / 46k | 0.5k / 0.4k |
-| One of several same-named methods, described by what it does | 1.0 / 5.5 | 11 s / 24 s | 49k / 100k | 0.2k / 1.0k |
-| Counting types by name pattern | 1.0 / 1.0 | 11 s / 15 s | 48k / 42k | 0.3k / 0.8k |
-| A function described by behaviour | 1.0 / 4.5 | 11 s / 21 s | 50k / 109k | 0.2k / 0.9k |
-| Dead functions in one file | 2.0 / 3.0 | 18 s / 22 s | 71k / 95k | 0.3k / 0.9k |
-| **All questions** | 1.2 / 2.8 | 12 s / 18 s | 53k / 72k | 0.3k / 0.7k |
+| Kind of work | Sessions per side | Tool calls (clast / grep) | Time | Tokens in | Tokens out | Correct |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| Multi-hop questions (call chains, implementers, tests that reach a function) | 12 | 1.1 / 3.8 | 12 s / 20 s | 48k / 73k | 0.3k / 0.7k | 12 / 12 |
+| Code described by behaviour | 6 | 1.2 / 2.3 | 11 s / 15 s | 49k / 66k | 0.2k / 0.4k | 6 / 6 |
+| One of many same-named methods | 9 | 1.4 / 3.8 | 14 s / 20 s | 61k / 82k | 0.3k / 0.7k | 9 / 9 |
+| Counting | 6 | 1.5 / 1.0 | 15 s / 19 s | 60k / 42k | 0.6k / 1.2k | 6 / 6 |
+| Dead code | 6 | 2.0 / 3.3 | 18 s / 22 s | 64k / 89k | 0.3k / 0.7k | 6 / 6 |
+| Simple lookups (where is X, who calls X, what extends X) | 12 | 1.0 / 2.8 | 11 s / 17 s | 47k / 65k | 0.3k / 0.5k | 12 / 12 |
+| Refactors (rename everywhere, add a parameter) | 2 | 15.0 / 18.5 | 38 s / 51 s | 112k / 130k | 3.0k / 4.1k | 2 / 2 |
+| **All questions (refactors not counted)** | 51 | 1.3 / 3.0 | 13 s / 19 s | 54k / 70k | 0.3k / 0.7k | 51 / 51 |
 
-Across both: clast needed 1.2 to 1.7 tool calls where grep needed 2.8 to 4.0, a third less time, and
-about a quarter fewer tokens. The questions are in `bench/ab/magpie.json` and
-`bench/ab/deepseek-harness.json`.
+Across the 105 question sessions per side: 54% fewer tool calls, 30% less time, 26% fewer input
+tokens.
 
+Preparing these runs found errors in clast that no earlier repository had shown; all but one are
+fixed in 0.4.0 (imports by package name in a monorepo, index re-exports, Go interfaces satisfied
+through an embedded struct, an embedded struct reported as dead code, a library base class bound to
+a same-named test class, four kinds of wrong dead-code reports in framework-style TypeScript). Not
+fixed: a call through a TypeScript interface is not attributed to a class that matches the interface
+by shape only, without an `implements` clause.
+
+### One C++ application
 
 Measured with real headless Claude Code sessions (`bench/ab.mjs`): every question runs in its own
 fresh session, once with clast connected and once with only Read / Grep / Glob, on OnAir (C++, 7.5k
