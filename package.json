@@ -1,6 +1,6 @@
 {
   "name": "clast-ai",
-  "version": "0.3.1",
+  "version": "0.4.0",
   "description": "Code index MCP server for coding agents (Claude Code, Codex, Gemini CLI, any MCP client): symbol search, type-aware call graph, hierarchy, change impact, dead code and exact counts",
   "main": "dist/engine.js",
   "bin": {

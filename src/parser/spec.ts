@@ -134,6 +134,11 @@ export interface LangSpec {
    * `.h` files as C++ when they look like C++).
    */
   sniff?: (source: string, path: string) => string | undefined;
+  /**
+   * Optional: the text to parse in place of the file's (a Vue file's script blocks). It must keep
+   * every line and column where it was, so that positions still point into the file.
+   */
+  preprocess?: (source: string, path: string) => string;
 }
 
 // ---------------------------------------------------------------------------

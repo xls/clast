@@ -12,6 +12,7 @@ import { ToolContext } from './tools/context.js';
 import { callGraph, getContext, hierarchy, search } from './tools/search.js';
 import { changes, fileSummary, grep, overview, references, reindex, status } from './tools/explore.js';
 import { impact, unused } from './tools/impact.js';
+import { match } from './tools/match.js';
 import { stats, type StatsArgs } from './tools/stats.js';
 import { VERSION } from './version.js';
 
@@ -30,6 +31,8 @@ usage: clast-ai [command] [args] [--root <dir>]
   callees <name>             what it calls  [--depth n] [--limit n]
   hierarchy <name>           supertypes / subtypes / overrides   [--depth n] [--limit n] [--within path]
   refs <name>                all references to an identifier   [--path p] [--limit n]
+  match <code pattern>       code by shape: $X = any one node, $$$X = any arguments or statements,
+                             e.g. 'fetch($URL, $$$REST)'   [--lang l] [--path p] [--limit n]
   grep <pattern>             text search with enclosing symbols   [--regex] [--path p] [--limit n]
   changes [base]             symbols touched by the git diff and their impact
   impact <name>              what must change with it, who reaches it, which tests to run   [--depth n] [--limit n]
@@ -53,6 +56,7 @@ const CLI_NAMES: Record<string, string> = {
   clast_file_summary: 'clast-ai outline',
   clast_overview: 'clast-ai overview',
   clast_grep: 'clast-ai grep',
+  clast_match: 'clast-ai match',
   clast_changes: 'clast-ai changes',
   clast_stats: 'clast-ai stats',
   clast_impact: 'clast-ai impact',
@@ -218,6 +222,11 @@ async function main(): Promise<void> {
       case 'refs':
       case 'references':
         out = await references(ctx, { name: positional[0] ?? '', path: str('path'), limit: num('limit'), includeTests });
+        break;
+      case 'match':
+        out = await match(ctx, {
+          pattern: positional.join(' '), path: str('path'), lang: str('lang'), limit: num('limit'), includeTests,
+        });
         break;
       case 'grep':
         out = await grep(ctx, {

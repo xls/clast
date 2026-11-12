@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.4.0
+
+- `clast_match` / `clast-ai match`: find code by shape. The pattern is code with holes: `$NAME` is any
+  one node, `$$$NAME` any run of arguments or statements, and the same name twice must match the same
+  text. It is compared on the syntax tree, so layout and comments do not matter and strings never
+  match: `fetch($URL, $$$REST)`, `if ($X == null) { $$$BODY }`, `catch ($T $E) { }`. Counts agree with
+  an independent check on kafka (7 empty catch blocks under clients/src/main) and vscode (7 under
+  src/vs/base/common). The tool loads on demand and adds nothing to the prompt. In sessions, plain
+  grep with a multi-line expression answered the same two questions faster, so this is for shapes a
+  regular expression cannot describe, not a speed gain.
+- Vue single-file components: the script blocks of `.vue` files are indexed as TypeScript, with the
+  line numbers of the file, and calls link into `.ts` files and back.
+
 ## 0.3.1
 
 - Six tools stay loaded in Claude Code instead of eleven (search, call graph, hierarchy, impact,

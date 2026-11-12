@@ -1,0 +1,7 @@
+[
+  {
+    "id": "empty-catch-ts",
+    "q": "How many empty catch blocks are in src/vs/base/common, not counting test folders? Empty means no statement inside (comments do not count), with or without a bound error variable. Give the number and name the files.",
+    "expect": ["7", "buffer.ts", "lifecycle.ts", "oauth.ts", "platform.ts", "types.ts"]
+  }
+]

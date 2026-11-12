@@ -48,7 +48,7 @@ describe('opt-in per project', () => {
     assert.match(out, /clast is on/);
     assert.ok(existsSync(join(root, '.clast')));
     const names = await toolNames(client);
-    assert.equal(names.length, 15);
+    assert.equal(names.length, 16);
     assert.ok(!names.includes('clast_enable'));
     const found = textOf(await client.callTool({ name: 'clast_search', arguments: { query: 'hello' } }));
     assert.match(found, /function hello {2}src\/a\.ts/);
@@ -58,10 +58,10 @@ describe('opt-in per project', () => {
     const { root, client } = await start();
     mkdirSync(join(root, '.clast'));
     let names: string[] = [];
-    for (let i = 0; i < 40 && names.length < 15; i++) {
+    for (let i = 0; i < 40 && names.length < 16; i++) {
       await new Promise(r => setTimeout(r, 250));
       names = await toolNames(client);
     }
-    assert.equal(names.length, 15);
+    assert.equal(names.length, 16);
   });
 });
