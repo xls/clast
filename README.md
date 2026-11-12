@@ -183,15 +183,16 @@ are found with it. Code used only by tests and names that still appear in a stri
 config file are listed separately, because those need a look before they go.
 
 ```
-> clast_unused  path: app                                        (a C++ application)
+> clast_unused  path: streams/.../state/internals              (kafka)
 
-unused code: 80 symbols, 415 lines in 51 files - the name is never referenced outside
-its own definition, or only from other unused code (10594 symbols judged under app)
-app/panels/agc_ui.cpp  (6 symbols, 109 lines)
-  function reasonText   :12-23    (used only by unused agcGear)
-  function ampNow       :42-49    (used only by unused agcStep)
-  function agcStep      :79-111   exported
-  function agcGear      :126-169  exported
+unused code: 8 symbols, 197 lines in 1 file - the name is never referenced outside
+its own definition, or only from other unused code (3818 symbols judged)
+streams/.../state/internals/Murmur3.java  (8 symbols, 197 lines)
+  method Murmur3.hash64                 :201-203  exported
+  class  Murmur3.IncrementalHash32      :453-543  exported
+  method Murmur3.orBytes                :545-547  (used only by unused IncrementalHash32)
+  ...
+used only by tests (6, 56 lines):
   ...
 ```
 
@@ -220,10 +221,10 @@ callers (2 resolved; depth 2):
 No name to search for? Describe the behaviour. Search covers names, signatures, doc comments and
 what function bodies mention, and copes with partial names, abbreviations and typos.
 
-A name that is everywhere is no problem either. One code base here has 1,157 methods called `reset`
-and grep returns them all. Ask for "reset viterbi decoder" and clast puts the right one first: it
-takes every definition with that name and lets the other words choose, by the class it sits in, its
-comment, and what its body calls.
+A name that is everywhere is no problem either. A large code base can have a thousand methods called
+`reset` or `write`, and grep returns them all. Ask for "write socket" and clast puts the right one
+first: it takes every definition with that name and lets the other words choose, by the class it
+sits in, its comment, and what its body calls.
 
 ```
 > clast_search  "client ip from forwarded headers"               (gin)
@@ -258,18 +259,22 @@ there is nothing to compile.
 ## Measured, not promised
 
 Every figure comes from real headless Claude Code sessions: the same question asked once with clast
-and once with only grep and file reads. The rows below are from OnAir (C++, 7.5k files, 1.6M lines);
-the vscode results (TypeScript, 15.7k files) are in the full tables.
+and once with only grep and file reads. The rows below are from a 1.6-million-line C++ application
+that the model had never seen; results on vscode are in the full tables.
 
-| Kind of work | Tool calls (clast / grep) | Time | Cost |
-| --- | ---: | ---: | ---: |
-| Find dead code in a directory | 2 / 16 | 20 s / 124 s | $0.15 / $1.89 |
-| Multi-hop questions (call chains, subclasses, impact) | 1.2 / 5.9 | 12.5 s / 25.8 s | $0.056 / $0.212 |
-| Code described by behaviour, in a repo the model has not seen | 1.8 / 4.2 | 12.0 s / 20.5 s | $0.068 / $0.197 |
-| One of many same-named methods ("which `reset` belongs to the Viterbi decoder") | 1.0 / 3.6 | 11.2 s / 17.4 s | $0.06 / $0.13 (median) |
-| Counting ("how many receiver classes") | 1.0 / 3.3 | 11 s / 34 s | about $0.02 / $0.29 |
-| Simple lookups (where is X, who calls X) | 1.7 / 1.7 | 12.7 s / 14.3 s | $0.063 / $0.096 |
-| Cross-cutting refactors (rename a method, add a parameter everywhere) | 8.3 / 8.3 | 27 s / 26 s | $0.26 / $0.25 |
+| Kind of work | Tool calls (clast / grep) | Time | Tokens in | Tokens out |
+| --- | ---: | ---: | ---: | ---: |
+| Find dead code in a directory | 2 / 16 | 20 s / 124 s | 82k / 928k | 0.6k / 9.5k |
+| Multi-hop questions (call chains, subclasses, impact) | 1.2 / 5.9 | 12.5 s / 25.8 s | 50k / 118k | 0.5k / 1.2k |
+| Code described by behaviour | 1.8 / 4.2 | 12.0 s / 20.5 s | 69k / 100k | 0.3k / 0.8k |
+| One of many same-named methods ("which of a thousand `reset` methods is the decoder's") | 1.0 / 3.6 | 11.2 s / 17.4 s | 53k / 68k | 0.2k / 0.6k |
+| Counting ("how many classes of this kind") | 1.0 / 3.3 | 11 s / 34 s | 52k / 91k | 0.3k / 2.5k |
+| Simple lookups (where is X, who calls X) | 1.7 / 1.7 | 12.7 s / 14.3 s | 62k / 50k | 0.4k / 0.5k |
+| Cross-cutting refactors (rename a method, add a parameter everywhere) | 8.3 / 8.3 | 27 s / 26 s | 104k / 81k | 1.7k / 1.7k |
+
+"Tokens in" is everything sent to the model over the session. The fixed prompt goes out again on
+every turn, and clast's tool definitions add about 5k to it, which is why clast reads more on the
+two ties. Fewer turns is what brings the total down everywhere else.
 
 Both sides answered correctly almost everywhere; the difference is how much searching it took.
 
@@ -456,7 +461,7 @@ under 50 ms.
   always the function.
 - **Not indexed**: Kotlin, Scala and other languages without a bundled grammar. `clast_grep` still
   searches those files as text.
-- **Prompt cost**: the tool definitions add about 5k tokens to every session.
+- **Prompt size**: the tool definitions add about 5k tokens to every turn.
 
 More detail and examples: [docs/v0.2-summary.md](docs/v0.2-summary.md).
 
