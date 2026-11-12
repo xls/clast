@@ -294,7 +294,68 @@ one call. Writing code is a tie too: the agent reads the surrounding code before
 not. Clast tells the agent to skip it for those edits, so it adds no calls there, only the fixed size of its tool definitions in the prompt. Clast earns its place on questions that take several hops, on counting, and on dead code. The
 samples are small (two repositories, three runs per question), so read them as direction.
 
-Full tables, method, answer-quality audits and index speed: [docs/benchmarks.md](docs/benchmarks.md).
+### On vscode
+
+The same sessions on vscode (TypeScript, 15,726 files). The model knows vscode from its training,
+so where a question can be answered from memory the two sides tie.
+
+| Kind of work | Tool calls (clast / grep) | Time | Tokens in | Tokens out |
+| --- | ---: | ---: | ---: | ---: |
+| Multi-hop questions | 1.3 / 3.1 | 16.0 s / 19.8 s | 53k / 59k | 0.7k / 1.1k |
+| Before a change (tests that reach a function, signature change, dead functions in a file) | 2.3 / 2.2 | 19.3 s / 19.8 s | 62k / 67k | 0.8k / 1.0k |
+| Simple lookups | 1.4 / 1.4 | 13.9 s / 13.9 s | 54k / 45k | 0.5k / 0.5k |
+| Code described by behaviour | 1.0 / 1.0 | 11.7 s / 11.8 s | 50k / 40k | 0.4k / 0.5k |
+| Small implementation tasks | 7.5 / 8.5 | 30 s / 31 s | 113k / 96k | 2.0k / 2.2k |
+| Cross-cutting refactors | 21.8 / 22.0 | 47 s / 48 s | 127k / 100k | 4.2k / 4.4k |
+
+### Is the call graph right?
+
+Reviewers read the cited source lines for call edges that clast reports as certain:
+
+| Repo | Language | Wrong | Checked |
+| --- | --- | ---: | ---: |
+| kafka | Java | 0 | 57 |
+| tokio | Rust | 0 | 17 |
+| laravel | PHP | 0 | 19 |
+| vscode | TypeScript | 1 | 45 |
+| django | Python | 1 | 39 |
+| aspnetcore | C# | 1 | 58 |
+| hugo | Go | 1 | 19 |
+| rails | Ruby | 4 | 18 |
+
+The vscode and aspnetcore errors and the cause of the four rails errors were fixed afterwards.
+
+### Index speed on 17 repositories
+
+Cold index is a first run on an empty index; warm rescan is a restart with nothing changed. Query
+times are medians of five runs on the most-called function of each repository (Node 24, Windows 11,
+Ryzen 9950X3D).
+
+<!-- BENCH:START -->
+| repo | files | symbols | cold index | warm rescan | db size | search (name) | search (words) | symbol + callers/callees | callers depth 2 | references |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| vscode | 15726 | 461365 | 26.1 s | 1895 ms | 357 MB | 168 ms | 42 ms | 28 ms | 38 ms | 11 ms |
+| aspnetcore | 11470 | 145271 | 10.2 s | 1382 ms | 135 MB | 9.3 ms | 86 ms | 33 ms | 38 ms | 6.6 ms |
+| kafka | 6481 | 126393 | 9.5 s | 863 ms | 144 MB | 26 ms | 33 ms | 25 ms | 962 ms | 5.6 ms |
+| rails | 3580 | 61549 | 3.8 s | 352 ms | 52 MB | 8.7 ms | 15 ms | 22 ms | 35 ms | 3.0 ms |
+| framework | 3180 | 44124 | 3.0 s | 337 ms | 38 MB | 1.4 ms | 46 ms | 23 ms | 23 ms | 2.2 ms |
+| django | 2987 | 60131 | 3.1 s | 522 ms | 42 MB | 29 ms | 41 ms | 21 ms | 48 ms | 2.5 ms |
+| fastapi | 1224 | 10049 | 0.8 s | 161 ms | 7 MB | 5.0 ms | 17 ms | 5.7 ms | 48 ms | 2.4 ms |
+| hugo | 939 | 16896 | 1.1 s | 127 ms | 11 MB | 7.2 ms | 38 ms | 18 ms | 18 ms | 2.4 ms |
+| redis | 919 | 35752 | 1.9 s | 103 ms | 23 MB | 5.7 ms | 16 ms | 7.0 ms | 26 ms | 2.2 ms |
+| tokio | 816 | 12341 | 1.1 s | 85 ms | 11 MB | 3.9 ms | 17 ms | 2.0 ms | 4.2 ms | 1.4 ms |
+| http | 362 | 3947 | 0.7 s | 75 ms | 3 MB | 1.3 ms | 9.6 ms | 3.5 ms | 1.6 ms | 5.3 ms |
+| express | 142 | 439 | 0.4 s | 20 ms | 1 MB | 0.4 ms | 1.0 ms | 0.8 ms | 0.5 ms | 1.6 ms |
+| leveldb | 133 | 3456 | 0.6 s | 14 ms | 2 MB | 2.2 ms | 15 ms | 3.3 ms | 1.8 ms | 2.5 ms |
+| Alamofire | 107 | 4085 | 1.5 s | 23 ms | 4 MB | 2.4 ms | 7.1 ms | 1.5 ms | 530 ms | 1.3 ms |
+| ripgrep | 103 | 4496 | 0.6 s | 13 ms | 3 MB | 1.3 ms | 13 ms | 1.3 ms | 1.4 ms | 0.5 ms |
+| gin | 99 | 2157 | 0.4 s | 12 ms | 2 MB | 1.5 ms | 7.7 ms | 2.2 ms | 4.3 ms | 0.7 ms |
+| spring-petclinic | 50 | 323 | 0.2 s | 11 ms | 1 MB | 0.8 ms | 0.7 ms | 0.6 ms | 0.6 ms | 1.3 ms |
+
+Node v24.7.0, win32 x64. Query times are medians of 5 in-process runs on the most-called function of each repo.
+<!-- BENCH:END -->
+
+Method, question sets and the remaining tables: [docs/benchmarks.md](docs/benchmarks.md).
 
 ## Your first minute
 
