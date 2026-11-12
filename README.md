@@ -269,17 +269,144 @@ empty index; warm rescan is a restart with nothing changed.
 Node v24.7.0, win32 x64. Query times are medians of 5 in-process runs on the most-called function of each repo.
 <!-- BENCH:END -->
 
+Worst case measured: `callers IDisposable.dispose` on vscode (10.7k call sites, 4.7k definitions of
+`dispose`) takes 5-6 s. Scoped with `within` it is fast.
+
 ---
 
-## Upgrading from 0.1
+## Clast vs grep + read
+
+The same agent answered the same 10 code-navigation questions per repository twice: once with clast,
+once with only grep and file reads. Both arms reached equivalent answers.
+
+| Repo | Tool calls (clast / grep) | Wall time (clast / grep) | Time saved | Agent tokens (clast / grep) | Tokens saved |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| django (Python, 3k files) | 2 / 19 | 48 s / 54 s | 11% | 59k / 68k | 13% |
+| kafka (Java, 6.5k files) | 2 / 21 | 41 s / 99 s | 59% | 63k / 80k | 21% |
+| vscode (TypeScript, 15.7k files) | 3 / 15 | 68 s / 60 s | -13% (slower) | 65k / 71k | 8% |
+| rails (Ruby, 3.6k files) | 2 / 21 | 52 s / 69 s | 25% | 66k / 77k | 14% |
+| **Total** | **9 / 76** | **209 s / 282 s** | **26%** | **253k / 296k** | **15%** |
+
+How to read this:
+
+- **Small sample**: four repositories, one run each. Treat it as indicative, not as a benchmark suite.
+- **Tokens include fixed overhead**: each agent's system prompt and question list are counted in both
+  arms, so the saving on the navigation itself is larger than the totals show.
+- **Tool calls are batched in the clast arm**: it ran several CLI commands per shell call. Through MCP
+  each command is one tool call, so expect roughly 10-17 calls against 15-21, with far less output to
+  read per call.
+- **vscode was slower**: on the largest repository the clast arm used fewer tokens but 8 s more wall
+  time.
+- **Measured early**: these runs predate the later precision work (evaluation rounds 4 to 8).
+
+### Answer quality
+
+Reviewer agents asked deliberately hard questions on 17 real repositories and checked every answer
+against the source. Over the last five rounds the share of first answers judged correct rose from
+roughly 45-60% to 65-78%, with new questions each round.
+
+Two further audits read the cited source lines for call edges that clast shows as certain (no `?`):
+
+| Repo | Language | Wrong | Checked |
+| --- | --- | ---: | ---: |
+| kafka | Java | 0 | 57 |
+| tokio | Rust | 0 | 17 |
+| laravel | PHP | 0 | 19 |
+| vscode | TypeScript | 1 | 45 |
+| django | Python | 1 | 39 |
+| aspnetcore | C# | 1 | 58 |
+| hugo | Go | 1 | 19 |
+| rails | Ruby | 4 | 18 |
+
+The vscode and aspnetcore errors were fixed afterwards; the django, hugo and rails ones are open (see
+Known limitations).
+
+---
+
+## Changelog
+
+### 0.2.0
+
+New tools (7 to 12):
+
+- `clast_references`: every use of a symbol, not just calls.
+- `clast_hierarchy`: supertypes, subtypes, implementers and overrides, including Go structural
+  interfaces and Ruby mixins.
+- `clast_overview`: map of a repository or directory.
+- `clast_grep`: text search over all text files with the enclosing symbol on every hit.
+- `clast_changes`: symbols touched by a git diff, plus their callers.
+
+Call graph:
+
+- Calls are resolved at query time using declared receiver types, imports and aliases, field types
+  across files, return types of call chains, inheritance and `super`.
+- Edges are shown as certain, uncertain, or `?` (matched by name only).
+- Argument counts separate overloads. A bare name means all overloads; `path:line` selects one.
+- A call bound to a subclass override no longer counts as a caller of the base method.
+- Language rules: Go packages and structural interfaces, Rust `impl Trait for Arc<T>` and std types,
+  C# generic arity / partial / static classes, Ruby mixins and bare calls, Java static imports, Python
+  submodule calls and imported instances, TypeScript renamed re-exports, C macro bodies, C++ namespace
+  functions.
+
+Search:
+
+- Ranked by exact name, prefix, abbreviation, typo and plain words.
+- Descriptive queries also match what function bodies mention (marked `[body]`).
+- Overloads fold into one hit.
+
+Performance and storage:
+
+- `node:sqlite` on disk (WAL, FTS5) replaces in-memory sql.js.
+- Parsing runs in worker threads, with an inline fallback if a worker fails.
+- The server connects first and indexes afterwards; on a first build, tools wait for the index.
+- A watcher re-indexes changed files, and every tool re-checks the files it quotes.
+
+Other:
+
+- Swift and Dart added (14 languages).
+- All dependencies updated (MCP SDK 1.32, web-tree-sitter 0.27).
+- 250 tests, plus `bench/bench.mjs` and `bench/resolution.mjs`.
+
+### Upgrading from 0.1
 
 - Node.js 22.22+ is required (was 18).
-- The index moved from `.clast/clast.db` (sql.js) to `.clast/index.db` (`node:sqlite`); the old file is
-  ignored and can be deleted.
+- The index moved from `.clast/clast.db` (sql.js) to `.clast/index.db` (`node:sqlite`). Nothing is
+  migrated: the index is a cache and is rebuilt on first start. The old file is ignored and can be
+  deleted.
+- A later schema change deletes and rebuilds the index automatically.
 - Tool output is compact text instead of JSON.
 - `clast_call_graph` defaults to depth 1 and gained `within` and `includeTests`.
-- New tools: `clast_references`, `clast_hierarchy`, `clast_overview`, `clast_grep`, `clast_changes`.
 - The binary entry point is `dist/cli.js`; `dist/server/index.js` still starts the server for old configs.
+
+---
+
+## Known limitations
+
+- **Untyped receivers**: `obj.save()` in dynamic code cannot be attributed. Such calls are listed as
+  "receiver type unknown", not guessed.
+- **Same-named types**: classes with the same short name in different PHP namespaces or Java packages
+  can be confused when the calling file gives no hint.
+- **Ruby**: the least trustworthy language. Classes with very common names (`Base`, `ClassMethods`)
+  are matched by short name, so some edges shown as certain are wrong (4 of 18 in the rails audit).
+  Methods defined by metaprogramming are invisible.
+- **Overloads**: those that differ only in parameter types, not count, are one target.
+- **Generics and inference**: no generic substitution; TypeScript return types are known only when
+  annotated.
+- **Framework conventions**: Django managers, Laravel facades and container lookups, and services
+  injected by string are not modelled.
+- **Python**: a local variable that holds a class is not followed.
+- **Go**: a call through a chain of fields can be attributed to the wrong type; the module path is
+  inferred from imports, not from go.mod.
+- **Swift**: the grammar fails on some files depending on parse order, which can drop a class while
+  keeping its members. Swift and Dart are new and less exercised.
+- **Search is lexical**: a description that shares no word with the code finds the neighbourhood, not
+  always the function.
+- **Not indexed**: Kotlin, Scala and other languages without a bundled grammar. `clast_grep` still
+  searches those files as text.
+- **Size and cold start**: the index takes about 12-25 MB per 1,000 source files; a cold index of
+  vscode takes about 26 s.
+
+The full list with examples is in [docs/v0.2-summary.md](docs/v0.2-summary.md).
 
 ---
 
