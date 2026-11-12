@@ -35,6 +35,8 @@ usage: clast-ai [command] [args] [--root <dir>]
   unused [path]              dead code   [--kind k] [--lang l] [--limit n] [--no-exported]
   stats [what] [name]        exact counts: inventory | symbols | subtypes | calls | text | imports | endpoints | database
                              [--kind k] [--on receiver] [--path p] [--lang l] [--group-by g] [--depth n] [--limit n] [--tests]
+  migrate [--apply]          find (and with --apply remove) what older installs left behind: duplicate
+                             MCP registrations next to the plugin, the v0.1 index file
   parse <file> [--json]      debug: show what the extractor produces for a file
   ast <file>                 debug: dump the tree-sitter syntax tree
 
@@ -63,7 +65,7 @@ interface Parsed {
 }
 
 const BOOLEAN_FLAGS = new Set([
-  'force', 'json', 'regex', 'no-body', 'no-scan', 'no-tests', 'tests', 'uncertain', 'help', 'version', 'all', 'no-exported',
+  'force', 'json', 'regex', 'no-body', 'no-scan', 'no-tests', 'tests', 'uncertain', 'help', 'version', 'all', 'no-exported', 'apply', 'auto',
 ]);
 
 function parseArgs(argv: string[]): Parsed {
@@ -102,6 +104,13 @@ async function main(): Promise<void> {
     if (str('root')) process.env.CLAST_PROJECT_DIR = resolve(str('root')!);
     const { startServer } = await import('./server/index.js');
     await startServer();
+    return;
+  }
+
+  if (cmd === 'migrate') {
+    const { migrate } = await import('./migrate.js');
+    const out = await migrate({ apply: flags.has('apply'), auto: flags.has('auto'), force: flags.has('force'), cwd: str('root') });
+    if (out) console.log(out);
     return;
   }
 

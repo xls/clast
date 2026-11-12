@@ -51,8 +51,23 @@ and four slash commands:
 | `/clast:audit [path]` | Inventory for due diligence or onboarding: size, structure, endpoints, database access, dependencies, dead code |
 | `/clast:status` | State of the index |
 
-The plugin starts the server from a global `clast-ai` 0.2.x when there is one, otherwise through
-`npx clast-ai@0.2` (downloaded on first use). Update with `/plugin update clast@clast`.
+The plugin starts the server from a global `clast-ai` that is at least as new as the plugin, otherwise
+through `npx clast-ai@<plugin version>` (downloaded on first use). Update with
+`/plugin marketplace update clast` and `/plugin update clast@clast`.
+
+**Coming from an older install?** Nothing to do. The first session after installing or updating the
+plugin removes what earlier installs left behind: clast registrations made with `claude mcp add` (for
+all projects or for single ones) and by the old VS Code extension, which would otherwise list every
+tool twice, and the v0.1 index file `.clast/clast.db`. It runs once per plugin version, in the
+background, and writes what it did to `migrate.log` in the plugin's data folder. A `.mcp.json` that
+is shared with a team is never changed. To see or do the same by hand:
+
+```bash
+clast-ai migrate           # report only
+clast-ai migrate --apply   # remove the leftovers
+```
+
+Set `CLAST_NO_MIGRATE=1` to switch the automatic run off.
 
 ### As a plain MCP server
 
@@ -62,7 +77,8 @@ claude mcp add -s user clast clast-ai
 ```
 
 `-s user` registers the server for all projects. This gives the tools without the skill and the slash
-commands. Use one of the two ways, not both: with both, every tool is listed twice.
+commands. Use one of the two ways, not both: with both, every tool is listed twice (the plugin removes
+a registration made this way when it is installed later).
 
 Either way, restart Claude Code (or "Developer: Reload Window" in VS Code) and run `/mcp`: `clast`
 should be listed with 15 tools. The first start indexes the project in the background (seconds, about
@@ -398,6 +414,14 @@ Known limitations).
 
 ## Changelog
 
+### 0.2.1
+
+- `clast-ai migrate`: finds and removes what older installs left behind (duplicate MCP registrations
+  next to the plugin, entries written by the old VS Code extension, the v0.1 index file). The plugin
+  runs it automatically, once per version, at the first session after an install or update.
+- The plugin uses a global `clast-ai` only when it is at least as new as the plugin itself, so a
+  plugin update is not held back by an older global install.
+
 ### 0.2.0
 
 New tools (7 to 13):
@@ -450,7 +474,7 @@ Other:
 
 - Swift and Dart added (14 languages).
 - All dependencies updated (MCP SDK 1.32, web-tree-sitter 0.27).
-- 283 tests, plus `bench/bench.mjs`, `bench/resolution.mjs` and the A/B harness `bench/ab.mjs`.
+- 290 tests, plus `bench/bench.mjs`, `bench/resolution.mjs` and the A/B harness `bench/ab.mjs`.
 - Installable as a Claude Code plugin from this repository (`/plugin marketplace add xls/clast`,
   `/plugin install clast@clast`): the MCP server, a usage skill, and the slash commands
   `/clast:deadcode`, `/clast:impact`, `/clast:audit` and `/clast:status`. The old VS Code extension

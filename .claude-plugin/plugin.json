@@ -1,6 +1,6 @@
 {
   "name": "clast",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "Code index for coding agents: symbol search, exact symbol source, type-aware call graph, references, type hierarchy, change impact, dead code and exact counts for any repository. TypeScript, JavaScript, Python, Java, C#, Go, Rust, C, C++, Ruby, PHP, Swift and Dart.",
   "author": {
     "name": "Thomas"
