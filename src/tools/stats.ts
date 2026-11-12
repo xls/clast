@@ -325,6 +325,8 @@ interface Pattern {
   file?: RegExp;
   /** Count non-indexed text files too (proto, sql, config). */
   others?: boolean;
+  /** Counts files, not text: keep the matched text out of the keyword table. */
+  filesOnly?: boolean;
 }
 
 interface TextCount {
@@ -382,7 +384,7 @@ async function countText(
         res.byLabel.add(p.label, n);
         res.byDir.add(dirKey(w.path, depth, f.path), n);
         res.byFile.add(w.path, n);
-        for (const [key, c] of local) res.byMatch.add(key, c);
+        if (!p.filesOnly) for (const [key, c] of local) res.byMatch.add(key, c);
         const ex = res.examples.get(p.label) ?? [];
         if (ex.length < 3) { ex.push(w.path); res.examples.set(p.label, ex); }
       }
@@ -415,7 +417,8 @@ const JS = ['javascript', 'typescript', 'tsx'];
 
 /** Route declarations of the common web frameworks. Pattern-based: a count to start from, not a proof. */
 const ENDPOINT_PATTERNS: Pattern[] = [
-  { label: 'Express / Koa / Fastify / Hono route calls', langs: JS, re: /\b(?:app|router|routes?|server|fastify|api|r)\.(get|post|put|patch|delete|head|options|all)\(\s*['"`\/]/g },
+  // (Not `api.get(...)` / `client.post(...)`: in front-end code those are outbound requests, counted separately.)
+  { label: 'Express / Koa / Fastify / Hono route calls', langs: JS, re: /\b(?:app|router|routes?|server|fastify)\.(get|post|put|patch|delete|head|options|all)\(\s*['"`\/]/g },
   { label: 'NestJS / TypeScript route decorators', langs: JS, re: /@(Get|Post|Put|Patch|Delete|All|Head|Options)\(/g },
   { label: 'Spring mappings', langs: ['java', 'kotlin'], re: /@(GetMapping|PostMapping|PutMapping|PatchMapping|DeleteMapping|RequestMapping)\b/g },
   { label: 'JAX-RS verbs', langs: ['java', 'kotlin'], re: /^\s*@(GET|POST|PUT|PATCH|DELETE|HEAD|OPTIONS)\s*$/gm },
@@ -432,14 +435,23 @@ const ENDPOINT_PATTERNS: Pattern[] = [
   { label: 'GraphQL operations (schema files)', others: true, file: /\.(graphql|gql)$/, re: /^\s*(?:extend\s+)?type\s+(Query|Mutation|Subscription)\b/gm },
 ];
 
-const DB_PATTERNS: Pattern[] = [
-  { label: 'SQL statements in source', re: /\b(SELECT)\s[^;'"`]{0,200}?\sFROM\b|\b(?:INSERT\s+INTO|UPDATE\s+[\w."`\[\]]+\s+SET|DELETE\s+FROM)\b/g },
-  { label: 'schema definitions (CREATE TABLE)', others: true, re: /\bCREATE\s+TABLE\b/gi },
-  { label: 'ORM entities / models', re: /@(Entity|Document|MappedSuperclass)\b|\bclass\s+\w+\((?:[\w.]*\.)?Model\)|\bextends\s+(?:Model|ActiveRecord::Base|ApplicationRecord)\b|<\s*(?:ApplicationRecord|ActiveRecord::Base)\b|\bDbSet<\w+>/g },
-  { label: 'migration files', others: true, file: /(^|\/)migrations?\/[^/]+\.(sql|py|rb|ts|js|php|cs)$/i, re: /^[\s\S]/g },
+/** Requests this code sends to other services. Reported next to the endpoints, never added to them. */
+const CLIENT_PATTERNS: Pattern[] = [
+  { label: 'JS HTTP client calls (axios / api client)', langs: JS, re: /\b(?:axios|api|apiClient|client|http|httpClient|\$http|request)\.(get|post|put|patch|delete)\(/g },
+  { label: 'fetch()', langs: JS, re: /\b(fetch)\(/g },
+  { label: 'Python requests / httpx', langs: ['python'], re: /\b(?:requests|httpx|session|client)\.(get|post|put|patch|delete)\(/g },
+  { label: 'Java / C# HTTP clients', langs: ['java', 'kotlin', 'csharp'], re: /\b(RestTemplate|WebClient|HttpClient|OkHttpClient)\b/g },
 ];
 
-const DB_CALLS = 'query|execute|exec|executeQuery|executeUpdate|prepare|prepareStatement|rawQuery|raw|findOne|findMany|findAll|findById|findUnique|findFirst|aggregate|insertOne|insertMany|updateOne|updateMany|deleteOne|deleteMany|ExecuteReader|ExecuteNonQuery|ExecuteScalar|SaveChanges|SaveChangesAsync|fetchall|fetchone|executemany|QueryRow|QueryContext|ExecContext';
+const DB_PATTERNS: Pattern[] = [
+  { label: 'SQL statements in source', re: /\b(SELECT)\s[^;'"`]{0,200}?\sFROM\b|\b(?:INSERT\s+INTO|UPDATE\s+[\w."`\[\]]+\s+SET|DELETE\s+FROM)\b/g },
+  { label: 'CREATE TABLE statements (schema files and every migration)', others: true, re: /\b(CREATE\s+TABLE)\b/gi },
+  { label: 'ORM entities / models', re: /@(Entity|Document|MappedSuperclass)\b|\bclass\s+\w+\((?:[\w.]*\.)?Model\)|\bextends\s+(?:Model|ActiveRecord::Base|ApplicationRecord)\b|<\s*(?:ApplicationRecord|ActiveRecord::Base)\b|\bDbSet<\w+>|\b(?:sequelize\.define|mongoose\.model)\(/g },
+  { label: 'Prisma models (schema.prisma)', others: true, file: /\.prisma$/, re: /^\s*(model)\s+\w+\s*\{/gm },
+  { label: 'migration files', others: true, file: /(^|\/)migrations?\/.*\.(sql|py|rb|ts|js|php|cs)$/i, re: /^[\s\S]/g, filesOnly: true },
+];
+
+const DB_CALLS = 'query|execute|exec|executeQuery|executeUpdate|prepare|prepareStatement|rawQuery|raw|findOne|findMany|findAll|findById|findUnique|findUniqueOrThrow|findFirst|findFirstOrThrow|aggregate|groupBy|count|create|createMany|update|upsert|delete|insertOne|insertMany|updateOne|updateMany|deleteOne|deleteMany|$queryRaw|$queryRawUnsafe|$executeRaw|$executeRawUnsafe|$transaction|ExecuteReader|ExecuteNonQuery|ExecuteScalar|SaveChanges|SaveChangesAsync|fetchall|fetchone|executemany|QueryRow|QueryContext|ExecContext';
 const DB_RECEIVERS = /^(?:.*(?:db|database|conn|connection|pool|client|session|cursor|cur|tx|trx|transaction|repo|repository|dao|knex|prisma|sequelize|mongo|collection|em|entitymanager|context|dbcontext|stmt|statement).*)$/i;
 
 async function presetStats(
@@ -463,6 +475,15 @@ async function presetStats(
 
 async function endpointStats(ctx: ToolContext, f: Filters, limit: number, depth: number): Promise<string> {
   const out = await presetStats(ctx, 'HTTP / RPC endpoints', ENDPOINT_PATTERNS, f, limit, depth);
+  const clients = await countText(ctx, CLIENT_PATTERNS, f, depth);
+  if (clients.byLabel.total) {
+    out.push('');
+    out.push(
+      `outbound HTTP requests (calls this code makes; not endpoints): ${clients.byLabel.total} in ${plural(clients.byFile.size, 'file')}${clients.split.describe()}`
+    );
+    for (const [label, n] of clients.byLabel.top(10)) out.push(`  ${String(n).padStart(6)}  ${label}`);
+    out.push(...clients.byDir.lines('by dir', Math.min(limit, 8)));
+  }
   out.push(
     'Pattern-based: counts route declarations of common frameworks (Express, NestJS, Spring, JAX-RS, ASP.NET, Flask, FastAPI, ' +
       'Django, Rails, Laravel, Go routers, actix, axum, gRPC, GraphQL). Routes built in loops or by a custom framework are not ' +
@@ -484,6 +505,7 @@ async function databaseStats(ctx: ToolContext, f: Filters, limit: number, depth:
   const split = new Split();
   const byName = new Tally();
   const byDir = new Tally();
+  const byTarget = new Tally();
   for (const r of rows) {
     if (!fileOk(r.path, r.lang, f)) continue;
     const recv = `${r.rtype ?? ''} ${r.receiver ?? ''}`.trim();
@@ -491,12 +513,16 @@ async function databaseStats(ctx: ToolContext, f: Filters, limit: number, depth:
     if (!split.add(r.path, f.includeTests, r.count)) continue;
     byName.add(r.name, r.count);
     byDir.add(dirKey(r.path, depth, f.path), r.count);
+    // `this.prisma.user.findMany()`, `userRepository.save()`: the last receiver segment names the table / model.
+    const target = (r.receiver ?? r.rtype ?? '').replace(/^(?:this|self)\./, '').replace(/^@/, '');
+    if (target) byTarget.add(target, r.count);
   }
   out.push('');
   out.push(
     `query-method call sites on database-like receivers (db, conn, pool, session, cursor, repository, ...): ${byName.total}${split.describe()}`
   );
   out.push(...byName.lines('by method', 20));
+  out.push(...byTarget.lines('by receiver (model / table / handle)', Math.min(limit, 20)));
   out.push(...byDir.lines('by dir', limit));
   out.push(
     'Heuristic: SQL text, schema statements, ORM model declarations, and calls named like query methods on receivers named like ' +

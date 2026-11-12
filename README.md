@@ -295,6 +295,8 @@ output above cached prompt tokens, so it is the closest single number to "tokens
 | Counting ("how many receiver classes under core/") | OnAir | 3 | 1.0 / 3.3 | 11 s / 34 s | about $0.02 / $0.29 | 3 / 2 |
 | Small implementation tasks (new provider, new enum value, new subclass) | vscode | 6 | 7.5 / 8.5 | 30 s / 31 s | $0.29 / $0.24 | 6 / 6 |
 | Small implementation tasks | OnAir | 6 | 11.5 / 12.8 | 39 s / 40 s | $0.58 / $0.56 | 6 / 6 |
+| Cross-cutting refactors (rename a method in 28 files, add a parameter and update all callers) | vscode | 4 | 21.8 / 22.0 | 47 s / 48 s | $0.45 / $0.37 | 4 / 4 |
+| Cross-cutting refactors | OnAir | 4 | 9.8 / 7.8 | 26 s / 25 s | $0.25 / $0.24 | 4 / 4 |
 
 What this says:
 
@@ -305,16 +307,19 @@ What this says:
   does not make that faster, it only returns a little less text.
 - **Counting is faster and exact** with `clast_stats`. With grep the agent tallied matches by hand and
   was off by one in one of three runs.
-- **Small implementation tasks showed no benefit.** Both arms made the same edits in the same time; the
-  agent mostly reads the neighbouring code with Grep and Read before editing either way. With six
-  sessions per arm the cost difference is within noise.
+- **Implementation work showed no benefit**, neither small features nor cross-cutting refactors. Both
+  arms made the same edits in the same files in the same time (refactors were also checked for
+  completeness: nothing of the old name or call shape left). Finding every occurrence of one name is
+  a single grep, and before editing the agent reads the neighbouring code either way. Clast costs a
+  little more here because its tool definitions are in the prompt.
 - **Small samples.** Two repositories, three runs per question, questions written by the tool's
   author. The figures show the direction, not a precise ratio.
 
 One result changed the server itself. Claude Code defers MCP tools behind its tool search by default,
 and in that state the agent never called clast: 0 of 60 sessions, every question answered with Grep.
 The navigation tools now ask the client to keep them loaded, after which the agent used clast in every
-question session where it helped. The cost is about 7k tokens of tool definitions in the cached prompt.
+question session where it helped. The cost is about 4.4k tokens of tool definitions and instructions in
+the cached prompt (measured: 23.7k against 19.3k prompt tokens for a session that calls no tool).
 
 Reproduce with `node bench/ab.mjs <repo> bench/ab/<set>.json --runs 3`. The question sets are in
 `bench/ab/`.
@@ -388,9 +393,13 @@ Other:
 
 - Swift and Dart added (14 languages).
 - All dependencies updated (MCP SDK 1.32, web-tree-sitter 0.27).
-- 263 tests, plus `bench/bench.mjs`, `bench/resolution.mjs` and the A/B harness `bench/ab.mjs`.
+- 270 tests, plus `bench/bench.mjs`, `bench/resolution.mjs` and the A/B harness `bench/ab.mjs`.
 - The navigation tools ask Claude Code to keep them loaded instead of deferring them behind tool
   search; deferred, the agent never called them.
+- Ruby classes and their ancestors are compared by qualified name (`Rails::Generators::Base` is not
+  `ActiveRecord::Base`; `Thor::Group` is not a project class called `Group`).
+- C++ functions declared through a head-building macro (`FN(jstring, nativeStart)(args)`) are indexed
+  under their real name.
 
 ### Upgrading from 0.1
 
@@ -398,7 +407,7 @@ Other:
 - The index moved from `.clast/clast.db` (sql.js) to `.clast/index.db` (`node:sqlite`). Nothing is
   migrated: the index is a cache and is rebuilt on first start. The old file is ignored and can be
   deleted.
-- A later schema change deletes and rebuilds the index automatically.
+- A later schema change deletes and rebuilds the index automatically (the schema is at version 25).
 - Tool output is compact text instead of JSON.
 - `clast_call_graph` defaults to depth 1 and gained `within` and `includeTests`.
 - The binary entry point is `dist/cli.js`; `dist/server/index.js` still starts the server for old configs.
@@ -411,9 +420,10 @@ Other:
   "receiver type unknown", not guessed.
 - **Same-named types**: classes with the same short name in different PHP namespaces or Java packages
   can be confused when the calling file gives no hint.
-- **Ruby**: the least trustworthy language. Classes with very common names (`Base`, `ClassMethods`)
-  are matched by short name, so some edges shown as certain are wrong (4 of 18 in the rails audit).
-  Methods defined by metaprogramming are invisible.
+- **Ruby**: the least exercised language. The rails audit found 4 wrong edges of 18 with one cause
+  (classes called `Base` in different namespaces treated as one family); classes are now compared by
+  qualified name, which fixes that case, but Ruby has not been re-audited since. Methods defined by
+  metaprogramming are invisible.
 - **Overloads**: those that differ only in parameter types, not count, are one target.
 - **Generics and inference**: no generic substitution; TypeScript return types are known only when
   annotated.

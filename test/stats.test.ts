@@ -103,9 +103,45 @@ describe('clast_stats', () => {
 
   it('reports database access', async () => {
     const out = await stats(p.ctx, { what: 'database' });
-    assert.match(out, /schema definitions \(CREATE TABLE\)/);
+    assert.match(out, /CREATE TABLE statements/);
     assert.match(out, /SQL statements in source/);
     assert.match(out, /query-method call sites on database-like receivers.*: 2/);
+  });
+
+  it('keeps outbound client requests apart from endpoints and counts Prisma models and calls', async () => {
+    // Found on a real NestJS + React + Prisma application: `api.get(...)` in the front end was
+    // counted as an Express route, and Prisma models and queries were not seen at all.
+    const q = await createProject({
+      'backend/src/users.controller.ts': `
+import { Controller, Get, Post } from '@nestjs/common';
+@Controller('users')
+export class UsersController {
+  constructor(private readonly prisma: PrismaService) {}
+  @Get()
+  list() { return this.prisma.user.findMany(); }
+  @Post()
+  add() { return this.prisma.user.create({ data: {} }); }
+}
+`,
+      'frontend/src/api.ts': `
+import axios from 'axios';
+const api = axios.create();
+export const loadUsers = () => api.get('/users');
+export const addUser = () => api.post('/users');
+`,
+      'backend/prisma/schema.prisma': `model User {\n  id Int @id\n}\n\nmodel Order {\n  id Int @id\n}\n`,
+    });
+    try {
+      const endpoints = await stats(q.ctx, { what: 'endpoints' });
+      assert.match(endpoints, /^HTTP \/ RPC endpoints: 2 found by pattern in 1 file/);
+      assert.match(endpoints, /outbound HTTP requests \(calls this code makes; not endpoints\): 2 in 1 file/);
+      const database = await stats(q.ctx, { what: 'database' });
+      assert.match(database, /2 {2}Prisma models \(schema\.prisma\)/);
+      assert.match(database, /query-method call sites on database-like receivers.*: 2/);
+      assert.match(database, /2 {2}prisma\.user/);
+    } finally {
+      q.dispose();
+    }
   });
 
   it('lists external dependencies', async () => {
